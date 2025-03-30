@@ -1,0 +1,15 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment configs
+.env
+
+# Logs / temp
+*.log
+*.csv
+*.txt
+data/
