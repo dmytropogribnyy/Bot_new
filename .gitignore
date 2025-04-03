@@ -7,9 +7,19 @@ __pycache__/
 
 # Environment configs
 .env
+.env.*
 
-# Logs / temp
+# IDE configs
+.vscode/
+
+# Logs & temporary files
 *.log
-*.csv
 *.txt
-data/
+*.db
+*.bak
+*.tmp
+
+# Data files
+data/*.csv
+data/*.json
+data/backups/
