@@ -22,9 +22,9 @@ BINANCEBOT/
 │   └── trade_engine.py # Execution, TP/SL, trailing
 ├── data/
 │   ├── tp_performance.csv   # Per-trade results
-│   ├── balance_history.csv  # (optional future)
-│   ├── score_history.csv    # (planned)
-│   └── backups/             # Auto backups
+│   ├── score_history.csv    # Signal score logging
+│   ├── dynamic_symbols.json # Daily active pairs
+│   ├── backups/             # Auto backups
 └── .env / requirements.txt / .env.example
 ```
 
@@ -79,20 +79,20 @@ python main.py
 - HTF EMA trend confirmation (1h)
 - Volatility and time filters (avoid chop)
 - Long/Short filters separately (configurable)
-- Smart scoring system
+- Smart scoring system (score-based entry)
 
 ### 🎯 TP / SL / Risk Management
 
 - Multi-TP: TP1 + TP2 with break-even logic
-- Trailing stop (ATR, ADX-aware)
+- Trailing stop (ADX-aware, adaptive distance)
 - Adaptive position sizing by risk %
 - Daily loss protection (auto safe mode)
 - Auto shutdown / pause if needed
-- Time limit on trade + extension if near TP1
+- Timeout close + extension if near TP1
 
 ### 🧠 Self-Optimization
 
-- Logs every TP/SL to CSV
+- Logs every TP1/TP2/SL to CSV
 - Optimizer: adjusts TP1/TP2 weekly
 - Auto-updates filters per symbol (ATR, ADX, BB)
 - Tracks symbol performance → disables or boosts
@@ -105,6 +105,7 @@ python main.py
 - Daily and weekly reports via Telegram (21:00)
 - /summary, /status, /open, /last, /mode, /log
 - Alerts: Entry, TP1, TP2, SL, break-even, trailing
+- MarkdownV2 formatting with emoji support
 - Minimal, clear messages in English
 
 ---
@@ -128,18 +129,20 @@ python main.py
 
 ---
 
-## 📌 Active Features (2025 v1.0)
+## 📌 Active Features (v1.0, 2025)
 
 - ✅ Smart rotation of symbols (daily)
 - ✅ Adaptive trailing by ADX
 - ✅ Panic Close with Telegram confirmation
 - ✅ DRY_RUN + verbose mode
 - ✅ Fixed and dynamic pair list
-- ✅ Smart Switching (if stronger signal appears)
-- ✅ TP Performance logging + optimizer
+- ✅ Smart Switching (stronger signal override)
+- ✅ TP1/TP2/SL logging + optimizer
 - ✅ Score-based filtering (auto-adjustable)
 - ✅ Full Telegram control + file sending
 - ✅ Auto-detect deposits/withdrawals (excluded from PnL)
+- ✅ Timeout close + auto-extension
+- ✅ MarkdownV2 formatting for messages
 
 ---
 
@@ -147,13 +150,14 @@ python main.py
 
 - 🟡 Long/Short filter config (per symbol)
 - 🟡 score_history.csv logging
-- 🟡 Backtest module (15m)
-- 🟡 Intra-day smart rotation
-- 🟡 Optional balance graph, PnL plots
+- 🟡 Backtest module (15m, BTC/ETH)
+- 🟡 Intra-day smart rotation (every 4h)
+- 🟡 Full MarkdownV2 compliance in messages
+- 🟡 (Optional) PnL charts, balance graph
 
 ---
 
-**Note:** Bot trades only **USDC-M perpetuals**.  
+**Note:** Bot trades only **USDC-M perpetuals** on Binance.
 Use `DRY_RUN = True` in config to simulate signals safely.
 
 ---
