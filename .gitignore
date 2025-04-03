@@ -34,3 +34,15 @@ bot_state.json
 last_update.txt
 dynamic_symbols.json
 dry_entries.csv
+
+# Custom logs
+push_log.txt
+debug_log.txt
+telegram_log.txt
+
+# VS Code workspace
+*.code-workspace
+
+# Windows
+desktop.ini
+
