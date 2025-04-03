@@ -1,25 +1,36 @@
-# Virtual environment
+# Python virtual environment
 venv/
 
-# Python cache
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*.so
 
-# Environment configs
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# Logs & temp
+*.log
+*.bak
+*.tmp
+*.swp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Configs and env
 .env
 .env.*
 
-# IDE configs
-.vscode/
-
-# Logs & temporary files
-*.log
-*.txt
-*.db
-*.bak
-*.tmp
-
-# Data files
+# Local data files
 data/*.csv
 data/*.json
 data/backups/
+bot_state.json
+last_update.txt
+dynamic_symbols.json
+dry_entries.csv
