@@ -16,8 +16,7 @@
   // Spellcheck settings
   "cSpell.enabled": false, // Explicitly disable cSpell (note: "csSpell" is also valid, but "cSpell" is the standard)
   "editor.codeActionsOnSave": {
-    // Disable built-in spellcheck fixes
-    "source.fixAll": false
+    "source.fixAll": "never"
   },
 
   // Python file-specific overrides

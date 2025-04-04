@@ -25,18 +25,14 @@ SAVE_PATH = "data/dynamic_symbols.json"
 def fetch_usdc_futures_symbols():
     try:
         markets = exchange.load_markets()
-
         usdc_futures = [
             symbol
             for symbol, data in markets.items()
             if symbol.endswith("/USDC:USDC") and data.get("swap")
         ]
-
         print(f"✅ USDC Perpetual Futures (swap) found: {len(usdc_futures)}")
         print("💡 Example USDC Perpetual Futures:", usdc_futures[:10])
-
         return usdc_futures
-
     except Exception as e:
         print(f"⚠️ Error loading markets: {e}")
         return []
@@ -46,19 +42,15 @@ def get_metrics(symbol):
     try:
         ticker = exchange.fetch_ticker(symbol)
         volume = ticker.get("quoteVolume", 0)
-
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe="1h", limit=24)
         prices = [c[4] for c in ohlcv if c[4] is not None]
         highs = [c[2] for c in ohlcv]
         lows = [c[3] for c in ohlcv]
-
         if not prices:
             return None
-
         close = prices[-1]
         atr = max([h - l for h, l in zip(highs, lows)]) / close
         day_range = (max(highs) - min(lows)) / close
-
         return {
             "symbol": symbol,
             "volume": volume,
@@ -88,15 +80,12 @@ def load_trade_stats():
 
 def get_score(metrics, history_df):
     score = 0
-
-    # Мягче фильтры для dry run
     atr_threshold = (
         DRY_RUN_VOLATILITY_ATR_THRESHOLD if DRY_RUN else VOLATILITY_ATR_THRESHOLD
     )
     range_threshold = (
         DRY_RUN_VOLATILITY_RANGE_THRESHOLD if DRY_RUN else VOLATILITY_RANGE_THRESHOLD
     )
-
     if metrics["volume"] >= 5_000_000:
         score += 1
     if metrics["atr_ratio"] >= atr_threshold:
@@ -121,10 +110,7 @@ def select_active_symbols():
     all_symbols = fetch_usdc_futures_symbols()
     history_df = load_trade_stats()
     evaluated = []
-
     log(f"Total fetched symbols: {len(all_symbols)}")
-
-    # Убедимся, что all_symbols не содержит дубликатов
     all_symbols = list(set(all_symbols))
 
     for symbol in all_symbols:
@@ -137,10 +123,8 @@ def select_active_symbols():
         metrics["score"] = score
         evaluated.append(metrics)
 
-    # Учитываем фиксированные пары при выборе динамических
-    max_dynamic_pairs = MAX_DYNAMIC_PAIRS - len(FIXED_PAIRS)  # 30 - 5 = 25
-    min_dynamic_pairs = max(0, MIN_DYNAMIC_PAIRS - len(FIXED_PAIRS))  # 15 - 5 = 10
-
+    max_dynamic_pairs = MAX_DYNAMIC_PAIRS - len(FIXED_PAIRS)
+    min_dynamic_pairs = max(0, MIN_DYNAMIC_PAIRS - len(FIXED_PAIRS))
     selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[
         :max_dynamic_pairs
     ]
@@ -151,7 +135,6 @@ def select_active_symbols():
             :min_dynamic_pairs
         ]
 
-    # Формируем active_symbols без дубликатов
     dynamic_symbols = [s["symbol"] for s in selected]
     active_symbols = list(set(FIXED_PAIRS + dynamic_symbols))
     skipped = [s["symbol"] for s in evaluated if s["symbol"] not in active_symbols]
@@ -159,8 +142,6 @@ def select_active_symbols():
     with open(SAVE_PATH, "w") as f:
         json.dump(active_symbols, f, indent=2)
 
-    # Формируем отчёт
-    # Упрощаем top_names, так как selected уже не содержит FIXED_PAIRS
     top_names = [s["symbol"].split("/")[0] for s in selected][:5]
     skipped_names = [s.split("/")[0] for s in skipped[:5]]
 
@@ -171,7 +152,7 @@ def select_active_symbols():
         f"• Top dynamic: {', '.join(top_names)}\n\n"
         f"❌ Skipped (low score): {', '.join(skipped_names)}"
     )
-    send_telegram_message(escape_markdown_v2(msg), force=True)
+    send_telegram_message(msg, force=True)
 
     return active_symbols
 

@@ -3,12 +3,8 @@ import json
 import shutil
 import time
 from datetime import datetime
-from config import (
-    LOG_FILE_PATH,
-    TIMEZONE,
-    DRY_RUN,
-    LOG_LEVEL,
-)
+from threading import Lock  # Для потокобезопасности
+from config import LOG_FILE_PATH, TIMEZONE, DRY_RUN, LOG_LEVEL, exchange
 from filelock import FileLock  # For thread-safe file access
 from colorama import init, Fore, Style  # For colored console output
 from telegram.telegram_utils import send_telegram_message, escape_markdown_v2
@@ -46,6 +42,14 @@ LOG_COLORS = {
     "WARNING": Fore.YELLOW,
     "ERROR": Fore.RED,
 }
+
+# Глобальный кэш с потокобезопасностью
+CACHE_TTL = 30  # Cache TTL in seconds
+api_cache = {
+    "balance": {"value": None, "timestamp": 0},
+    "positions": {"value": [], "timestamp": 0},
+}
+cache_lock = Lock()  # Блокировка для доступа к api_cache
 
 
 def notify_error(msg):
@@ -147,11 +151,9 @@ def update_last_signal_time():
 
 def get_open_symbols():
     """Get a list of symbols with open positions."""
-    from config import exchange
-
     try:
         open_syms = []
-        positions = exchange.fetch_positions()
+        positions = get_cached_positions()
         for p in positions:
             if float(p.get("contracts", 0)) > 0:
                 open_syms.append(p["symbol"])
@@ -237,9 +239,67 @@ def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
 
         send_telegram_message(message, force=True)
         log(f"IP changed from {old_ip} to {new_ip}", level="WARNING")
-
     except Exception as e:
         log(f"[notify_ip_change] Telegram error: {e}", level="ERROR")
+
+
+def get_cached_balance():
+    """Получить баланс из кэша или обновить через API."""
+    with cache_lock:
+        now = time.time()
+        if (
+            now - api_cache["balance"]["timestamp"] > CACHE_TTL
+            or api_cache["balance"]["value"] is None
+        ):
+            try:
+                api_cache["balance"]["value"] = exchange.fetch_balance()["total"][
+                    "USDC"
+                ]
+                api_cache["balance"]["timestamp"] = now
+                log(
+                    f"Updated balance cache: {api_cache['balance']['value']} USDC",
+                    level="DEBUG",
+                )
+            except Exception as e:
+                log(f"Error fetching balance: {e}", level="ERROR")
+                return (
+                    api_cache["balance"]["value"]
+                    if api_cache["balance"]["value"] is not None
+                    else 0.0
+                )
+        return api_cache["balance"]["value"]
+
+
+def get_cached_positions():
+    """Получить позиции из кэша или обновить через API."""
+    with cache_lock:
+        now = time.time()
+        if (
+            now - api_cache["positions"]["timestamp"] > CACHE_TTL
+            or not api_cache["positions"]["value"]
+        ):
+            try:
+                api_cache["positions"]["value"] = exchange.fetch_positions()
+                api_cache["positions"]["timestamp"] = now
+                log(
+                    f"Updated positions cache: {len(api_cache['positions']['value'])} positions",
+                    level="DEBUG",
+                )
+            except Exception as e:
+                log(f"Error fetching positions: {e}", level="ERROR")
+                return (
+                    api_cache["positions"]["value"]
+                    if api_cache["positions"]["value"]
+                    else []
+                )
+        return api_cache["positions"]["value"]
+
+
+def initialize_cache():
+    """Инициализация кэша при старте бота."""
+    get_cached_balance()
+    get_cached_positions()
+    log("API cache initialized", level="INFO")
 
 
 def load_state():
@@ -310,3 +370,10 @@ def save_state(state, retries=3, delay=1):
                 )
             else:
                 time.sleep(delay)
+
+
+if __name__ == "__main__":
+    # Тестовый запуск для проверки кэширования
+    initialize_cache()
+    print(f"Balance: {get_cached_balance()}")
+    print(f"Positions: {len(get_cached_positions())}")

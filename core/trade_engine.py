@@ -15,10 +15,11 @@ from config import (
     is_aggressive,
     trade_stats,
     TIMEZONE,
+    DRY_RUN,
 )
 from telegram.telegram_handler import send_telegram_message
 from tp_logger import log_trade_result
-from utils import now, log
+from utils import now, log, get_cached_positions, escape_markdown_v2
 
 import pandas as pd
 import ta
@@ -38,12 +39,12 @@ def calculate_position_size(entry_price, stop_price, risk_amount):
 
 def get_position_size(symbol):
     try:
-        positions = exchange.fetch_positions()
+        positions = get_cached_positions()
         for pos in positions:
             if pos["symbol"] == symbol and float(pos["contracts"]) > 0:
                 return float(pos["contracts"])
-    except:
-        pass
+    except Exception as e:
+        log(f"Error in get_position_size for {symbol}: {e}", level="ERROR")
     return 0
 
 
@@ -55,7 +56,6 @@ def enter_trade(symbol, side, qty, score=5):
         send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
         return
 
-    # TP/SL адаптация по score
     tp1_percent = TP1_PERCENT
     tp2_percent = TP2_PERCENT
     sl_percent = SL_PERCENT
@@ -85,29 +85,36 @@ def enter_trade(symbol, side, qty, score=5):
         else entry_price * (1 + sl_percent)
     )
 
-    exchange.create_limit_order(
-        symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price
-    )
-    if tp2_price and qty_tp2 > 0:
-        exchange.create_limit_order(
-            symbol, "sell" if side == "buy" else "buy", qty_tp2, tp2_price
+    if DRY_RUN:
+        log(
+            f"[DRY] Entering {side.upper()} on {symbol} at {entry_price:.5f} (qty: {qty:.2f})",
+            level="INFO",
         )
-    exchange.create_order(
-        symbol,
-        type="STOP_MARKET",
-        side="sell" if side == "buy" else "buy",
-        amount=qty,
-        params={"stopPrice": round(sl_price, 4), "reduceOnly": True},
-    )
-
-    send_telegram_message(
-        f"✅ NEW TRADE\n"
-        f"Symbol: {symbol}\nSide: {side.upper()}\nEntry: {round(entry_price, 4)}\n"
-        f"Qty: {qty}\nTP1: +{round(tp1_percent*100,1)}%"
-        + (f" / TP2: +{round(tp2_percent*100,1)}%" if tp2_price else "")
-        + f"\nSL: -{round(sl_percent*100,1)}%",
-        force=True,
-    )
+        msg = f"DRY RUN: {side.upper()} {symbol} at {entry_price:.5f} (qty: {qty:.2f})"
+        send_telegram_message(msg, force=True)
+    else:
+        exchange.create_limit_order(
+            symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price
+        )
+        if tp2_price and qty_tp2 > 0:
+            exchange.create_limit_order(
+                symbol, "sell" if side == "buy" else "buy", qty_tp2, tp2_price
+            )
+        exchange.create_order(
+            symbol,
+            type="STOP_MARKET",
+            side="sell" if side == "buy" else "buy",
+            amount=qty,
+            params={"stopPrice": round(sl_price, 4), "reduceOnly": True},
+        )
+        msg = (
+            f"✅ NEW TRADE\n"
+            f"Symbol: {symbol}\nSide: {side.upper()}\nEntry: {round(entry_price, 4)}\n"
+            f"Qty: {qty}\nTP1: +{round(tp1_percent*100,1)}%"
+            + (f" / TP2: +{round(tp2_percent*100,1)}%" if tp2_price else "")
+            + f"\nSL: -{round(sl_percent*100,1)}%"
+        )
+        send_telegram_message(msg, force=True)
 
     last_trade_info[symbol] = {
         "symbol": symbol,
@@ -122,21 +129,20 @@ def enter_trade(symbol, side, qty, score=5):
         "tp2_hit": False,
     }
 
-    track_stop_loss(symbol, side, entry_price, qty, start_time)
-
-    if ENABLE_TRAILING:
-        threading.Thread(
-            target=run_adaptive_trailing_stop,
-            args=(symbol, side, entry_price),
-            daemon=True,
-        ).start()
-
-    if ENABLE_BREAKEVEN:
-        threading.Thread(
-            target=run_break_even,
-            args=(symbol, side, entry_price, tp1_percent),
-            daemon=True,
-        ).start()
+    if not DRY_RUN:
+        track_stop_loss(symbol, side, entry_price, qty, start_time)
+        if ENABLE_TRAILING:
+            threading.Thread(
+                target=run_adaptive_trailing_stop,
+                args=(symbol, side, entry_price),
+                daemon=True,
+            ).start()
+        if ENABLE_BREAKEVEN:
+            threading.Thread(
+                target=run_break_even,
+                args=(symbol, side, entry_price, tp1_percent),
+                daemon=True,
+            ).start()
 
 
 def track_stop_loss(symbol, side, entry_price, qty, opened_at):
@@ -266,13 +272,23 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         duration_minutes=duration,
     )
 
-    send_telegram_message(
+    msg = (
         f"📤 *Trade Closed* [{result_type.upper()}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-        f"• PnL: {round(pnl,2)}% | Held: {duration} min",
-        force=True,
+        f"• PnL: {round(pnl,2)}% | Held: {duration} min"
     )
+    send_telegram_message(msg, force=True)
 
     if symbol in last_trade_info:
         del last_trade_info[symbol]
+
+
+def close_dry_trade(symbol):
+    """Закрытие симулированной позиции в DRY_RUN."""
+    if DRY_RUN and symbol in last_trade_info:
+        trade = last_trade_info[symbol]
+        exit_price = exchange.fetch_ticker(symbol)["last"]
+        record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
+        log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
+        send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)

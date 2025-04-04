@@ -23,6 +23,8 @@ from utils import (
     load_state,
     save_state,
     log,
+    get_cached_balance,
+    get_cached_positions,
 )
 from telegram.telegram_utils import escape_markdown_v2
 from ip_monitor import (
@@ -31,6 +33,7 @@ from ip_monitor import (
     get_ip_status_message,
     force_ip_check_now,
 )
+from core.trade_engine import last_trade_info, close_dry_trade
 
 
 def handle_telegram_command(message, state):
@@ -66,6 +69,7 @@ def handle_telegram_command(message, state):
             "⛔ /cancel_stop - Cancel stop process if pending\n"
             "🌐 /ipstatus - Show current/previous IP + router mode\n"
             "📡 /forceipcheck - Force immediate IP check\n"
+            "🔒 /close_dry - Close a DRY position (DRY_RUN only, e.g., /close_dry BTC/USDC)\n"
         )
         send_telegram_message(escape_markdown_v2(message), force=True)
 
@@ -142,17 +146,28 @@ def handle_telegram_command(message, state):
 
     elif text == "/open":
         try:
-            positions = exchange.fetch_positions()
-            open_positions = [
-                f"{p['symbol']} - {p['side'].upper()} {p['contracts']} @ {p['entryPrice']}"
-                for p in positions
-                if float(p.get("contracts", 0)) > 0
-            ]
-            msg = (
-                "Open Positions:\n" + "\n".join(open_positions)
-                if open_positions
-                else "No open positions."
-            )
+            if DRY_RUN:
+                open_positions = [
+                    f"{trade['symbol']} - {trade['side'].upper()} {trade['qty']} @ {trade['entry']}"
+                    for trade in last_trade_info.values()
+                ]
+                msg = (
+                    "Open DRY Positions:\n" + "\n".join(open_positions)
+                    if open_positions
+                    else "No open DRY positions."
+                )
+            else:
+                positions = get_cached_positions()
+                open_positions = [
+                    f"{p['symbol']} - {p['side'].upper()} {p['contracts']} @ {p['entryPrice']}"
+                    for p in positions
+                    if float(p.get("contracts", 0)) > 0
+                ]
+                msg = (
+                    "Open Positions:\n" + "\n".join(open_positions)
+                    if open_positions
+                    else "No open positions."
+                )
             send_telegram_message(escape_markdown_v2(msg), force=True)
             log("Fetched open positions via /open command.", level="INFO")
         except Exception as e:
@@ -186,7 +201,7 @@ def handle_telegram_command(message, state):
 
     elif text == "/balance":
         try:
-            balance = exchange.fetch_balance()["total"]["USDC"]
+            balance = get_cached_balance()
             send_telegram_message(
                 escape_markdown_v2(f"Balance: {round(balance, 2)} USDC"), force=True
             )
@@ -243,14 +258,14 @@ def handle_telegram_command(message, state):
                 else "N/A"
             )
 
-            balance = exchange.fetch_balance()["total"]["USDC"]
+            balance = get_cached_balance()
             mode = "AGGRESSIVE" if is_aggressive else "SAFE"
             paused = "Paused" if state.get("pause") else "Running"
             stopping = "Stopping after trades" if state.get("stopping") else ""
 
             open_syms = [
                 p["symbol"]
-                for p in exchange.fetch_positions()
+                for p in get_cached_positions()
                 if float(p.get("contracts", 0)) > 0
             ]
 
@@ -283,7 +298,7 @@ def handle_telegram_command(message, state):
         log("Router reboot mode cancelled via /cancel_reboot command.", level="INFO")
 
     elif text == "/debuglog":
-        if DRY_RUN:  # Simplified check since VERBOSE == DRY_RUN
+        if DRY_RUN:
             logs = get_recent_logs()
             msg = f"Debug Log (last {len(logs.splitlines())} lines):\n\n{logs[:4000]}"
             send_telegram_message(escape_markdown_v2(msg), force=True)
@@ -322,6 +337,19 @@ def handle_telegram_command(message, state):
             error_msg = f"Failed to load symbol list: {str(e)}"
             send_telegram_message(escape_markdown_v2(error_msg), force=True)
             log(error_msg, level="ERROR")
+
+    elif text.startswith("/close_dry"):
+        if DRY_RUN:
+            try:
+                symbol = text.split()[1] if len(text.split()) > 1 else "BTC/USDC"
+                close_dry_trade(symbol)
+                send_telegram_message(
+                    escape_markdown_v2(f"Closed DRY position for {symbol}"), force=True
+                )
+            except Exception as e:
+                send_telegram_message(
+                    escape_markdown_v2(f"Error closing DRY position: {e}"), force=True
+                )
 
 
 def handle_stop():
