@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from config import trade_stats, TIMEZONE, is_aggressive
-from utils import send_telegram_message, escape_markdown_v2
+from utils import send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2  # Обновляем импорт
 import threading
 import time
 import pandas as pd
@@ -63,12 +64,35 @@ def build_performance_report(title: str, period: str):
 
 
 def generate_summary():
-    today = now().strftime("%d.%m.%Y")
-    summary = build_performance_report("Current Bot Summary", today)
-    last_trade = get_human_summary_line()
-    last_trade = str(last_trade)
-    summary += f"\n\nLast trade summary:\n{last_trade}"
-    return escape_markdown_v2(summary)
+    trades = trade_stats.get("trades", 0)
+    wins = trade_stats.get("wins", 0)
+    losses = trade_stats.get("losses", 0)
+    pnl = trade_stats.get("pnl", 0)
+    deposits = trade_stats.get("deposits_today", 0)
+    withdrawals = trade_stats.get("withdrawals", 0)
+    winrate = f"{(wins / trades * 100):.0f}%" if trades > 0 else "0%"
+    streak = trade_stats.get("streak", 0)
+    mode = trade_stats.get("mode", "SAFE")
+    date = datetime.now().strftime("%d.%m.%Y")
+    last_trade = trade_stats.get("last_trade_summary", "No trade data.")
+
+    summary = f"""
+📊 *Current Bot Summary*
+
+📈 *Trades:* {trades} (✅ Wins: {wins} / ❌ Losses: {losses})
+💰 *PnL:* {pnl:.2f} USDC
+📥 *Deposits:* {deposits} USDC
+📤 *Withdrawals:* {withdrawals} USDC
+🎯 *Winrate:* {winrate}
+🔥 *Streak:* {streak}
+
+⚙️ *Mode:* {mode}
+🕒 *Period:* {date}
+
+🧾 *Last trade summary:*
+{last_trade}
+"""
+    return summary.strip()
 
 
 def export_trade_log():
@@ -79,9 +103,11 @@ def export_trade_log():
                 f"[{timestamp}] Total: {trade_stats['total']}, Wins: {trade_stats['wins']}, "
                 f"Losses: {trade_stats['losses']}, PnL: {round(trade_stats['pnl'], 2)}, Withdrawals: {round(trade_stats.get('withdrawals', 0), 2)}\n"
             )
-        send_telegram_message("Trade log exported.", force=True)
+        send_telegram_message(escape_markdown_v2("Trade log exported."), force=True)
     except Exception as e:
-        send_telegram_message(f"Failed to export trade log: {e}", force=True)
+        send_telegram_message(
+            escape_markdown_v2(f"Failed to export trade log: {e}"), force=True
+        )
 
 
 def send_daily_report():
@@ -166,7 +192,10 @@ def start_report_loops():
                     run_tp_optimizer()
                 else:
                     send_telegram_message(
-                        "Not enough recent trades to optimize (min: 20)", force=True
+                        escape_markdown_v2(
+                            "Not enough recent trades to optimize (min: 20)"
+                        ),
+                        force=True,
                     )
                 time.sleep(60)
             time.sleep(10)

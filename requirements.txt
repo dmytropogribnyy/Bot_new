@@ -1,8 +1,20 @@
-ccxt>=4.0.0
-pandas>=1.3.0
-ta>=0.10.0
-requests>=2.25.0
-pytz>=2021.1
-python-dotenv>=0.21.0
-black>=23.0.0
-flake8>=6.0.0
+# Binance API client for trading
+ccxt==4.3.1
+# Data manipulation for trade logs and technical indicators
+pandas==2.2.2
+# Technical analysis indicators (RSI, EMA, MACD, etc.)
+ta==0.11.0
+# HTTP requests for Telegram API and IP monitoring
+requests==2.32.3
+# Timezone handling
+pytz==2024.1
+# Load environment variables from .env file
+python-dotenv==1.0.1
+# Code formatting
+black==24.8.0
+# Code linting
+flake8==7.1.1
+# Thread-safe file access for logging
+filelock==3.16.1
+# Colored console output for logging
+colorama==0.4.6

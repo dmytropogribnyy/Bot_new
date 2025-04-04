@@ -1,4 +1,5 @@
 {
+  // General editor settings
   "editor.formatOnSave": true,
   "editor.tabSize": 4,
   "editor.rulers": [100],
@@ -6,12 +7,20 @@
   "files.insertFinalNewline": true,
   "files.autoSave": "onFocusChange",
 
+  // Python-specific settings
   "python.formatting.provider": "black",
   "python.linting.enabled": true,
   "python.linting.flake8Enabled": true,
   "python.linting.flake8Args": ["--max-line-length=100"],
-  "cSpell.enabled": false
 
+  // Spellcheck settings
+  "cSpell.enabled": false, // Explicitly disable cSpell (note: "csSpell" is also valid, but "cSpell" is the standard)
+  "editor.codeActionsOnSave": {
+    // Disable built-in spellcheck fixes
+    "source.fixAll": false
+  },
+
+  // Python file-specific overrides
   "[python]": {
     "editor.formatOnType": true,
     "editor.formatOnSave": true,
