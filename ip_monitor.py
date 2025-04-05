@@ -5,10 +5,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from config import (
-    IP_MONITOR_INTERVAL_SECONDS,
-    ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
-)
+from config import IP_MONITOR_INTERVAL_SECONDS, ROUTER_REBOOT_MODE_TIMEOUT_MINUTES
 from telegram.telegram_utils import send_telegram_message  # Correct
 from utils import escape_markdown_v2, log
 
@@ -99,10 +96,7 @@ def cancel_router_reboot_mode():
 
 
 def check_reboot_mode_expiration():
-    if (
-        router_reboot_mode["enabled"]
-        and datetime.now() > router_reboot_mode["expires_at"]
-    ):
+    if router_reboot_mode["enabled"] and datetime.now() > router_reboot_mode["expires_at"]:
         log("Router reboot mode expired, cancelling.", level="INFO")
         cancel_router_reboot_mode()
 
@@ -110,16 +104,12 @@ def check_reboot_mode_expiration():
 def get_ip_status_message():
     current_ip = get_current_ip() or "Unknown"
     last_ip = read_last_ip() or "Unknown"
-    last_check = (
-        last_ip_check_time.strftime("%d %b %Y, %H:%M") if last_ip_check_time else "N/A"
-    )
+    last_check = last_ip_check_time.strftime("%d %b %Y, %H:%M") if last_ip_check_time else "N/A"
     reboot_status = "🟢 ENABLED" if router_reboot_mode["enabled"] else "Disabled"
     if router_reboot_mode["enabled"] and router_reboot_mode["expires_at"]:
         remaining_minutes = max(
             0,
-            int(
-                (router_reboot_mode["expires_at"] - datetime.now()).total_seconds() / 60
-            ),
+            int((router_reboot_mode["expires_at"] - datetime.now()).total_seconds() / 60),
         )
         expires_time = router_reboot_mode["expires_at"].strftime("%H:%M")
         expires_info = f"{remaining_minutes} min left, until {expires_time} Bratislava"
@@ -139,16 +129,12 @@ def force_ip_check_now(stop_callback):
     log("Forced IP check requested.", level="INFO")
     changed, current_ip, last_ip, change_time = check_ip_change(stop_callback)
 
-    last_check = (
-        last_ip_check_time.strftime("%d %b %Y, %H:%M") if last_ip_check_time else "N/A"
-    )
+    last_check = last_ip_check_time.strftime("%d %b %Y, %H:%M") if last_ip_check_time else "N/A"
     reboot_status = "🟢 ENABLED" if router_reboot_mode["enabled"] else "Disabled"
     if router_reboot_mode["enabled"] and router_reboot_mode["expires_at"]:
         remaining_minutes = max(
             0,
-            int(
-                (router_reboot_mode["expires_at"] - datetime.now()).total_seconds() / 60
-            ),
+            int((router_reboot_mode["expires_at"] - datetime.now()).total_seconds() / 60),
         )
         expires_time = router_reboot_mode["expires_at"].strftime("%H:%M")
         expires_info = f"{remaining_minutes} min left, until {expires_time} Bratislava"
@@ -193,9 +179,7 @@ def start_ip_monitor(stop_callback, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
             check_ip_change(stop_callback)
             time.sleep(interval_seconds)
         else:
-            time_since_last_check = (
-                datetime.now() - last_ip_check_time
-            ).total_seconds()
+            time_since_last_check = (datetime.now() - last_ip_check_time).total_seconds()
             if time_since_last_check >= 30 * 60:
                 check_ip_change(stop_callback)
                 last_ip_check_time = datetime.now()

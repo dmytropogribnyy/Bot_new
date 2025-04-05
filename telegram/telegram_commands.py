@@ -3,14 +3,7 @@ import time
 
 import pandas as pd
 
-from config import (
-    DRY_RUN,
-    EXPORT_PATH,
-    FIXED_PAIRS,
-    exchange,
-    is_aggressive,
-    trade_stats,
-)
+from config import DRY_RUN, EXPORT_PATH, FIXED_PAIRS, exchange, is_aggressive, trade_stats
 from core.trade_engine import close_dry_trade, last_trade_info
 from ip_monitor import (
     cancel_router_reboot_mode,
@@ -129,9 +122,7 @@ def handle_telegram_command(message, state):
         state["stopping"] = False
         save_state(state)
         send_telegram_message(
-            escape_markdown_v2(
-                "✅ Stop process cancelled.\nBot will continue running."
-            ),
+            escape_markdown_v2("✅ Stop process cancelled.\nBot will continue running."),
             force=True,
         )
         log("Stop process cancelled via /cancel_stop command.", level="INFO")
@@ -176,9 +167,7 @@ def handle_telegram_command(message, state):
         try:
             df = pd.read_csv(EXPORT_PATH)
             if df.empty:
-                send_telegram_message(
-                    escape_markdown_v2("No trades logged yet."), force=True
-                )
+                send_telegram_message(escape_markdown_v2("No trades logged yet."), force=True)
                 log("No trades logged yet for /last command.", level="INFO")
             else:
                 last = df.iloc[-1]
@@ -213,9 +202,7 @@ def handle_telegram_command(message, state):
 
     elif text == "/panic":
         state["last_command"] = "/panic"
-        send_telegram_message(
-            escape_markdown_v2("Confirm PANIC close by replying YES"), force=True
-        )
+        send_telegram_message(escape_markdown_v2("Confirm PANIC close by replying YES"), force=True)
         log("Panic command received, awaiting confirmation.", level="INFO")
 
     elif text.upper() == "YES" and state.get("last_command") == "/panic":
@@ -233,9 +220,7 @@ def handle_telegram_command(message, state):
                 send_telegram_message(escape_markdown_v2(msg), force=True)
                 log("Panic close executed successfully.", level="INFO")
             else:
-                send_telegram_message(
-                    escape_markdown_v2("No open positions to close."), force=True
-                )
+                send_telegram_message(escape_markdown_v2("No open positions to close."), force=True)
                 log("No open positions to close during panic.", level="INFO")
         except Exception as e:
             error_msg = f"Panic failed: {str(e)}"
@@ -249,11 +234,7 @@ def handle_telegram_command(message, state):
         try:
             current_time = now()
             last_sig = get_last_signal_time()
-            idle = (
-                f"{(current_time - last_sig).seconds // 60} min ago"
-                if last_sig
-                else "N/A"
-            )
+            idle = f"{(current_time - last_sig).seconds // 60} min ago" if last_sig else "N/A"
 
             balance = get_cached_balance()
             mode = "AGGRESSIVE" if is_aggressive else "SAFE"
@@ -261,9 +242,7 @@ def handle_telegram_command(message, state):
             stopping = "Stopping after trades" if state.get("stopping") else ""
 
             open_syms = [
-                p["symbol"]
-                for p in get_cached_positions()
-                if float(p.get("contracts", 0)) > 0
+                p["symbol"] for p in get_cached_positions() if float(p.get("contracts", 0)) > 0
             ]
 
             msg = (

@@ -75,9 +75,7 @@ def evaluate_best_config(days=7):
             )
 
     except Exception as e:
-        send_telegram_message(
-            escape_markdown_v2(f"❌ TP Optimizer Error: {e}"), force=True
-        )
+        send_telegram_message(escape_markdown_v2(f"❌ TP Optimizer Error: {e}"), force=True)
 
 
 def _update_config_tp(tp1, tp2):
@@ -109,9 +107,7 @@ def _update_filter_thresholds(new_thresholds: dict):
                 json.dump(old_data, bkp, indent=2)
 
         new_text = "FILTER_THRESHOLDS = " + json.dumps(new_thresholds, indent=4)
-        new_content = re.sub(
-            r"FILTER_THRESHOLDS = ({.*?})", new_text, content, flags=re.DOTALL
-        )
+        new_content = re.sub(r"FILTER_THRESHOLDS = ({.*?})", new_text, content, flags=re.DOTALL)
 
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(new_content)
@@ -138,9 +134,7 @@ def _update_filter_thresholds(new_thresholds: dict):
             )
 
     except Exception as e:
-        send_telegram_message(
-            escape_markdown_v2(f"⚠️ Failed to update config.py: {e}"), force=True
-        )
+        send_telegram_message(escape_markdown_v2(f"⚠️ Failed to update config.py: {e}"), force=True)
 
 
 def _analyze_filter_thresholds():
@@ -193,9 +187,7 @@ def _analyze_symbol_stats():
 
             if winrate < 30 and total >= 20:
                 status[symbol] = "disabled"
-                messages.append(
-                    f"⏸ {symbol} disabled – poor stats (winrate {round(winrate, 1)}%)"
-                )
+                messages.append(f"⏸ {symbol} disabled – poor stats (winrate {round(winrate, 1)}%)")
             elif winrate > 70 and avg_pnl > 1.0:
                 status[symbol] = "priority"
                 messages.append(

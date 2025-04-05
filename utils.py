@@ -254,9 +254,7 @@ def get_cached_balance():
             or api_cache["balance"]["value"] is None
         ):
             try:
-                api_cache["balance"]["value"] = exchange.fetch_balance()["total"][
-                    "USDC"
-                ]
+                api_cache["balance"]["value"] = exchange.fetch_balance()["total"]["USDC"]
                 api_cache["balance"]["timestamp"] = now
                 log(
                     f"Updated balance cache: {api_cache['balance']['value']} USDC",
@@ -289,11 +287,7 @@ def get_cached_positions():
                 )
             except Exception as e:
                 log(f"Error fetching positions: {e}", level="ERROR")
-                return (
-                    api_cache["positions"]["value"]
-                    if api_cache["positions"]["value"]
-                    else []
-                )
+                return api_cache["positions"]["value"] if api_cache["positions"]["value"] else []
         return api_cache["positions"]["value"]
 
 

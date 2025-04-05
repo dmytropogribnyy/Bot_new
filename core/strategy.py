@@ -32,9 +32,7 @@ def fetch_data(symbol, tf="15m"):
     ).average_true_range()
     df["fast_ema"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
     df["slow_ema"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
-    df["adx"] = ta.trend.ADXIndicator(
-        df["high"], df["low"], df["close"], window=14
-    ).adx()
+    df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
     bb = ta.volatility.BollingerBands(df["close"], window=20)
     df["bb_width"] = bb.bollinger_hband() - bb.bollinger_lband()
     return df
@@ -83,10 +81,7 @@ def should_enter_trade(symbol, df):
         high = df["high"].iloc[-1]
         low = df["low"].iloc[-1]
         range_ratio = (high - low) / price
-        if (
-            atr / price < VOLATILITY_ATR_THRESHOLD
-            and range_ratio < VOLATILITY_RANGE_THRESHOLD
-        ):
+        if atr / price < VOLATILITY_ATR_THRESHOLD and range_ratio < VOLATILITY_RANGE_THRESHOLD:
             if DRY_RUN:
                 log(
                     f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr / price:.5f}, Range: {range_ratio:.5f})"
@@ -103,9 +98,7 @@ def should_enter_trade(symbol, df):
         return None
     if bb_width / price < bb_thres:
         if DRY_RUN:
-            log(
-                f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})"
-            )
+            log(f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})")
         return None
 
     score = 0

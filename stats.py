@@ -36,9 +36,7 @@ def build_performance_report(title: str, period: str):
     mode = get_mode_label()
 
     streak_str = (
-        f"{abs(streak)} wins"
-        if streak < 0
-        else (f"{streak} losses" if streak > 0 else "-")
+        f"{abs(streak)} wins" if streak < 0 else (f"{streak} losses" if streak > 0 else "-")
     )
 
     if total == 0:
@@ -106,9 +104,7 @@ def export_trade_log():
             )
         send_telegram_message(escape_markdown_v2("Trade log exported."), force=True)
     except Exception as e:
-        send_telegram_message(
-            escape_markdown_v2(f"Failed to export trade log: {e}"), force=True
-        )
+        send_telegram_message(escape_markdown_v2(f"Failed to export trade log: {e}"), force=True)
 
 
 def send_daily_report():
@@ -120,13 +116,9 @@ def send_daily_report():
             df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
             df_today = df[df["Date"].dt.date == now().date()]
             if not df_today.empty:
-                df_today["PnL (%)"] = pd.to_numeric(
-                    df_today["PnL (%)"], errors="coerce"
-                )
+                df_today["PnL (%)"] = pd.to_numeric(df_today["PnL (%)"], errors="coerce")
                 avg_by_symbol = (
-                    df_today.groupby("Symbol")["PnL (%)"]
-                    .mean()
-                    .sort_values(ascending=False)
+                    df_today.groupby("Symbol")["PnL (%)"].mean().sort_values(ascending=False)
                 )
                 best = avg_by_symbol.head(2)
                 worst = avg_by_symbol.tail(2)
@@ -150,9 +142,7 @@ def send_daily_report():
 def send_weekly_report():
     end = now()
     start = (end - timedelta(days=7)).strftime("%d.%m")
-    msg = build_performance_report(
-        "Weekly Performance Summary", f"{start}-{end.strftime('%d.%m')}"
-    )
+    msg = build_performance_report("Weekly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
 
 
@@ -193,9 +183,7 @@ def start_report_loops():
                     run_tp_optimizer()
                 else:
                     send_telegram_message(
-                        escape_markdown_v2(
-                            "Not enough recent trades to optimize (min: 20)"
-                        ),
+                        escape_markdown_v2("Not enough recent trades to optimize (min: 20)"),
                         force=True,
                     )
                 time.sleep(60)

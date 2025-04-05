@@ -51,9 +51,7 @@ def start_trading_loop(state):
 
             if state.get("pause") or state.get("stopping"):
                 if state.get("stopping"):
-                    open_trades = sum(
-                        get_position_size(sym) > 0 for sym in SYMBOLS_ACTIVE
-                    )
+                    open_trades = sum(get_position_size(sym) > 0 for sym in SYMBOLS_ACTIVE)
                     if open_trades == 0:
                         send_telegram_message(
                             escape_markdown_v2("✅ All positions closed. Bot stopped."),
@@ -78,14 +76,10 @@ def start_trading_loop(state):
                     # 🛡 Adaptive Risk: при просадке и снижении капитала
                     if trade_stats["pnl"] < -RISK_DRAWDOWN_THRESHOLD:
                         risk_percent *= 0.5
-                        log(
-                            f"⚠️ Risk lowered due to drawdown: {risk_percent * 100:.1f}%"
-                        )
+                        log(f"⚠️ Risk lowered due to drawdown: {risk_percent * 100:.1f}%")
                     elif balance < trade_stats["initial_balance"] * 0.85:
                         risk_percent *= 0.6
-                        log(
-                            f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%"
-                        )
+                        log(f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%")
 
                     base_risk = risk_percent
                     if score == 3:
@@ -100,11 +94,7 @@ def start_trading_loop(state):
 
                     risk = calculate_risk_amount(balance, risk_percent)
                     entry = df["close"].iloc[-1]
-                    stop = (
-                        entry * (1 - SL_PERCENT)
-                        if side == "buy"
-                        else entry * (1 + SL_PERCENT)
-                    )
+                    stop = entry * (1 - SL_PERCENT) if side == "buy" else entry * (1 + SL_PERCENT)
                     qty = calculate_position_size(entry, stop, risk)
 
                     if qty * entry >= MIN_NOTIONAL:

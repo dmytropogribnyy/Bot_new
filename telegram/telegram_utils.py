@@ -33,9 +33,7 @@ def send_telegram_message(text: str, force=False):
         if response.status_code == 200:
             print(f"[telegram_utils] Message sent successfully: {text[:60]}...")
         else:
-            print(
-                f"[telegram_utils] Telegram response {response.status_code}: {response.text}"
-            )
+            print(f"[telegram_utils] Telegram response {response.status_code}: {response.text}")
             # Fallback to plain text
             payload["parse_mode"] = ""
             payload["text"] = text

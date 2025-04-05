@@ -67,10 +67,7 @@ def load_trade_stats():
 
         if os.path.exists(EXPORT_PATH):
             df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
-            df = df[
-                df["Date"]
-                >= pd.Timestamp.now().tz_localize(TIMEZONE) - timedelta(days=3)
-            ]
+            df = df[df["Date"] >= pd.Timestamp.now().tz_localize(TIMEZONE) - timedelta(days=3)]
         return df
     except Exception:
         return None
@@ -78,12 +75,8 @@ def load_trade_stats():
 
 def get_score(metrics, history_df):
     score = 0
-    atr_threshold = (
-        DRY_RUN_VOLATILITY_ATR_THRESHOLD if DRY_RUN else VOLATILITY_ATR_THRESHOLD
-    )
-    range_threshold = (
-        DRY_RUN_VOLATILITY_RANGE_THRESHOLD if DRY_RUN else VOLATILITY_RANGE_THRESHOLD
-    )
+    atr_threshold = DRY_RUN_VOLATILITY_ATR_THRESHOLD if DRY_RUN else VOLATILITY_ATR_THRESHOLD
+    range_threshold = DRY_RUN_VOLATILITY_RANGE_THRESHOLD if DRY_RUN else VOLATILITY_RANGE_THRESHOLD
     if metrics["volume"] >= 5_000_000:
         score += 1
     if metrics["atr_ratio"] >= atr_threshold:
@@ -123,15 +116,11 @@ def select_active_symbols():
 
     max_dynamic_pairs = MAX_DYNAMIC_PAIRS - len(FIXED_PAIRS)
     min_dynamic_pairs = max(0, MIN_DYNAMIC_PAIRS - len(FIXED_PAIRS))
-    selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[
-        :max_dynamic_pairs
-    ]
+    selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[:max_dynamic_pairs]
     log(f"Evaluated {len(evaluated)} pairs, selected {len(selected)} dynamic pairs.")
 
     if len(selected) < min_dynamic_pairs:
-        selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[
-            :min_dynamic_pairs
-        ]
+        selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[:min_dynamic_pairs]
 
     dynamic_symbols = [s["symbol"] for s in selected]
     active_symbols = list(set(FIXED_PAIRS + dynamic_symbols))
