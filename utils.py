@@ -1,13 +1,15 @@
-import os
 import json
+import os
 import shutil
 import time
 from datetime import datetime
 from threading import Lock  # Для потокобезопасности
-from config import LOG_FILE_PATH, TIMEZONE, DRY_RUN, LOG_LEVEL, exchange
+
+from colorama import Fore, Style, init  # For colored console output
 from filelock import FileLock  # For thread-safe file access
-from colorama import init, Fore, Style  # For colored console output
-from telegram.telegram_utils import send_telegram_message, escape_markdown_v2
+
+from config import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL, TIMEZONE, exchange
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 
 # Initialize colorama for cross-platform support
 init(autoreset=True)
@@ -202,7 +204,7 @@ def restore_config(backup_file=None):
         if len(backups) > 5:
             for old in backups[5:]:
                 os.remove(f"{backup_dir}/{old}")
-            log(f"Cleaned up old backups, kept latest 5.", level="INFO")
+            log("Cleaned up old backups, kept latest 5.", level="INFO")
     except Exception as e:
         log(f"Error restoring config: {e}", level="ERROR")
         send_telegram_message(f"❌ Error restoring config: {str(e)}", force=True)

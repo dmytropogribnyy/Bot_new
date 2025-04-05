@@ -1,23 +1,21 @@
-import os
 import json
+import os
 from datetime import datetime, timedelta
+
 from config import (
-    exchange,
-    TELEGRAM_TOKEN,
-    TELEGRAM_CHAT_ID,
-    FIXED_PAIRS,
-    MAX_DYNAMIC_PAIRS,
-    MIN_DYNAMIC_PAIRS,
-    VOLATILITY_ATR_THRESHOLD,
-    VOLATILITY_RANGE_THRESHOLD,
+    DRY_RUN,
     DRY_RUN_VOLATILITY_ATR_THRESHOLD,
     DRY_RUN_VOLATILITY_RANGE_THRESHOLD,
     EXPORT_PATH,
+    FIXED_PAIRS,
+    MAX_DYNAMIC_PAIRS,
+    MIN_DYNAMIC_PAIRS,
     TIMEZONE,
-    DRY_RUN,
+    VOLATILITY_ATR_THRESHOLD,
+    VOLATILITY_RANGE_THRESHOLD,
+    exchange,
 )
-from utils import send_telegram_message, log
-from telegram.telegram_utils import escape_markdown_v2
+from utils import log, send_telegram_message
 
 SAVE_PATH = "data/dynamic_symbols.json"
 
@@ -49,7 +47,7 @@ def get_metrics(symbol):
         if not prices:
             return None
         close = prices[-1]
-        atr = max([h - l for h, l in zip(highs, lows)]) / close
+        atr = max([h - low for h, low in zip(highs, lows)]) / close
         day_range = (max(highs) - min(lows)) / close
         return {
             "symbol": symbol,
@@ -74,7 +72,7 @@ def load_trade_stats():
                 >= pd.Timestamp.now().tz_localize(TIMEZONE) - timedelta(days=3)
             ]
         return df
-    except:
+    except Exception:
         return None
 
 

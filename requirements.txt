@@ -11,10 +11,7 @@ pytz==2024.1
 # Load environment variables from .env file
 python-dotenv==1.0.1
 # Code formatting
-black==24.8.0
-# Code linting
-flake8==7.1.1
-# Thread-safe file access for logging
 filelock==3.16.1
 # Colored console output for logging
 colorama==0.4.6
+ruff==0.3.4

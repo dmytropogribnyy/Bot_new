@@ -1,39 +1,36 @@
-import pandas as pd
 import json
-import os
 import time
+
+import pandas as pd
+
 from config import (
     DRY_RUN,
-    VERBOSE,
-    is_aggressive,
-    exchange,
     EXPORT_PATH,
-    LOG_FILE_PATH,
-    TELEGRAM_CHAT_ID,
     FIXED_PAIRS,
+    exchange,
+    is_aggressive,
     trade_stats,
-    TIMEZONE,
+)
+from core.trade_engine import close_dry_trade, last_trade_info
+from ip_monitor import (
+    cancel_router_reboot_mode,
+    enable_router_reboot_mode,
+    force_ip_check_now,
+    get_ip_status_message,
 )
 from stats import generate_summary, send_daily_report
+from telegram.telegram_utils import escape_markdown_v2
 from utils import (
-    send_telegram_message,
-    get_recent_logs,
-    now,
-    get_last_signal_time,
-    load_state,
-    save_state,
-    log,
     get_cached_balance,
     get_cached_positions,
+    get_last_signal_time,
+    get_recent_logs,
+    load_state,
+    log,
+    now,
+    save_state,
+    send_telegram_message,
 )
-from telegram.telegram_utils import escape_markdown_v2
-from ip_monitor import (
-    enable_router_reboot_mode,
-    cancel_router_reboot_mode,
-    get_ip_status_message,
-    force_ip_check_now,
-)
-from core.trade_engine import last_trade_info, close_dry_trade
 
 
 def handle_telegram_command(message, state):

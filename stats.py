@@ -1,13 +1,14 @@
-from datetime import datetime, timedelta
-from config import trade_stats, TIMEZONE, is_aggressive
-from utils import send_telegram_message
-from telegram.telegram_utils import escape_markdown_v2  # Обновляем импорт
+import os
 import threading
 import time
+from datetime import datetime, timedelta
+
 import pandas as pd
-import os
+
+from config import TIMEZONE, is_aggressive, trade_stats
+from telegram.telegram_utils import escape_markdown_v2  # Обновляем импорт
 from tp_optimizer import run_tp_optimizer
-from tp_logger import get_human_summary_line
+from utils import send_telegram_message
 
 EXPORT_PATH = "data/tp_performance.csv"
 
@@ -133,7 +134,7 @@ def send_daily_report():
                 def format_line(items):
                     return ", ".join(
                         [
-                            f"{sym} ({'+' if v >= 0 else ''}{round(v,1)}%)"
+                            f"{sym} ({'+' if v >= 0 else ''}{round(v, 1)}%)"
                             for sym, v in items.items()
                         ]
                     )
@@ -163,7 +164,7 @@ def should_run_optimizer():
         df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=2)]
         recent_trades = df[df["Result"].isin(["TP1", "TP2", "SL"])]
         return len(recent_trades) >= 20
-    except:
+    except Exception:  # Указываем конкретное исключение
         return False
 
 

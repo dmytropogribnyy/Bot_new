@@ -1,8 +1,9 @@
 import os
-import pytz
-import ccxt
-from dotenv import load_dotenv
 from threading import Lock  # Добавляем Lock
+
+import ccxt
+import pytz
+from dotenv import load_dotenv
 
 load_dotenv()
 

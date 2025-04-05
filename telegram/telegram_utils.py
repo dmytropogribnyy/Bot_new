@@ -1,5 +1,6 @@
 import requests
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+
+from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 
 
 def escape_markdown_v2(text: str) -> str:

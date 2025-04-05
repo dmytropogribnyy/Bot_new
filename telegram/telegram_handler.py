@@ -1,8 +1,9 @@
-import requests
 import os
 import time
+
+import requests
+
 from config import TELEGRAM_TOKEN, VERBOSE
-from utils import send_telegram_message
 
 UPDATE_FILE = "data/last_update.txt"
 

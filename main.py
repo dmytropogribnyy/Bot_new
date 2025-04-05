@@ -1,41 +1,33 @@
-import time
 import os
-from datetime import datetime
+import time
+
 from config import (
-    exchange,
     ADAPTIVE_RISK_PERCENT,
+    DRY_RUN,
     MIN_NOTIONAL,
     SL_PERCENT,
+    VERBOSE,
+    is_aggressive,
     trade_stats,
     trade_stats_lock,
-    DRY_RUN,
-    is_aggressive,
-    MAX_HOLD_MINUTES,
-    TIMEZONE,
-    EXPORT_PATH,
-    FIXED_PAIRS,
-    VERBOSE,
 )
 from core.strategy import fetch_data, should_enter_trade
 from core.trade_engine import (
-    enter_trade,
-    calculate_risk_amount,
     calculate_position_size,
+    calculate_risk_amount,
+    enter_trade,
     get_position_size,
 )
-from telegram.telegram_handler import send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils import (
-    log,
-    notify_error,
-    log_dry_entry,
-    now,
-    load_state,
-    save_state,
     get_cached_balance,
-    get_cached_positions,
+    load_state,
+    log,
+    log_dry_entry,
+    notify_error,
+    now,
+    save_state,
 )
-from telegram.telegram_utils import escape_markdown_v2
-from tp_logger import log_trade_result
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
 
@@ -110,9 +102,7 @@ def start_trading_loop():
                                 level="INFO",
                             )
                             send_telegram_message(
-                                escape_markdown_v2(
-                                    "✅ All positions closed. Bot stopped."
-                                ),
+                                escape_markdown_v2("✅ All positions closed. Bot stopped."),
                                 force=True,
                             )
                             if state.get("shutdown"):
@@ -192,11 +182,12 @@ def start_trading_loop():
 
 
 if __name__ == "__main__":
-    from telegram.telegram_handler import process_telegram_commands
-    from telegram.telegram_commands import handle_telegram_command, handle_stop
-    from ip_monitor import start_ip_monitor
-    from config import IP_MONITOR_INTERVAL_SECONDS
     import threading
+
+    from config import IP_MONITOR_INTERVAL_SECONDS
+    from ip_monitor import start_ip_monitor
+    from telegram.telegram_commands import handle_stop, handle_telegram_command
+    from telegram.telegram_handler import process_telegram_commands
 
     state = load_state()
     threading.Thread(
@@ -204,9 +195,7 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
     threading.Thread(
-        target=lambda: start_ip_monitor(
-            handle_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
-        ),
+        target=lambda: start_ip_monitor(handle_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
         daemon=True,
     ).start()
     start_trading_loop()

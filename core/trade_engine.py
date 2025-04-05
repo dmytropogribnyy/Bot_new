@@ -1,28 +1,26 @@
 import threading
 import time
-from datetime import datetime
-from config import (
-    exchange,
-    TP1_PERCENT,
-    TP2_PERCENT,
-    TP1_SHARE,
-    TP2_SHARE,
-    SL_PERCENT,
-    ENABLE_BREAKEVEN,
-    ENABLE_TRAILING,
-    BREAKEVEN_TRIGGER,
-    MIN_NOTIONAL,
-    is_aggressive,
-    trade_stats,
-    TIMEZONE,
-    DRY_RUN,
-)
-from telegram.telegram_handler import send_telegram_message
-from tp_logger import log_trade_result
-from utils import now, log, get_cached_positions, escape_markdown_v2
 
 import pandas as pd
 import ta
+
+from config import (
+    BREAKEVEN_TRIGGER,
+    DRY_RUN,
+    ENABLE_BREAKEVEN,
+    ENABLE_TRAILING,
+    MIN_NOTIONAL,
+    SL_PERCENT,
+    TP1_PERCENT,
+    TP1_SHARE,
+    TP2_PERCENT,
+    TP2_SHARE,
+    exchange,
+    is_aggressive,
+)
+from telegram.telegram_utils import send_telegram_message
+from tp_logger import log_trade_result
+from utils import get_cached_positions, log, now
 
 last_trade_info = {}
 monitored_stops = {}
@@ -64,26 +62,22 @@ def enter_trade(symbol, side, qty, score=5):
         tp1_percent *= 0.8
         tp2_percent = None
         sl_percent *= 0.8
-        log(f"🎯 TP/SL adjusted for score 3")
+        log("🎯 TP/SL adjusted for score 3")
 
     qty_tp1 = round(qty * TP1_SHARE, 3)
     qty_tp2 = round(qty * TP2_SHARE, 3) if tp2_percent else 0
 
     tp1_price = (
-        entry_price * (1 + tp1_percent)
-        if side == "buy"
-        else entry_price * (1 - tp1_percent)
+        entry_price * (1 + tp1_percent) if side == "buy" else entry_price * (1 - tp1_percent)
     )
     tp2_price = (
         entry_price * (1 + tp2_percent)
         if side == "buy"
-        else None if not tp2_percent else entry_price * (1 - tp2_percent)
+        else None
+        if not tp2_percent
+        else entry_price * (1 - tp2_percent)
     )
-    sl_price = (
-        entry_price * (1 - sl_percent)
-        if side == "buy"
-        else entry_price * (1 + sl_percent)
-    )
+    sl_price = entry_price * (1 - sl_percent) if side == "buy" else entry_price * (1 + sl_percent)
 
     if DRY_RUN:
         log(
@@ -93,9 +87,7 @@ def enter_trade(symbol, side, qty, score=5):
         msg = f"DRY RUN: {side.upper()} {symbol} at {entry_price:.5f} (qty: {qty:.2f})"
         send_telegram_message(msg, force=True)
     else:
-        exchange.create_limit_order(
-            symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price
-        )
+        exchange.create_limit_order(symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price)
         if tp2_price and qty_tp2 > 0:
             exchange.create_limit_order(
                 symbol, "sell" if side == "buy" else "buy", qty_tp2, tp2_price
@@ -110,9 +102,9 @@ def enter_trade(symbol, side, qty, score=5):
         msg = (
             f"✅ NEW TRADE\n"
             f"Symbol: {symbol}\nSide: {side.upper()}\nEntry: {round(entry_price, 4)}\n"
-            f"Qty: {qty}\nTP1: +{round(tp1_percent*100,1)}%"
-            + (f" / TP2: +{round(tp2_percent*100,1)}%" if tp2_price else "")
-            + f"\nSL: -{round(sl_percent*100,1)}%"
+            f"Qty: {qty}\nTP1: +{round(tp1_percent * 100, 1)}%"
+            + (f" / TP2: +{round(tp2_percent * 100, 1)}%" if tp2_price else "")
+            + f"\nSL: -{round(sl_percent * 100, 1)}%"
         )
         send_telegram_message(msg, force=True)
 
@@ -155,11 +147,7 @@ def track_stop_loss(symbol, side, entry_price, qty, opened_at):
 
 
 def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
-    target = (
-        entry_price * (1 + tp_percent)
-        if side == "buy"
-        else entry_price * (1 - tp_percent)
-    )
+    target = entry_price * (1 + tp_percent) if side == "buy" else entry_price * (1 - tp_percent)
     trigger = (
         entry_price + (target - entry_price) * BREAKEVEN_TRIGGER
         if side == "buy"
@@ -169,9 +157,7 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
     while True:
         try:
             price = exchange.fetch_ticker(symbol)["last"]
-            if (side == "buy" and price >= trigger) or (
-                side == "sell" and price <= trigger
-            ):
+            if (side == "buy" and price >= trigger) or (side == "sell" and price <= trigger):
                 stop_price = round(entry_price, 4)
                 exchange.create_order(
                     symbol,
@@ -181,9 +167,7 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
                     None,
                     {"stopPrice": stop_price, "reduceOnly": True},
                 )
-                send_telegram_message(
-                    f"🔒 Break-even activated for {symbol}", force=True
-                )
+                send_telegram_message(f"🔒 Break-even activated for {symbol}", force=True)
                 break
             time.sleep(check_interval)
         except Exception as e:
@@ -197,13 +181,9 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
         highs = [c[2] for c in ohlcv]
         lows = [c[3] for c in ohlcv]
         closes = [c[4] for c in ohlcv]
-        atr = max([h - l for h, l in zip(highs, lows)])
+        atr = max([h - low for h, low in zip(highs, lows)])
         df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
-        adx = (
-            ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14)
-            .adx()
-            .iloc[-1]
-        )
+        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
         multiplier = 3 if is_aggressive else 2
         if adx > 25:
             multiplier *= 0.7
@@ -276,7 +256,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         f"📤 *Trade Closed* [{result_type.upper()}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-        f"• PnL: {round(pnl,2)}% | Held: {duration} min"
+        f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
     )
     send_telegram_message(msg, force=True)
 

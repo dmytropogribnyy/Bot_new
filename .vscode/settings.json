@@ -1,5 +1,5 @@
 {
-  // General editor settings
+  // Общие настройки
   "editor.formatOnSave": true,
   "editor.tabSize": 4,
   "editor.rulers": [100],
@@ -7,22 +7,24 @@
   "files.insertFinalNewline": true,
   "files.autoSave": "onFocusChange",
 
-  // Python-specific settings
-  "python.formatting.provider": "black",
+  // Python
   "python.linting.enabled": true,
-  "python.linting.flake8Enabled": true,
-  "python.linting.flake8Args": ["--max-line-length=100"],
+  "ruff.linting.enabled": true,
+  "ruff.formatOnSave": true,
 
-  // Spellcheck settings
-  "cSpell.enabled": false, // Explicitly disable cSpell (note: "csSpell" is also valid, but "cSpell" is the standard)
+  // Проверка орфографии
+  "cSpell.enabled": false,
   "editor.codeActionsOnSave": {
     "source.fixAll": "never"
   },
 
-  // Python file-specific overrides
   "[python]": {
     "editor.formatOnType": true,
     "editor.formatOnSave": true,
-    "editor.defaultFormatter": "ms-python.black-formatter"
-  }
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+
+  // Cody: путь к проекту
+  "cody.codebase": "file:///C:/Bots/BinanceBot",
+  "cody.commandCodeLenses": false
 }

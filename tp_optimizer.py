@@ -1,10 +1,12 @@
-import pandas as pd
 import json
-import re
 import os
+import re
+
+import pandas as pd
+
 from config import EXPORT_PATH, TP1_PERCENT, TP2_PERCENT
-from utils import send_telegram_message, backup_config
 from telegram.telegram_utils import escape_markdown_v2  # Добавляем импорт
+from utils import backup_config, send_telegram_message
 
 CONFIG_PATH = "config.py"
 BACKUP_PATH = "data/thresholds_backup.json"
@@ -67,7 +69,7 @@ def evaluate_best_config(days=7):
             _update_config_tp(new_tp1, new_tp2)
             send_telegram_message(
                 escape_markdown_v2(
-                    f"✅ TP1/TP2 auto-updated:\nTP1: {round(new_tp1*100, 2)}%\nTP2: {round(new_tp2*100, 2)}%"
+                    f"✅ TP1/TP2 auto-updated:\nTP1: {round(new_tp1 * 100, 2)}%\nTP2: {round(new_tp2 * 100, 2)}%"
                 ),
                 force=True,
             )
@@ -184,7 +186,7 @@ def _analyze_symbol_stats():
                 continue
 
             wins = len(sub[sub["Result"].isin(["TP1", "TP2"])])
-            losses = len(sub[sub["Result"] == "SL"])
+            losses = len(sub[sub["Result"] == "SL"])  # noqa: F841  # Will be used later
             total = len(sub)
             winrate = wins / total * 100
             avg_pnl = sub["PnL (%)"].mean()
@@ -192,12 +194,12 @@ def _analyze_symbol_stats():
             if winrate < 30 and total >= 20:
                 status[symbol] = "disabled"
                 messages.append(
-                    f"⏸ {symbol} disabled – poor stats (winrate {round(winrate,1)}%)"
+                    f"⏸ {symbol} disabled – poor stats (winrate {round(winrate, 1)}%)"
                 )
             elif winrate > 70 and avg_pnl > 1.0:
                 status[symbol] = "priority"
                 messages.append(
-                    f"⭐️ {symbol} boosted – winrate {round(winrate,1)}%, avg PnL {round(avg_pnl,2)}%"
+                    f"⭐️ {symbol} boosted – winrate {round(winrate, 1)}%, avg PnL {round(avg_pnl, 2)}%"
                 )
 
         if status:

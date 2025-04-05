@@ -1,15 +1,16 @@
 # ip_monitor.py
-import requests
+import os
 import time
 from datetime import datetime, timedelta
+
+import requests
+
 from config import (
-    VERBOSE,
-    ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
     IP_MONITOR_INTERVAL_SECONDS,
+    ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
 )
-from utils import log, escape_markdown_v2
 from telegram.telegram_utils import send_telegram_message  # Correct
-import os
+from utils import escape_markdown_v2, log
 
 IP_STATUS_FILE = "data/last_ip.txt"
 router_reboot_mode = {"enabled": False, "expires_at": None}

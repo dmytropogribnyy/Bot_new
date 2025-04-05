@@ -1,17 +1,19 @@
-import ta
-import pandas as pd
 from datetime import datetime
+
+import pandas as pd
+import ta
+
 from config import (
-    exchange,
-    FILTER_THRESHOLDS,
     DRY_RUN,
-    VOLATILITY_SKIP_ENABLED,
+    FILTER_THRESHOLDS,
+    MIN_TRADE_SCORE,
     VOLATILITY_ATR_THRESHOLD,
     VOLATILITY_RANGE_THRESHOLD,
-    MIN_TRADE_SCORE,
+    VOLATILITY_SKIP_ENABLED,
+    exchange,
 )
-from utils import log, send_telegram_message
 from telegram.telegram_utils import escape_markdown_v2  # Добавляем импорт
+from utils import log, send_telegram_message
 
 last_trade_times = {}
 
@@ -87,13 +89,13 @@ def should_enter_trade(symbol, df):
         ):
             if DRY_RUN:
                 log(
-                    f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr/price:.5f}, Range: {range_ratio:.5f})"
+                    f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr / price:.5f}, Range: {range_ratio:.5f})"
                 )
             return None
 
     if atr / price < atr_thres:
         if DRY_RUN:
-            log(f"{symbol} ⛔️ Rejected: ATR too low ({atr/price:.5f} < {atr_thres})")
+            log(f"{symbol} ⛔️ Rejected: ATR too low ({atr / price:.5f} < {atr_thres})")
         return None
     if adx_val < adx_thres:
         if DRY_RUN:
@@ -102,7 +104,7 @@ def should_enter_trade(symbol, df):
     if bb_width / price < bb_thres:
         if DRY_RUN:
             log(
-                f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width/price:.5f} < {bb_thres})"
+                f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})"
             )
         return None
 

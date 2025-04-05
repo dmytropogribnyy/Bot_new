@@ -1,23 +1,23 @@
 import time
+
+from config import (
+    DRY_RUN,
+    MIN_NOTIONAL,
+    RISK_DRAWDOWN_THRESHOLD,
+    SL_PERCENT,
+    SYMBOLS_ACTIVE,
+    exchange,
+    trade_stats,
+)
 from core.strategy import fetch_data, should_enter_trade
 from core.trade_engine import (
-    enter_trade,
-    calculate_risk_amount,
     calculate_position_size,
+    calculate_risk_amount,
+    enter_trade,
     get_position_size,
 )
-from config import (
-    exchange,
-    MIN_NOTIONAL,
-    SYMBOLS_ACTIVE,
-    SL_PERCENT,
-    trade_stats,
-    DRY_RUN,
-    RISK_DRAWDOWN_THRESHOLD,
-    VOLATILITY_ATR_THRESHOLD,
-)
-from utils import log, notify_error, send_telegram_message, log_dry_entry
 from telegram.telegram_utils import escape_markdown_v2  # Добавляем импорт
+from utils import log, log_dry_entry, notify_error, send_telegram_message
 
 
 def get_adaptive_risk_percent(balance):
@@ -78,11 +78,13 @@ def start_trading_loop(state):
                     # 🛡 Adaptive Risk: при просадке и снижении капитала
                     if trade_stats["pnl"] < -RISK_DRAWDOWN_THRESHOLD:
                         risk_percent *= 0.5
-                        log(f"⚠️ Risk lowered due to drawdown: {risk_percent*100:.1f}%")
+                        log(
+                            f"⚠️ Risk lowered due to drawdown: {risk_percent * 100:.1f}%"
+                        )
                     elif balance < trade_stats["initial_balance"] * 0.85:
                         risk_percent *= 0.6
                         log(
-                            f"⚠️ Risk lowered due to capital drop: {risk_percent*100:.1f}%"
+                            f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%"
                         )
 
                     base_risk = risk_percent
@@ -93,7 +95,7 @@ def start_trading_loop(state):
                         log(f"📈 Entry score {score}/4 → full risk")
 
                     log(
-                        f"🔄 Risk adjusted: base {base_risk*100:.1f}% → effective {risk_percent*100:.1f}% (balance: {balance:.2f} USDC)"
+                        f"🔄 Risk adjusted: base {base_risk * 100:.1f}% → effective {risk_percent * 100:.1f}% (balance: {balance:.2f} USDC)"
                     )
 
                     risk = calculate_risk_amount(balance, risk_percent)
