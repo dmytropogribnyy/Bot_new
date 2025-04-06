@@ -15,7 +15,8 @@ from config import (
     VOLATILITY_RANGE_THRESHOLD,
     exchange,
 )
-from utils import log, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
+from utils_logging import log
 
 SAVE_PATH = "data/dynamic_symbols.json"
 
