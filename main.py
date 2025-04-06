@@ -7,6 +7,7 @@ from config import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     MIN_NOTIONAL,
+    RISK_DRAWDOWN_THRESHOLD,  # Added from trader.py
     SL_PERCENT,
     VERBOSE,
     is_aggressive,
@@ -116,6 +117,8 @@ def start_trading_loop():
                             break
                         else:
                             log(f"Waiting for {open_trades} open positions...", level="INFO")
+                    time.sleep(10)
+                    continue
 
                 if state.get("shutdown"):
                     open_trades = sum(get_position_size(sym) > 0 for sym in symbols)
@@ -146,7 +149,18 @@ def start_trading_loop():
                             if result == "buy"
                             else entry * (1 + SL_PERCENT)
                         )
+                        # Updated: Integrated trader.py risk logic
+                        # Reason: Unifies advanced risk management across the project
                         risk_percent = get_adaptive_risk_percent(balance)
+                        with trade_stats_lock:
+                            if trade_stats["pnl"] < -RISK_DRAWDOWN_THRESHOLD:
+                                risk_percent *= 0.5
+                                log(f"⚠️ Risk lowered due to drawdown: {risk_percent * 100:.1f}%")
+                            elif balance < trade_stats["initial_balance"] * 0.85:
+                                risk_percent *= 0.6
+                                log(
+                                    f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%"
+                                )
                         risk = calculate_risk_amount(balance, risk_percent)
                         qty = calculate_position_size(entry, stop, risk)
                         if qty * entry >= MIN_NOTIONAL:
@@ -174,16 +188,14 @@ def start_trading_loop():
                 log(error_msg, level="ERROR")
                 with trade_stats_lock:
                     trade_stats["api_errors"] += 1
-                    # Updated: Added pause on 5+ API errors
-                    # Reason: Improves stability by giving API time to recover, consistent with trader.py
                     if trade_stats["api_errors"] >= 5:
                         send_telegram_message(
                             escape_markdown_v2("⚠️ 5+ API errors — pausing for 5 minutes"),
                             force=True,
                         )
                         log("Pausing for 5 minutes due to 5+ API errors", level="WARNING")
-                        time.sleep(300)  # 5 minutes pause
-                        trade_stats["api_errors"] = 0  # Reset after pause
+                        time.sleep(300)
+                        trade_stats["api_errors"] = 0
             time.sleep(10)
     except KeyboardInterrupt:
         log("Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
