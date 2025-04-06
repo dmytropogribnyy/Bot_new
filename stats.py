@@ -6,14 +6,13 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from config import TIMEZONE, is_aggressive, trade_stats
-from telegram.telegram_utils import escape_markdown_v2  # Обновляем импорт
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message  # Обновляем импорт
 from tp_optimizer import run_tp_optimizer
-from utils import send_telegram_message
 
 EXPORT_PATH = "data/tp_performance.csv"
 
 
-def now():
+def now_with_timezone():
     return datetime.now(TIMEZONE)
 
 
@@ -97,7 +96,7 @@ def generate_summary():
 def export_trade_log():
     try:
         with open("data/trade_log.txt", "a") as f:
-            timestamp = now().strftime("%Y-%m-%d %H:%M")
+            timestamp = now_with_timezone().strftime("%Y-%m-%d %H:%M")
             f.write(
                 f"[{timestamp}] Total: {trade_stats['total']}, Wins: {trade_stats['wins']}, "
                 f"Losses: {trade_stats['losses']}, PnL: {round(trade_stats['pnl'], 2)}, Withdrawals: {round(trade_stats.get('withdrawals', 0), 2)}\n"
@@ -108,13 +107,13 @@ def export_trade_log():
 
 
 def send_daily_report():
-    today = now().strftime("%d.%m.%Y")
+    today = now_with_timezone().strftime("%d.%m.%Y")
     msg = build_performance_report("Daily Performance Summary", today)
 
     if os.path.exists(EXPORT_PATH):
         try:
             df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
-            df_today = df[df["Date"].dt.date == now().date()]
+            df_today = df[df["Date"].dt.date == now_with_timezone().date()]
             if not df_today.empty:
                 df_today["PnL (%)"] = pd.to_numeric(df_today["PnL (%)"], errors="coerce")
                 avg_by_symbol = (
@@ -140,7 +139,7 @@ def send_daily_report():
 
 
 def send_weekly_report():
-    end = now()
+    end = now_with_timezone()
     start = (end - timedelta(days=7)).strftime("%d.%m")
     msg = build_performance_report("Weekly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
@@ -161,7 +160,7 @@ def should_run_optimizer():
 def start_report_loops():
     def daily_loop():
         while True:
-            t = now()
+            t = now_with_timezone()
             if t.hour == 21 and t.minute == 0:
                 send_daily_report()
                 time.sleep(60)
@@ -169,7 +168,7 @@ def start_report_loops():
 
     def weekly_loop():
         while True:
-            t = now()
+            t = now_with_timezone()
             if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
                 send_weekly_report()
                 time.sleep(60)
@@ -177,7 +176,7 @@ def start_report_loops():
 
     def optimizer_loop():
         while True:
-            t = now()
+            t = now_with_timezone()
             if t.day % 2 == 0 and t.hour == 21 and t.minute == 30:
                 if should_run_optimizer():
                     run_tp_optimizer()
