@@ -1,6 +1,7 @@
+# utils_core.py
 import json
 import os
-import time  # Re-added for time.time() in get_cached_balance and get_cached_positions
+import time
 from datetime import datetime
 from threading import Lock
 
@@ -22,6 +23,7 @@ api_cache = {
     "positions": {"value": [], "timestamp": 0},
 }
 cache_lock = Lock()
+state_lock = Lock()  # Added: Lock for state operations
 
 
 def get_last_signal_time():
@@ -65,7 +67,7 @@ def get_open_symbols():
 
 def get_cached_balance():
     with cache_lock:
-        now = time.time()  # Uses time
+        now = time.time()
         if (
             now - api_cache["balance"]["timestamp"] > CACHE_TTL
             or api_cache["balance"]["value"] is None
@@ -89,7 +91,7 @@ def get_cached_balance():
 
 def get_cached_positions():
     with cache_lock:
-        now = time.time()  # Uses time
+        now = time.time()
         if (
             now - api_cache["positions"]["timestamp"] > CACHE_TTL
             or not api_cache["positions"]["value"]
@@ -114,61 +116,77 @@ def initialize_cache():
 
 
 def load_state():
-    try:
-        if not os.path.exists(STATE_FILE):
-            return DEFAULT_STATE.copy()
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
-            for key, value in DEFAULT_STATE.items():
-                if key not in state:
-                    state[key] = value
-            return state
-    except json.JSONDecodeError as e:
-        log(
-            f"Error decoding state file {STATE_FILE}: {e}. Using default state.",
-            important=True,
-            level="ERROR",
-        )
-        send_telegram_message(
-            f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.",
-            force=True,
-        )
-        return DEFAULT_STATE.copy()
-    except Exception as e:
-        log(
-            f"Unexpected error loading state file {STATE_FILE}: {e}. Using default state.",
-            important=True,
-            level="ERROR",
-        )
-        send_telegram_message(
-            f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.",
-            force=True,
-        )
-        return DEFAULT_STATE.copy()
-
-
-def save_state(state, retries=3, delay=1):
-    attempt = 0
-    while attempt < retries:
+    # Updated: Added state_lock for thread safety
+    # Reason: Prevents race conditions when multiple threads access bot_state.json
+    with state_lock:
         try:
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=4)
-            return
-        except Exception as e:
-            attempt += 1
+            if not os.path.exists(STATE_FILE):
+                return DEFAULT_STATE.copy()
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+                for key, value in DEFAULT_STATE.items():
+                    if key not in state:
+                        state[key] = value
+                return state
+        except json.JSONDecodeError as e:
             log(
-                f"Attempt {attempt}/{retries} - Error saving state to {STATE_FILE}: {e}",
+                f"Error decoding state file {STATE_FILE}: {e}. Using default state.",
                 important=True,
                 level="ERROR",
             )
-            if attempt == retries:
-                send_telegram_message(
-                    f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}",
-                    force=True,
+            send_telegram_message(
+                f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.",
+                force=True,
+            )
+            return DEFAULT_STATE.copy()
+        except Exception as e:
+            log(
+                f"Unexpected error loading state file {STATE_FILE}: {e}. Using default state.",
+                important=True,
+                level="ERROR",
+            )
+            send_telegram_message(
+                f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.",
+                force=True,
+            )
+            return DEFAULT_STATE.copy()
+
+
+def save_state(state, retries=3, delay=1):
+    # Updated: Added state_lock for thread safety
+    # Reason: Ensures consistent state writes across threads
+    attempt = 0
+    while attempt < retries:
+        with state_lock:
+            try:
+                os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+                with open(STATE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(state, f, indent=4)
+                return
+            except Exception as e:
+                attempt += 1
+                log(
+                    f"Attempt {attempt}/{retries} - Error saving state to {STATE_FILE}: {e}",
+                    important=True,
+                    level="ERROR",
                 )
-            else:
-                time.sleep(delay)
+                if attempt == retries:
+                    send_telegram_message(
+                        f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}",
+                        force=True,
+                    )
+                else:
+                    time.sleep(delay)
+
+
+def get_adaptive_risk_percent(balance):
+    """Calculate adaptive risk percentage based on balance."""
+    if balance < 100:
+        return 0.03
+    elif balance < 300:
+        return 0.05
+    else:
+        return 0.07
 
 
 if __name__ == "__main__":
