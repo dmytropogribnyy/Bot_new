@@ -11,7 +11,7 @@ from utils_logging import log
 
 IP_STATUS_FILE = "data/last_ip.txt"
 router_reboot_mode = {"enabled": False, "expires_at": None}
-last_ip_check_time = None  # Track the last IP check time for periodic checks
+last_ip_check_time = None
 
 
 def get_current_ip():
@@ -54,9 +54,32 @@ def check_ip_change(stop_callback):
     last_ip = read_last_ip()
     last_ip_check_time = datetime.now()
 
+    # Updated: Notify with recovery instructions if IP changes outside reboot mode
+    # Reason: Ensures user can recover bot after IP change in REAL_RUN
     if current_ip and current_ip != last_ip:
         write_last_ip(current_ip)
         now = datetime.now().strftime("%d %b %Y, %H:%M")
+        if router_reboot_mode["enabled"]:
+            msg = (
+                f"⚠️ *IP Address Changed!*\n"
+                f"🕒 `{now} (Bratislava)`\n"
+                f"🌐 Old IP: `{last_ip}`\n"
+                f"🌐 New IP: `{current_ip}`\n"
+                f"✅ No action needed (reboot mode active)."
+            )
+        else:
+            msg = (
+                f"⚠️ *IP Address Changed!*\n"
+                f"🕒 `{now} (Bratislava)`\n"
+                f"🌐 Old IP: `{last_ip}`\n"
+                f"🌐 New IP: `{current_ip}`\n"
+                f"🚫 Bot will stop after closing orders.\n"
+                f"ℹ️ Update Binance API IP whitelist with `{current_ip}`, then use `/resume_after_ip`."
+            )
+            if stop_callback:
+                log("IP changed, calling stop callback.", level="WARNING")
+                stop_callback()
+        send_telegram_message(escape_markdown_v2(msg), force=True)
         return True, current_ip, last_ip, now
     return False, current_ip, last_ip, None
 
@@ -74,7 +97,7 @@ def enable_router_reboot_mode():
     )
     expires_at = router_reboot_mode["expires_at"].strftime("%H:%M")
     log(
-        f"Router reboot mode enabled for {ROUTER_REBOOT_MODE_TIMEOUT_MINUTES} minutes. IP checks will occur every {IP_MONITOR_INTERVAL_SECONDS} seconds. Expires at {expires_at} (Bratislava).",
+        f"Router reboot mode enabled for {ROUTER_REBOOT_MODE_TIMEOUT_MINUTES} minutes. Expires at {expires_at} (Bratislava).",
         level="INFO",
     )
 
@@ -83,16 +106,10 @@ def cancel_router_reboot_mode():
     router_reboot_mode["enabled"] = False
     router_reboot_mode["expires_at"] = None
     send_telegram_message(
-        escape_markdown_v2(
-            "🔵 Router reboot mode CANCELLED.\n\nReboot mode deactivated early. IP monitoring returned to strict mode."
-        ),
+        escape_markdown_v2("🔵 Router reboot mode CANCELLED.\nReboot mode deactivated early."),
         force=True,
     )
-
-    log(
-        "Router reboot mode cancelled. IP checks will now occur every 30 minutes.",
-        level="INFO",
-    )
+    log("Router reboot mode cancelled.", level="INFO")
 
 
 def check_reboot_mode_expiration():
@@ -116,7 +133,7 @@ def get_ip_status_message():
     else:
         expires_info = "N/A"
     msg = (
-        f"🛰 *IP Monitoring Status*\n\n"
+        f"🛰 *IP Monitoring Status*\n"
         f"🌐 Current IP: `{current_ip}`\n"
         f"📡 Previous IP: `{last_ip}`\n"
         f"📅 Last check: `{last_check} (Bratislava)`\n"
@@ -144,17 +161,17 @@ def force_ip_check_now(stop_callback):
     if changed:
         result_msg = "⚠️ IP has changed!"
         if router_reboot_mode["enabled"]:
-            result_msg += "\n\n✅ No action needed. IP changed while reboot mode is active (30 min safe window)."
+            result_msg += "\n✅ No action needed (reboot mode active)."
         else:
-            result_msg += " For safety, bot will stop after all trades are closed."
-            if stop_callback:
-                log("IP changed, calling stop callback.", level="WARNING")
-                stop_callback()
+            result_msg += (
+                "\n🚫 Bot will stop after closing orders.\n"
+                f"ℹ️ Update Binance API IP whitelist with `{current_ip or 'Unknown'}`, then use `/resume_after_ip`."
+            )
     else:
         result_msg = "✅ No changes detected."
 
     msg = (
-        f"🛰 *Forced IP Check Result*\n\n"
+        f"🛰 *Forced IP Check Result*\n"
         f"🌐 Current IP: `{current_ip or 'Unknown'}`\n"
         f"📡 Previous IP: `{last_ip or 'Unknown'}`\n"
         f"🕒 Time: `{change_time or last_check} (Bratislava)`\n"
@@ -168,13 +185,11 @@ def start_ip_monitor(stop_callback, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
     global last_ip_check_time
     last_ip_check_time = datetime.now()
     log(
-        f"Starting IP monitor. In router reboot mode, interval is {interval_seconds} seconds; otherwise, 30 minutes.",
+        f"Starting IP monitor with interval {interval_seconds} seconds in reboot mode, 30 minutes otherwise.",
         level="INFO",
     )
-
     while True:
         check_reboot_mode_expiration()
-
         if router_reboot_mode["enabled"]:
             check_ip_change(stop_callback)
             time.sleep(interval_seconds)
