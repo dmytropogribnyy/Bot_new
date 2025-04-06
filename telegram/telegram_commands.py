@@ -1,3 +1,4 @@
+# telegram_commands.py
 import time
 
 import pandas as pd
@@ -67,6 +68,7 @@ def handle_telegram_command(message, state):
             "🌐 /ipstatus - Show current/previous IP + router mode\n"
             "📡 /forceipcheck - Force immediate IP check\n"
             "🔒 /close_dry - Close a DRY position (DRY_RUN only, e.g., /close_dry BTC/USDC)\n"
+            "▶️ /resume_after_ip - Resume bot after IP change (REAL_RUN only)\n"  # Added
         )
         send_telegram_message(escape_markdown_v2(message), force=True)
 
@@ -133,6 +135,32 @@ def handle_telegram_command(message, state):
             force=True,
         )
         log("Stop process cancelled via /cancel_stop command.", level="INFO")
+
+    # Added: Handle /resume_after_ip to resume bot after IP change in REAL_RUN
+    # Reason: Allows user to continue bot operation after updating Binance IP whitelist
+    elif text == "/resume_after_ip":
+        if DRY_RUN:
+            send_telegram_message(
+                escape_markdown_v2("ℹ️ /resume_after_ip is only for REAL_RUN mode."),
+                force=True,
+            )
+            log("Resume after IP ignored: DRY_RUN mode active.", level="INFO")
+        else:
+            state = load_state()
+            if state.get("stopping"):
+                state["stopping"] = False
+                save_state(state)
+                send_telegram_message(
+                    escape_markdown_v2("✅ Bot resumed after IP change verification."),
+                    force=True,
+                )
+                log("Bot resumed via /resume_after_ip command.", level="INFO")
+            else:
+                send_telegram_message(
+                    escape_markdown_v2("ℹ️ Bot is not stopped due to IP change."),
+                    force=True,
+                )
+                log("Resume command ignored: bot not stopping.", level="INFO")
 
     elif text == "/mode":
         mode = "AGGRESSIVE" if is_aggressive else "SAFE"
