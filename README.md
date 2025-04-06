@@ -188,6 +188,16 @@ python main.py
 > **Note**: Only supports **USDC-M perpetuals**. Use `DRY_RUN = True` for testing.
 > For strategy details and full architecture, see the internal documentation.
 
+Check:
+
+- [BinanceBot_Full_Documentation.md](docs/BinanceBot_Full_Documentation.md)
+
+- [TODO.md](docs/TODO.md)
+
+Check code:
+ruff check --fix .
+isort .
+
 ---
 
 **Enjoy adaptive, intelligent, and safe trading!** ⚡
