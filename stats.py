@@ -1,3 +1,4 @@
+# stats.py
 import os
 import threading
 import time
@@ -5,8 +6,8 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from config import TIMEZONE, is_aggressive, trade_stats
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message  # Обновляем импорт
+from config import TIMEZONE, is_aggressive, trade_stats, trade_stats_lock  # Added trade_stats_lock
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from tp_optimizer import run_tp_optimizer
 
 EXPORT_PATH = "data/tp_performance.csv"
@@ -24,34 +25,46 @@ def get_mode_label() -> str:
     return "AGGRESSIVE" if is_aggressive else "SAFE"
 
 
+# Added: Helper function to get stats safely and reduce duplication
+# Reason: Ensures thread safety and simplifies report generation
+def get_safe_stats():
+    with trade_stats_lock:
+        return {
+            "total": trade_stats["total"],
+            "wins": trade_stats["wins"],
+            "losses": trade_stats["losses"],
+            "pnl": round(trade_stats["pnl"], 2),
+            "withdrawals": round(trade_stats.get("withdrawals", 0), 2),
+            "deposits_today": trade_stats.get("deposits_today", 0),
+            "streak_loss": trade_stats["streak_loss"],
+            "last_trade_summary": trade_stats.get("last_trade_summary", "No trade data."),
+        }
+
+
 def build_performance_report(title: str, period: str):
-    total = trade_stats["total"]
-    wins = trade_stats["wins"]
-    losses = trade_stats["losses"]
-    pnl = round(trade_stats["pnl"], 2)
-    withdrawals = round(trade_stats.get("withdrawals", 0), 2)
-    winrate = round((wins / total) * 100, 1) if total else 0
-    streak = trade_stats["streak_loss"]
+    stats = get_safe_stats()
+    winrate = round((stats["wins"] / stats["total"]) * 100, 1) if stats["total"] else 0
+    streak_str = (
+        f"{abs(stats['streak_loss'])} wins"
+        if stats["streak_loss"] < 0
+        else (f"{stats['streak_loss']} losses" if stats["streak_loss"] > 0 else "-")
+    )
     mode = get_mode_label()
 
-    streak_str = (
-        f"{abs(streak)} wins" if streak < 0 else (f"{streak} losses" if streak > 0 else "-")
-    )
-
-    if total == 0:
+    if stats["total"] == 0:
         comment = "Not much action yet - waiting for signals."
-    elif winrate >= 65 and pnl > 2:
+    elif winrate >= 65 and stats["pnl"] > 2:
         comment = "Great day! Strategy working well."
-    elif winrate < 40 and pnl < 0:
+    elif winrate < 40 and stats["pnl"] < 0:
         comment = "High loss rate - consider reviewing risk."
     else:
         comment = "Trading steady. Monitor performance."
 
     report = (
         f"📊 *{title}*\n"
-        f"Trades: {total} (W: {wins} / L: {losses})\n"
-        f"PnL: {'+' if pnl >= 0 else ''}{pnl} USDC\n"
-        f"Withdrawals: {withdrawals} USDC\n"
+        f"Trades: {stats['total']} (W: {stats['wins']} / L: {stats['losses']})\n"
+        f"PnL: {'+' if stats['pnl'] >= 0 else ''}{stats['pnl']} USDC\n"
+        f"Withdrawals: {stats['withdrawals']} USDC\n"
         f"Winrate: {winrate}%\n"
         f"Streak: {streak_str}\n"
         f"Mode: {mode}\n"
@@ -62,44 +75,37 @@ def build_performance_report(title: str, period: str):
 
 
 def generate_summary():
-    trades = trade_stats.get("trades", 0)
-    wins = trade_stats.get("wins", 0)
-    losses = trade_stats.get("losses", 0)
-    pnl = trade_stats.get("pnl", 0)
-    deposits = trade_stats.get("deposits_today", 0)
-    withdrawals = trade_stats.get("withdrawals", 0)
-    winrate = f"{(wins / trades * 100):.0f}%" if trades > 0 else "0%"
-    streak = trade_stats.get("streak", 0)
-    mode = trade_stats.get("mode", "SAFE")
+    stats = get_safe_stats()
+    winrate = f"{(stats['wins'] / stats['total'] * 100):.0f}%" if stats["total"] > 0 else "0%"
     date = datetime.now().strftime("%d.%m.%Y")
-    last_trade = trade_stats.get("last_trade_summary", "No trade data.")
 
     summary = f"""
 📊 *Current Bot Summary*
 
-📈 *Trades:* {trades} (✅ Wins: {wins} / ❌ Losses: {losses})
-💰 *PnL:* {pnl:.2f} USDC
-📥 *Deposits:* {deposits} USDC
-📤 *Withdrawals:* {withdrawals} USDC
+📈 *Trades:* {stats['total']} (✅ Wins: {stats['wins']} / ❌ Losses: {stats['losses']})
+💰 *PnL:* {stats['pnl']:.2f} USDC
+📥 *Deposits:* {stats['deposits_today']} USDC
+📤 *Withdrawals:* {stats['withdrawals']} USDC
 🎯 *Winrate:* {winrate}
-🔥 *Streak:* {streak}
+🔥 *Streak:* {stats['streak_loss']}
 
-⚙️ *Mode:* {mode}
+⚙️ *Mode:* {get_mode_label()}
 🕒 *Period:* {date}
 
 🧾 *Last trade summary:*
-{last_trade}
+{stats['last_trade_summary']}
 """
     return summary.strip()
 
 
 def export_trade_log():
+    stats = get_safe_stats()
     try:
         with open("data/trade_log.txt", "a") as f:
             timestamp = now_with_timezone().strftime("%Y-%m-%d %H:%M")
             f.write(
-                f"[{timestamp}] Total: {trade_stats['total']}, Wins: {trade_stats['wins']}, "
-                f"Losses: {trade_stats['losses']}, PnL: {round(trade_stats['pnl'], 2)}, Withdrawals: {round(trade_stats.get('withdrawals', 0), 2)}\n"
+                f"[{timestamp}] Total: {stats['total']}, Wins: {stats['wins']}, "
+                f"Losses: {stats['losses']}, PnL: {stats['pnl']}, Withdrawals: {stats['withdrawals']}\n"
             )
         send_telegram_message(escape_markdown_v2("Trade log exported."), force=True)
     except Exception as e:
@@ -112,7 +118,13 @@ def send_daily_report():
 
     if os.path.exists(EXPORT_PATH):
         try:
-            df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+            # Updated: Added fallback for CSV errors
+            # Reason: Prevents crashes if tp_performance.csv is corrupted
+            df = (
+                pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+                if os.path.exists(EXPORT_PATH)
+                else pd.DataFrame()
+            )
             df_today = df[df["Date"].dt.date == now_with_timezone().date()]
             if not df_today.empty:
                 df_today["PnL (%)"] = pd.to_numeric(df_today["PnL (%)"], errors="coerce")
@@ -149,11 +161,17 @@ def should_run_optimizer():
     if not os.path.exists(EXPORT_PATH):
         return False
     try:
-        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        # Updated: Added fallback for CSV errors
+        # Reason: Ensures function doesn’t fail on corrupted data
+        df = (
+            pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+            if os.path.exists(EXPORT_PATH)
+            else pd.DataFrame()
+        )
         df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=2)]
         recent_trades = df[df["Result"].isin(["TP1", "TP2", "SL"])]
         return len(recent_trades) >= 20
-    except Exception:  # Указываем конкретное исключение
+    except Exception:
         return False
 
 
