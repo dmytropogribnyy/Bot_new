@@ -12,17 +12,18 @@ from ip_monitor import (
     get_ip_status_message,
 )
 from stats import generate_summary, send_daily_report
-from telegram.telegram_utils import escape_markdown_v2
-from utils import (
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_core import (
     get_cached_balance,
     get_cached_positions,
     get_last_signal_time,
-    get_recent_logs,
     load_state,
+    save_state,
+)
+from utils_logging import (
+    get_recent_logs,
     log,
     now,
-    save_state,
-    send_telegram_message,
 )
 
 
