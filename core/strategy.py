@@ -12,8 +12,8 @@ from config import (
     VOLATILITY_SKIP_ENABLED,
     exchange,
 )
-from telegram.telegram_utils import escape_markdown_v2  # Добавляем импорт
-from utils import log, send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_logging import log
 
 last_trade_times = {}
 
