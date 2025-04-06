@@ -19,7 +19,17 @@ from core.trade_engine import (
     get_position_size,
 )
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils import get_cached_balance, load_state, log, log_dry_entry, notify_error, now, save_state
+from utils_core import (
+    get_cached_balance,
+    load_state,
+    save_state,
+)
+from utils_logging import (
+    log,
+    log_dry_entry,  # Added
+    notify_error,  # Added
+    now,
+)
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
 
