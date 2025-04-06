@@ -11,6 +11,7 @@
   "python.linting.enabled": true,
   "ruff.linting.enabled": true,
   "ruff.formatOnSave": true,
+  "python.terminal.activateEnvironment": true, // Automatically activate venv for this project
 
   // Проверка орфографии
   "cSpell.enabled": false,
