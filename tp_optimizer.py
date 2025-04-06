@@ -5,8 +5,8 @@ import re
 import pandas as pd
 
 from config import EXPORT_PATH, TP1_PERCENT, TP2_PERCENT
-from telegram.telegram_utils import escape_markdown_v2  # Добавляем импорт
-from utils import backup_config, send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_logging import backup_config
 
 CONFIG_PATH = "config.py"
 BACKUP_PATH = "data/thresholds_backup.json"
