@@ -1,9 +1,11 @@
+# main.py
 import os
+import threading
 import time
 
 from config import (
-    ADAPTIVE_RISK_PERCENT,
     DRY_RUN,
+    IP_MONITOR_INTERVAL_SECONDS,
     MIN_NOTIONAL,
     SL_PERCENT,
     VERBOSE,
@@ -18,8 +20,12 @@ from core.trade_engine import (
     enter_trade,
     get_position_size,
 )
+from ip_monitor import start_ip_monitor
+from telegram.telegram_commands import handle_stop, handle_telegram_command
+from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import (
+    get_adaptive_risk_percent,
     get_cached_balance,
     load_state,
     save_state,
@@ -99,26 +105,17 @@ def start_trading_loop():
                             )
                         if open_trades == 0:
                             log("All positions closed — stopping bot.", level="INFO")
-                            log(
-                                f"Current shutdown state: {state.get('shutdown')}",
-                                level="INFO",
-                            )
+                            log(f"Current shutdown state: {state.get('shutdown')}", level="INFO")
                             send_telegram_message(
                                 escape_markdown_v2("✅ All positions closed. Bot stopped."),
                                 force=True,
                             )
                             if state.get("shutdown"):
-                                log(
-                                    "Shutdown flag detected — exiting fully.",
-                                    level="INFO",
-                                )
+                                log("Shutdown flag detected — exiting fully.", level="INFO")
                                 os._exit(0)
                             break
                         else:
-                            log(
-                                f"Waiting for {open_trades} open positions...",
-                                level="INFO",
-                            )
+                            log(f"Waiting for {open_trades} open positions...", level="INFO")
 
                 if state.get("shutdown"):
                     open_trades = sum(get_position_size(sym) > 0 for sym in symbols)
@@ -149,7 +146,8 @@ def start_trading_loop():
                             if result == "buy"
                             else entry * (1 + SL_PERCENT)
                         )
-                        risk = calculate_risk_amount(balance, ADAPTIVE_RISK_PERCENT)
+                        risk_percent = get_adaptive_risk_percent(balance)
+                        risk = calculate_risk_amount(balance, risk_percent)
                         qty = calculate_position_size(entry, stop, risk)
                         if qty * entry >= MIN_NOTIONAL:
                             if DRY_RUN:
@@ -176,6 +174,16 @@ def start_trading_loop():
                 log(error_msg, level="ERROR")
                 with trade_stats_lock:
                     trade_stats["api_errors"] += 1
+                    # Updated: Added pause on 5+ API errors
+                    # Reason: Improves stability by giving API time to recover, consistent with trader.py
+                    if trade_stats["api_errors"] >= 5:
+                        send_telegram_message(
+                            escape_markdown_v2("⚠️ 5+ API errors — pausing for 5 minutes"),
+                            force=True,
+                        )
+                        log("Pausing for 5 minutes due to 5+ API errors", level="WARNING")
+                        time.sleep(300)  # 5 minutes pause
+                        trade_stats["api_errors"] = 0  # Reset after pause
             time.sleep(10)
     except KeyboardInterrupt:
         log("Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
@@ -184,13 +192,6 @@ def start_trading_loop():
 
 
 if __name__ == "__main__":
-    import threading
-
-    from config import IP_MONITOR_INTERVAL_SECONDS
-    from ip_monitor import start_ip_monitor
-    from telegram.telegram_commands import handle_stop, handle_telegram_command
-    from telegram.telegram_handler import process_telegram_commands
-
     state = load_state()
     threading.Thread(
         target=lambda: process_telegram_commands(state, handle_telegram_command),
