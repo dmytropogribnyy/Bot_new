@@ -20,7 +20,8 @@ from config import (
 )
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
-from utils import get_cached_positions, log, now
+from utils_core import get_cached_positions
+from utils_logging import log, now
 
 last_trade_info = {}
 monitored_stops = {}
