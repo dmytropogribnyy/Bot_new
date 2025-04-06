@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from config import EXPORT_PATH, TIMEZONE
-from utils import log
+from utils_logging import log
 
 
 def ensure_log_exists():
