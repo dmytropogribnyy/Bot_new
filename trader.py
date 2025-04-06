@@ -16,8 +16,8 @@ from core.trade_engine import (
     enter_trade,
     get_position_size,
 )
-from telegram.telegram_utils import escape_markdown_v2  # Добавляем импорт
-from utils import log, log_dry_entry, notify_error, send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_logging import log, log_dry_entry, notify_error
 
 
 def get_adaptive_risk_percent(balance):
