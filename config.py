@@ -1,5 +1,6 @@
+# config.py
 import os
-from threading import Lock  # Добавляем Lock
+from threading import Lock
 
 import ccxt
 import pytz
@@ -34,7 +35,7 @@ SYMBOLS_ACTIVE = [
     "SUI/USDC",
     "LINK/USDC",
     "ARB/USDC",
-]
+]  # Fallback list; main.py uses dynamic symbols from pair_selector.py
 
 FIXED_PAIRS = ["BTC/USDC", "ETH/USDC", "DOGE/USDC", "SOL/USDC", "BNB/USDC"]
 MAX_DYNAMIC_PAIRS = 30
@@ -61,7 +62,13 @@ TP2_SHARE = 0.3
 SL_PERCENT = 0.01
 
 # --- Risk Management ---
-ADAPTIVE_RISK_PERCENT = 0.05
+# Note: Risk is dynamically calculated via utils_core.get_adaptive_risk_percent:
+# - Balance < 100 USDC: 0.03
+# - Balance < 300 USDC: 0.05
+# - Balance >= 300 USDC: 0.07
+# Additional adjustments in main.py:
+# - PnL < RISK_DRAWDOWN_THRESHOLD: risk * 0.5
+# - Balance < initial_balance * 0.85: risk * 0.6
 AGGRESSIVE_THRESHOLD = 50
 SAFE_THRESHOLD = 10
 MIN_NOTIONAL = 5
@@ -104,7 +111,7 @@ is_aggressive = False
 USE_DYNAMIC_IN_DRY_RUN = True
 
 # --- Runtime Trade Stats ---
-trade_stats_lock = Lock()  # Добавляем Lock для потокобезопасности
+trade_stats_lock = Lock()
 trade_stats = {
     "total": 0,
     "wins": 0,
