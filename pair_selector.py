@@ -1,149 +1,113 @@
+# pair_selector.py
 import json
 import os
-from datetime import datetime, timedelta
+import time
+from threading import Lock
+
+import pandas as pd
 
 from config import (
-    DRY_RUN,
-    DRY_RUN_VOLATILITY_ATR_THRESHOLD,
-    DRY_RUN_VOLATILITY_RANGE_THRESHOLD,
-    EXPORT_PATH,
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
-    TIMEZONE,
-    VOLATILITY_ATR_THRESHOLD,
-    VOLATILITY_RANGE_THRESHOLD,
     exchange,
 )
-from telegram.telegram_utils import send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 
-SAVE_PATH = "data/dynamic_symbols.json"
+SYMBOLS_FILE = "data/dynamic_symbols.json"
+UPDATE_INTERVAL_SECONDS = 4 * 60 * 60  # 4 hours
+symbols_file_lock = Lock()
 
 
-def fetch_usdc_futures_symbols():
+def fetch_all_symbols():
     try:
         markets = exchange.load_markets()
-        usdc_futures = [
+        symbols = [
             symbol
-            for symbol, data in markets.items()
-            if symbol.endswith("/USDC:USDC") and data.get("swap")
+            for symbol in markets.keys()
+            if symbol.endswith("/USDC")
+            and markets[symbol]["active"]
+            and markets[symbol]["type"] == "future"
         ]
-        print(f"✅ USDC Perpetual Futures (swap) found: {len(usdc_futures)}")
-        print("💡 Example USDC Perpetual Futures:", usdc_futures[:10])
-        return usdc_futures
+        log(f"Fetched {len(symbols)} USDC futures symbols", level="INFO")
+        return symbols
     except Exception as e:
-        print(f"⚠️ Error loading markets: {e}")
+        log(f"Error fetching all symbols: {e}", level="ERROR")
         return []
 
 
-def get_metrics(symbol):
+def fetch_symbol_data(symbol, timeframe="15m", limit=100):
     try:
-        ticker = exchange.fetch_ticker(symbol)
-        volume = ticker.get("quoteVolume", 0)
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe="1h", limit=24)
-        prices = [c[4] for c in ohlcv if c[4] is not None]
-        highs = [c[2] for c in ohlcv]
-        lows = [c[3] for c in ohlcv]
-        if not prices:
-            return None
-        close = prices[-1]
-        atr = max([h - low for h, low in zip(highs, lows)]) / close
-        day_range = (max(highs) - min(lows)) / close
-        return {
-            "symbol": symbol,
-            "volume": volume,
-            "atr_ratio": round(atr, 5),
-            "range_ratio": round(day_range, 5),
-        }
-    except Exception as e:
-        print(f"⚠️ Error fetching metrics for {symbol}: {e}")
-        return None
-
-
-def load_trade_stats():
-    try:
-        df = None
-        import pandas as pd
-
-        if os.path.exists(EXPORT_PATH):
-            df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
-            df = df[df["Date"] >= pd.Timestamp.now().tz_localize(TIMEZONE) - timedelta(days=3)]
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
-    except Exception:
+    except Exception as e:
+        log(f"Error fetching data for {symbol}: {e}", level="ERROR")
         return None
 
 
-def get_score(metrics, history_df):
-    score = 0
-    atr_threshold = DRY_RUN_VOLATILITY_ATR_THRESHOLD if DRY_RUN else VOLATILITY_ATR_THRESHOLD
-    range_threshold = DRY_RUN_VOLATILITY_RANGE_THRESHOLD if DRY_RUN else VOLATILITY_RANGE_THRESHOLD
-    if metrics["volume"] >= 5_000_000:
-        score += 1
-    if metrics["atr_ratio"] >= atr_threshold:
-        score += 1
-    if metrics["range_ratio"] >= range_threshold:
-        score += 1
-    if history_df is not None:
-        symbol_trades = history_df[history_df["Symbol"] == metrics["symbol"]]
-        if len(symbol_trades) >= 2:
-            score += 1
-        if "TP2" in symbol_trades["Result"].values:
-            score += 1
-    return score
+def calculate_volatility(df):
+    if df is None or len(df) < 2:
+        return 0
+    df["range"] = df["high"] - df["low"]
+    return df["range"].mean() / df["close"].mean()
 
 
 def select_active_symbols():
-    from config import USE_DYNAMIC_IN_DRY_RUN
-
-    if DRY_RUN and not USE_DYNAMIC_IN_DRY_RUN:
-        return FIXED_PAIRS
-
-    all_symbols = fetch_usdc_futures_symbols()
-    history_df = load_trade_stats()
-    evaluated = []
-    log(f"Total fetched symbols: {len(all_symbols)}")
-    all_symbols = list(set(all_symbols))
+    all_symbols = fetch_all_symbols()
+    symbol_data = {}
 
     for symbol in all_symbols:
         if symbol in FIXED_PAIRS:
             continue
-        metrics = get_metrics(symbol)
-        if not metrics:
-            continue
-        score = get_score(metrics, history_df)
-        metrics["score"] = score
-        evaluated.append(metrics)
+        df = fetch_symbol_data(symbol)
+        if df is not None:
+            volatility = calculate_volatility(df)
+            volume = df["volume"].mean()
+            symbol_data[symbol] = {"volatility": volatility, "volume": volume}
 
-    max_dynamic_pairs = MAX_DYNAMIC_PAIRS - len(FIXED_PAIRS)
-    min_dynamic_pairs = max(0, MIN_DYNAMIC_PAIRS - len(FIXED_PAIRS))
-    selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[:max_dynamic_pairs]
-    log(f"Evaluated {len(evaluated)} pairs, selected {len(selected)} dynamic pairs.")
-
-    if len(selected) < min_dynamic_pairs:
-        selected = sorted(evaluated, key=lambda x: x["score"], reverse=True)[:min_dynamic_pairs]
-
-    dynamic_symbols = [s["symbol"] for s in selected]
-    active_symbols = list(set(FIXED_PAIRS + dynamic_symbols))
-    skipped = [s["symbol"] for s in evaluated if s["symbol"] not in active_symbols]
-
-    with open(SAVE_PATH, "w") as f:
-        json.dump(active_symbols, f, indent=2)
-
-    top_names = [s["symbol"].split("/")[0] for s in selected][:5]
-    skipped_names = [s.split("/")[0] for s in skipped[:5]]
-
-    msg = (
-        f"✅ Pair scan complete ({datetime.now(TIMEZONE).strftime('%H:%M')})\n\n"
-        f"🎯 Active today: {len(active_symbols)} pairs\n"
-        f"• Fixed: {', '.join(p.split('/')[0] for p in FIXED_PAIRS)}\n"
-        f"• Top dynamic: {', '.join(top_names)}\n\n"
-        f"❌ Skipped (low score): {', '.join(skipped_names)}"
+    sorted_symbols = sorted(
+        symbol_data.items(),
+        key=lambda x: x[1]["volatility"] * x[1]["volume"],
+        reverse=True,
     )
-    send_telegram_message(msg, force=True)
+    dynamic_count = max(MIN_DYNAMIC_PAIRS, min(MAX_DYNAMIC_PAIRS, len(sorted_symbols)))
+    selected_dynamic = [s[0] for s in sorted_symbols[:dynamic_count]]
+
+    active_symbols = FIXED_PAIRS + selected_dynamic
+    log(
+        f"Selected {len(active_symbols)} active symbols: {len(FIXED_PAIRS)} fixed, {len(selected_dynamic)} dynamic",
+        level="INFO",
+    )
+
+    try:
+        os.makedirs(os.path.dirname(SYMBOLS_FILE), exist_ok=True)
+        with symbols_file_lock:
+            with open(SYMBOLS_FILE, "w") as f:
+                json.dump(active_symbols, f)
+        log(f"Saved active symbols to {SYMBOLS_FILE}", level="INFO")
+    except Exception as e:
+        log(f"Error saving active symbols to {SYMBOLS_FILE}: {e}", level="ERROR")
 
     return active_symbols
 
 
-if __name__ == "__main__":
-    select_active_symbols()
+def start_symbol_rotation():
+    while True:
+        try:
+            new_symbols = select_active_symbols()
+            msg = (
+                f"🔄 Symbol rotation completed:\n"
+                f"Total pairs: {len(new_symbols)}\n"
+                f"Fixed: {len(FIXED_PAIRS)}, Dynamic: {len(new_symbols) - len(FIXED_PAIRS)}"
+            )
+            send_telegram_message(escape_markdown_v2(msg), force=True)
+        except Exception as e:
+            log(f"Symbol rotation error: {e}", level="ERROR")
+            send_telegram_message(
+                escape_markdown_v2(f"⚠️ Symbol rotation failed: {str(e)}"),
+                force=True,
+            )
+        time.sleep(UPDATE_INTERVAL_SECONDS)
