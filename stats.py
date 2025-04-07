@@ -1,4 +1,4 @@
-# stats.py (финальная версия с HTF, Heatmap и Auto ML)
+# stats.py (обновлённый с расширенными отчётами)
 
 import os
 import threading
@@ -56,7 +56,7 @@ def build_performance_report(title: str, period: str):
     if stats["total"] == 0:
         comment = "Not much action yet - waiting for signals."
     elif winrate >= 65 and stats["pnl"] > 2:
-        comment = "Great day! Strategy working well."
+        comment = "Great period! Strategy working well."
     elif winrate < 40 and stats["pnl"] < 0:
         comment = "High loss rate - consider reviewing risk."
     else:
@@ -127,6 +127,40 @@ def send_weekly_report():
     send_telegram_message(escape_markdown_v2(msg), force=True)
 
 
+def send_monthly_report():
+    end = now_with_timezone()
+    start = (end - timedelta(days=30)).strftime("%d.%m")
+    msg = build_performance_report(
+        "Monthly Performance Summary", f"{start}-{end.strftime('%d.%m')}"
+    )
+    send_telegram_message(escape_markdown_v2(msg), force=True)
+
+
+def send_quarterly_report():
+    end = now_with_timezone()
+    start = (end - timedelta(days=90)).strftime("%d.%m")
+    msg = build_performance_report(
+        "3-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}"
+    )
+    send_telegram_message(escape_markdown_v2(msg), force=True)
+
+
+def send_halfyear_report():
+    end = now_with_timezone()
+    start = (end - timedelta(days=180)).strftime("%d.%m")
+    msg = build_performance_report(
+        "6-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}"
+    )
+    send_telegram_message(escape_markdown_v2(msg), force=True)
+
+
+def send_yearly_report():
+    end = now_with_timezone()
+    start = (end - timedelta(days=365)).strftime("%d.%m")
+    msg = build_performance_report("Yearly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
+    send_telegram_message(escape_markdown_v2(msg), force=True)
+
+
 def should_run_optimizer():
     if not os.path.exists(EXPORT_PATH):
         return False
@@ -154,6 +188,19 @@ def start_report_loops():
             if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
                 send_weekly_report()
                 time.sleep(60)
+            time.sleep(10)
+
+    def extended_reports_loop():
+        while True:
+            t = now_with_timezone()
+            if t.day == 1 and t.hour == 21 and t.minute == 0:
+                send_monthly_report()
+            if t.day == 1 and t.month in [1, 4, 7, 10] and t.hour == 21 and t.minute == 5:
+                send_quarterly_report()
+            if t.day == 1 and t.month in [1, 7] and t.hour == 21 and t.minute == 10:
+                send_halfyear_report()
+            if t.day == 1 and t.month == 1 and t.hour == 21 and t.minute == 15:
+                send_yearly_report()
             time.sleep(10)
 
     def optimizer_loop():
@@ -189,6 +236,7 @@ def start_report_loops():
 
     threading.Thread(target=daily_loop, daemon=True).start()
     threading.Thread(target=weekly_loop, daemon=True).start()
+    threading.Thread(target=extended_reports_loop, daemon=True).start()
     threading.Thread(target=optimizer_loop, daemon=True).start()
     threading.Thread(target=heatmap_loop, daemon=True).start()
     threading.Thread(target=htf_optimizer_loop, daemon=True).start()

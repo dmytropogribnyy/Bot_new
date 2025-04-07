@@ -1,35 +1,79 @@
-# tp_optimizer_ml.py (патч с адаптивным порогом сделок)
+# tp_optimizer_ml.py — итоговая версия с автоадаптацией глобальных порогов и аналитикой TP1/TP2
 
 import datetime
+import os
 import shutil
 
 import pandas as pd
 
 from config import (
+    CONFIG_FILE,
+    TP_ML_MIN_TRADES_FULL,
     TP_ML_MIN_TRADES_INITIAL,
-    TP_ML_MIN_TRADES_STABLE,
     TP_ML_SWITCH_THRESHOLD,
 )
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 
 TP_CSV = "data/tp_performance.csv"
-CONFIG_FILE = "config.py"
 BACKUP_FILE = "config_backup.py"
+
+
+def rewrite_config_param(param, value):
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            lines = f.readlines()
+        with open(CONFIG_FILE, "w") as f:
+            for line in lines:
+                if line.startswith(param):
+                    f.write(f"{param} = {value}\n")
+                else:
+                    f.write(line)
+        log(f"Updated {param} to {value} in config.py")
+    except Exception as e:
+        log(f"Failed to update {param} in config.py: {e}", level="ERROR")
+
+
+def auto_adapt_thresholds(df):
+    recent = df[df["Date"] >= pd.Timestamp.now() - pd.Timedelta(days=7)]
+    num_trades = len(recent)
+    winrate = len(recent[recent["Result"].isin(["TP1", "TP2"])]) / num_trades if num_trades else 0
+    sl_rate = len(recent[recent["Result"] == "SL"]) / num_trades if num_trades else 0
+
+    if num_trades < 15:
+        rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 10)
+    elif num_trades > 30:
+        rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 15)
+
+    if sl_rate > 0.5:
+        rewrite_config_param("TP_ML_THRESHOLD", 0.08)
+    elif winrate > 0.7:
+        rewrite_config_param("TP_ML_THRESHOLD", 0.03)
+
+    if winrate < 0.4:
+        rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.07)
+    else:
+        rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.05)
 
 
 def analyze_and_optimize_tp():
     try:
-        df = pd.read_csv(TP_CSV)
+        if not os.path.exists(TP_CSV):
+            log("tp_performance.csv not found", level="WARNING")
+            return
+
+        df = pd.read_csv(TP_CSV, parse_dates=["Date"])
         total_trades = len(df)
         if df.empty or total_trades < 5:
             log("Not enough trade data for ML TP optimization", level="WARNING")
             return
 
+        auto_adapt_thresholds(df)  # 🔁 адаптируем глобальные пороги
+
         min_trades_required = (
             TP_ML_MIN_TRADES_INITIAL
             if total_trades < TP_ML_SWITCH_THRESHOLD
-            else TP_ML_MIN_TRADES_STABLE
+            else TP_ML_MIN_TRADES_FULL
         )
 
         report_lines = [

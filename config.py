@@ -153,3 +153,16 @@ FILTER_THRESHOLDS = {
 # --- IP Monitoring ---
 ROUTER_REBOOT_MODE_TIMEOUT_MINUTES = 30
 IP_MONITOR_INTERVAL_SECONDS = 180
+
+TP_LOG_FILE = "data/tp_performance.csv"
+USE_HTF_CONFIRMATION = False
+
+# ML TP Optimization
+TP_ML_MIN_TRADES_INITIAL = 12
+TP_ML_MIN_TRADES_FULL = 20
+TP_ML_THRESHOLD = 0.05  # 5% преимущество
+TP_ML_SWITCH_THRESHOLD = 0.05
+
+
+# --- Config File ---
+CONFIG_FILE = "config.py"
