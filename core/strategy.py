@@ -1,3 +1,4 @@
+import threading  # Fix: Add threading import
 from datetime import datetime
 
 import pandas as pd
@@ -12,37 +13,31 @@ from config import (
     VOLATILITY_SKIP_ENABLED,
     exchange,
 )
-from core.trade_engine import get_position_size
+from core.trade_engine import get_position_size  # Keep for should_enter_trade
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance
+from utils_core import get_cached_balance  # Keep for should_enter_trade
 from utils_logging import log
+
+last_trade_times = {}
+last_trade_times_lock = threading.Lock()
 
 
 def fetch_data(symbol, tf="15m"):
     try:
-        log(f"Fetching OHLCV data for {symbol}", level="DEBUG")
         data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
-        log(f"Completed fetch_ohlcv for {symbol}, data length: {len(data)}", level="DEBUG")
-
         if not data:
             log(f"No data returned for {symbol} on timeframe {tf}", level="ERROR")
-            raise ValueError("No data returned from exchange")
-
-        # Create DataFrame and log its shape
+            return None
         df = pd.DataFrame(
             data,
             columns=["time", "open", "high", "low", "close", "volume"],
         )
-        log(f"Created DataFrame for {symbol}, shape: {df.shape}", level="DEBUG")
-
-        # Ensure enough rows for indicators (window=14)
-        if df.empty or len(df) < 14:
-            log(
-                f"Insufficient data for {symbol} on timeframe {tf} (rows: {len(df)})", level="ERROR"
-            )
-            raise ValueError("Insufficient data for indicator calculation")
-
-        # Calculate indicators
+        if df.empty:
+            log(f"Empty DataFrame for {symbol} on timeframe {tf}", level="ERROR")
+            return None
+        if len(df) < 14:
+            log(f"Not enough data for {symbol} on timeframe {tf} (rows: {len(df)})", level="ERROR")
+            return None
         df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
         df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
         df["macd"] = ta.trend.MACD(df["close"]).macd()
@@ -55,19 +50,20 @@ def fetch_data(symbol, tf="15m"):
         df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
         bb = ta.volatility.BollingerBands(df["close"], window=20)
         df["bb_width"] = bb.bollinger_hband() - bb.bollinger_lband()
-
         return df
     except Exception as e:
-        log(f"Error fetching or processing data for {symbol}: {e}", level="ERROR")
+        log(f"Error fetching data for {symbol}: {e}", level="ERROR")
         return None
 
 
 def get_htf_trend(symbol, tf="1h"):
     df_htf = fetch_data(symbol, tf=tf)
+    if df_htf is None:
+        return False  # Default to False if data fetch fails
     return df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
 
 
-def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
+def should_enter_trade(symbol, df, last_trade_times, last_trade_times_lock):
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")
         return None
@@ -78,9 +74,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         if last_time and (utc_now - last_time).total_seconds() < 1800:
             if DRY_RUN:
                 log(f"{symbol} ⏳ Ignored due to cooldown")
-            pass
-        else:
-            last_time = None
+            return None
 
     balance = get_cached_balance()
     position_size = get_position_size(symbol)
@@ -138,85 +132,46 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             log(f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})")
         return None
 
-    buy_score = 0
-    sell_score = 0
-
-    if rsi < 35:
-        buy_score += 1
-    if rsi > 65:
-        sell_score += 1
-
-    if macd > macd_signal - abs(macd_signal) * 0.1:
-        buy_score += 1
-    if macd < macd_signal + abs(macd_signal) * 0.1:
-        sell_score += 1
-
-    if price > ema * 0.99:
-        buy_score += 1
-    if price < ema * 1.01:
-        sell_score += 1
-
-    if htf_trend:
-        buy_score += 1
-    if not htf_trend:
-        sell_score += 1
+    score = 0
+    if rsi < 30 or rsi > 70:
+        score += 1
+    if (macd > macd_signal and rsi < 50) or (macd < macd_signal and rsi > 50):
+        score += 1
+    if (macd > macd_signal and price > ema) or (macd < macd_signal and price < ema):
+        score += 1
+    if htf_trend and price > ema:
+        score += 1
 
     if has_long_position:
-        sell_score += 1
-        buy_score -= 1
+        score -= 1  # Avoid opening another long position
     if has_short_position:
-        buy_score += 1
-        sell_score -= 1
+        score -= 1  # Avoid opening another short position
 
     if available_margin < 10:
-        if has_long_position:
-            sell_score += 1
-        if has_short_position:
-            buy_score += 1
-        if not has_long_position and not has_short_position:
-            buy_score -= 1
-            sell_score -= 1
+        score -= 1  # Avoid new positions if margin is low
 
     if DRY_RUN:
-        log(f"{symbol} 🔎 Buy Score: {buy_score}/5, Sell Score: {sell_score}/5")
+        log(f"{symbol} 🔎 Final Score: {score}/5")
+
+    if score < MIN_TRADE_SCORE:
+        if DRY_RUN:
+            log(f"{symbol} ❌ No entry: insufficient score")
+        return None
 
     with last_trade_times_lock:
-        if last_time and (utc_now - last_time).total_seconds() < 1800:
-            if buy_score < 4 and sell_score < 4:
-                if DRY_RUN:
-                    log(
-                        f"{symbol} ⏳ Ignored due to cooldown (scores: {buy_score}/5, {sell_score}/5)"
-                    )
-                return None
-            else:
-                log(
-                    f"{symbol} ⚠️ Cooldown skipped due to strong signal (scores: {buy_score}/5, {sell_score}/5)"
-                )
-
-        if buy_score < MIN_TRADE_SCORE and sell_score < MIN_TRADE_SCORE:
-            if DRY_RUN:
-                log(f"{symbol} ❌ No entry: insufficient score")
-            return None
-
         last_trade_times[symbol] = utc_now
 
-    if buy_score >= sell_score and buy_score >= MIN_TRADE_SCORE:
-        if DRY_RUN:
-            log(f"{symbol} 🧪 [DRY_RUN] Signal → BUY, score: {buy_score}/5")
-            send_telegram_message(
-                escape_markdown_v2(f"🧪 [DRY_RUN] {symbol} → BUY | Score: {buy_score}/5"),
-                force=True,
-            )
-        log(f"{symbol} ✅ BUY signal triggered (score: {buy_score}/5)")
-        return "buy", buy_score
-    elif sell_score >= MIN_TRADE_SCORE:
-        if DRY_RUN:
-            log(f"{symbol} 🧪 [DRY_RUN] Signal → SELL, score: {sell_score}/5")
-            send_telegram_message(
-                escape_markdown_v2(f"🧪 [DRY_RUN] {symbol} → SELL | Score: {sell_score}/5"),
-                force=True,
-            )
-        log(f"{symbol} ✅ SELL signal triggered (score: {sell_score}/5)")
-        return "sell", sell_score
-
-    return None
+    if DRY_RUN:
+        log(
+            f"{symbol} 🧪 [DRY_RUN] Signal → {('BUY' if macd > macd_signal else 'SELL')}, score: {score}/5"
+        )
+        send_telegram_message(
+            escape_markdown_v2(
+                f"🧪 [DRY_RUN] {symbol} → {('BUY' if macd > macd_signal else 'SELL')} | Score: {score}/5"
+            ),
+            force=True,
+        )
+    log(
+        f"{symbol} ✅ {('BUY' if macd > macd_signal else 'SELL')} signal triggered (score: {score}/5)"
+    )
+    return ("buy" if macd > macd_signal else "sell", score)

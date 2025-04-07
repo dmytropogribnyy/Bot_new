@@ -118,73 +118,23 @@ trade_stats = {
 }
 
 # --- Exchange ---
-if DRY_RUN:
-
-    class MockExchange:
-        def fetch_ohlcv(self, symbol, timeframe, limit):
-            print(f"[MockExchange] fetch_ohlcv called for {symbol}")
-            base_price = 50000 if "BTC" in symbol else 2000 if "ETH" in symbol else 0.1
-            # Static list of 50 rows to avoid loop issues
-            data = [
-                [i, base_price, base_price + 10, base_price - 10, base_price + i, 1000]
-                for i in range(50)
-            ]
-            return data
-
-        def fetch_ticker(self, symbol):
-            print(f"[MockExchange] fetch_ticker called for {symbol}")
-            base_price = 50000 if "BTC" in symbol else 2000 if "ETH" in symbol else 0.1
-            return {"last": base_price}
-
-        def fetch_balance(self):
-            print("[MockExchange] fetch_balance called")
-            return {"total": {"USDC": 44.0654828}}
-
-        def fetch_positions(self):
-            print("[MockExchange] fetch_positions called")
-            return []
-
-        def create_limit_order(self, symbol, side, amount, price):
-            print(f"[MockExchange] create_limit_order called for {symbol}")
-            pass
-
-        def create_order(self, symbol, type, side, amount, price=None, params=None):
-            print(f"[MockExchange] create_order called for {symbol}")
-            pass
-
-        def create_market_sell_order(self, symbol, amount):
-            print(f"[MockExchange] create_market_sell_order called for {symbol}")
-            pass
-
-        def create_market_buy_order(self, symbol, amount):
-            print(f"[MockExchange] create_market_buy_order called for {symbol}")
-            pass
-
-        def load_markets(self):
-            print("[MockExchange] load_markets called")
-            return {
-                f"{symbol}:USDC": {"type": "future", "active": True} for symbol in SYMBOLS_ACTIVE
+exchange = ccxt.binance(
+    {
+        "apiKey": API_KEY,
+        "secret": API_SECRET,
+        "enableRateLimit": True,
+        "options": {
+            "defaultType": "future",
+            "adjustForTimeDifference": True,
+        },
+        "urls": {
+            "api": {
+                "public": "https://fapi.binance.com/fapi/v1",
+                "private": "https://fapi.binance.com/fapi/v1",
             }
-
-    exchange = MockExchange()
-else:
-    exchange = ccxt.binance(
-        {
-            "apiKey": API_KEY,
-            "secret": API_SECRET,
-            "enableRateLimit": True,
-            "options": {
-                "defaultType": "future",
-                "adjustForTimeDifference": True,
-            },
-            "urls": {
-                "api": {
-                    "public": "https://fapi.binance.com/fapi/v1",
-                    "private": "https://fapi.binance.com/fapi/v1",
-                }
-            },
-        }
-    )
+        },
+    }
+)
 
 # --- Auto-learned Entry Filter Thresholds ---
 FILTER_THRESHOLDS = {

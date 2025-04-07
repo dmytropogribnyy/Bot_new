@@ -1,18 +1,20 @@
 import json
 import os
 import time
-from threading import Lock
+from threading import Lock  # Fix: Add threading import
+
+import pandas as pd  # Keep for fetch_symbol_data  # noqa: F401  # Keep for calculate_volatility
 
 from config import (
     DRY_RUN,
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
-    exchange,
+    exchange,  # Keep for fetch_all_symbols
 )
 from core.strategy import fetch_data, should_enter_trade
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance
+from utils_core import get_cached_balance  # Keep for smart pair selection
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
@@ -80,7 +82,7 @@ def fetch_all_symbols():
 
 
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
-    return fetch_data(symbol, tf=timeframe)
+    return fetch_data(symbol, timeframe)
 
 
 def calculate_volatility(df):
@@ -90,10 +92,8 @@ def calculate_volatility(df):
     return df["range"].mean() / df["close"].mean()
 
 
-def select_active_symbols(exchange, last_trade_times, last_trade_times_lock):
-    log("Starting select_active_symbols...", level="DEBUG")
+def select_active_symbols(last_trade_times, last_trade_times_lock):
     all_symbols = fetch_all_symbols()
-    log(f"Retrieved {len(all_symbols)} symbols: {all_symbols[:5]}...", level="DEBUG")
     symbol_scores = {}
 
     balance = get_cached_balance()
@@ -102,22 +102,15 @@ def select_active_symbols(exchange, last_trade_times, last_trade_times_lock):
     max_active_pairs = max(MIN_DYNAMIC_PAIRS, min(MAX_DYNAMIC_PAIRS, int(balance / 20)))
     log(f"Max active pairs based on balance: {max_active_pairs}", level="INFO")
 
-    log("Starting symbol loop...", level="DEBUG")
     for symbol in all_symbols:
-        log(f"Processing symbol: {symbol}", level="DEBUG")
         if symbol in FIXED_PAIRS:
-            log(f"Skipping fixed pair: {symbol}", level="DEBUG")
             continue
-        log(f"Fetching data for {symbol}...", level="DEBUG")
         df = fetch_symbol_data(symbol)
         if df is None:
             log(f"Skipping {symbol} due to data fetch error", level="WARNING")
             continue
-        log(f"Evaluating trade signal for {symbol}...", level="DEBUG")
         with last_trade_times_lock:
-            result = should_enter_trade(
-                symbol, df, exchange, last_trade_times, last_trade_times_lock
-            )
+            result = should_enter_trade(symbol, df, last_trade_times, last_trade_times_lock)
         if result:
             direction, score = result
             symbol_scores[symbol] = {"score": score, "direction": direction}
@@ -126,7 +119,12 @@ def select_active_symbols(exchange, last_trade_times, last_trade_times_lock):
             volume = df["volume"].mean()
             symbol_scores[symbol] = {"score": volatility * volume, "direction": None}
 
-    sorted_symbols = sorted(symbol_scores.items(), key=lambda x: x[1]["score"], reverse=True)
+    sorted_symbols = sorted(
+        symbol_scores.items(),
+        key=lambda x: x[1]["score"],
+        reverse=True,
+    )
+
     selected_dynamic = []
     for symbol, info in sorted_symbols:
         if len(selected_dynamic) >= max_active_pairs:
@@ -157,10 +155,7 @@ def select_active_symbols(exchange, last_trade_times, last_trade_times_lock):
 def start_symbol_rotation(last_trade_times, last_trade_times_lock):
     while True:
         try:
-            with last_trade_times_lock:
-                new_symbols = select_active_symbols(
-                    exchange, last_trade_times, last_trade_times_lock
-                )
+            new_symbols = select_active_symbols(last_trade_times, last_trade_times_lock)
             msg = (
                 f"🔄 Symbol rotation completed:\n"
                 f"Total pairs: {len(new_symbols)}\n"

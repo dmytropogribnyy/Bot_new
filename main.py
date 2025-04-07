@@ -1,5 +1,4 @@
 import os
-import signal
 import threading
 import time
 from datetime import datetime
@@ -11,7 +10,6 @@ from config import (
     RISK_DRAWDOWN_THRESHOLD,
     SL_PERCENT,
     VERBOSE,
-    exchange,
     is_aggressive,
     trade_stats,
     trade_stats_lock,
@@ -21,60 +19,31 @@ from core.trade_engine import (
     calculate_position_size,
     calculate_risk_amount,
     enter_trade,
-    get_position_size,
+    get_position_size,  # Keep for open position checks
 )
 from ip_monitor import start_ip_monitor
 from pair_selector import start_symbol_rotation
 from telegram.telegram_commands import handle_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_adaptive_risk_percent, get_cached_balance, load_state, save_state
+from utils_core import (
+    get_adaptive_risk_percent,
+    get_cached_balance,
+    load_state,
+    save_state,
+)
+
+# Keep get_cached_balance for balance checks
 from utils_logging import log, log_dry_entry, notify_error, now
 
 last_trade_times = {}
 last_trade_times_lock = threading.Lock()
 
 
-def signal_handler(sig, frame):
-    log("Force stopping bot due to Ctrl+C", important=True, level="INFO")
-    os._exit(1)
-
-
-signal.signal(signal.SIGINT, signal_handler)
-
-
 def load_symbols():
     from pair_selector import select_active_symbols
 
-    # Run select_active_symbols in a separate thread with a timeout
-    result = []
-
-    def run_select_active_symbols():
-        try:
-            symbols = select_active_symbols(exchange, last_trade_times, last_trade_times_lock)
-            result.append(symbols)
-        except Exception as e:
-            log(f"Error in select_active_symbols: {e}", level="ERROR")
-            result.append([])
-
-    thread = threading.Thread(target=run_select_active_symbols)
-    thread.daemon = True
-    thread.start()
-
-    # Manual timeout loop
-    start_time = time.time()
-    timeout = 30  # 30 seconds timeout
-    while time.time() - start_time < timeout:
-        if not thread.is_alive():
-            break
-        time.sleep(0.1)
-
-    if thread.is_alive():
-        log(f"Timeout in select_active_symbols after {timeout} seconds", level="ERROR")
-        # Do not attempt to stop the thread; let it run as a daemon
-        return []
-
-    return result[0] if result else []
+    return select_active_symbols(last_trade_times, last_trade_times_lock)
 
 
 def start_trading_loop():
@@ -197,14 +166,16 @@ def start_trading_loop():
                         continue
 
                     df = fetch_data(symbol)
-                    result = should_enter_trade(
-                        symbol, df, exchange, last_trade_times, last_trade_times_lock
-                    )
-                    if isinstance(result, tuple) and result[0] in ["buy", "sell"]:
+                    with last_trade_times_lock:
+                        result = should_enter_trade(
+                            symbol, df, last_trade_times, last_trade_times_lock
+                        )
+                    if result:
+                        direction, score = result
                         entry = df["close"].iloc[-1]
                         stop = (
                             entry * (1 - SL_PERCENT)
-                            if result[0] == "buy"
+                            if direction == "buy"
                             else entry * (1 + SL_PERCENT)
                         )
                         risk_percent = get_adaptive_risk_percent(balance)
@@ -218,7 +189,6 @@ def start_trading_loop():
                                     f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%"
                                 )
                         base_risk = risk_percent
-                        score = result[1] if isinstance(result, tuple) else 0
                         if score == 3:
                             risk_percent *= 0.7
                             log(
@@ -236,19 +206,19 @@ def start_trading_loop():
                         if qty * entry >= MIN_NOTIONAL:
                             if DRY_RUN:
                                 log(
-                                    f"[DRY] Entering {result[0].upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
+                                    f"[DRY] Entering {direction.upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
                                     level="INFO",
                                 )
                                 log_dry_entry(
-                                    f"{result[0].upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})"
+                                    f"{direction.upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})"
                                 )
-                                msg = f"DRY RUN: {result[0].upper()} {symbol} at {entry:.5f} (qty: {qty:.2f})"
+                                msg = f"DRY RUN: {direction.upper()} {symbol} at {entry:.5f} (qty: {qty:.2f})"
                                 send_telegram_message(msg, force=True)
                             else:
-                                enter_trade(symbol, result[0], qty, score)
+                                enter_trade(symbol, direction, qty, score)
                                 position_timestamps[symbol] = now()
                                 log(
-                                    f"Entered {result[0].upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
+                                    f"Entered {direction.upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
                                     level="INFO",
                                 )
                 save_state(state)
