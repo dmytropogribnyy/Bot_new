@@ -278,3 +278,34 @@ def close_dry_trade(symbol):
             record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
             log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
             send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)
+
+
+def close_real_trade(symbol):
+    with last_trade_info_lock:
+        trade = last_trade_info.get(symbol)
+        if not trade:
+            log(f"[SmartSwitch] No active trade found for {symbol}", level="WARNING")
+            return
+
+        try:
+            side = trade["side"]
+            entry_price = trade["entry"]
+            qty = trade["qty"]
+            exit_price = exchange.fetch_ticker(symbol)["last"]
+
+            # Закрываем противоположной сделкой
+            if side == "buy":
+                exchange.create_market_sell_order(symbol, qty)
+            else:
+                exchange.create_market_buy_order(symbol, qty)
+
+            # Логируем результат
+            record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
+            log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
+
+            if symbol in last_trade_info:
+                del last_trade_info[symbol]
+
+        except Exception as e:
+            log(f"[SmartSwitch] Error closing real trade {symbol}: {e}", level="ERROR")
+            send_telegram_message(f"❌ Failed to close trade {symbol}: {str(e)}", force=True)
