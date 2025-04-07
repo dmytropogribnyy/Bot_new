@@ -100,7 +100,7 @@ ENABLE_BREAKEVEN = True
 BREAKEVEN_TRIGGER = 0.5
 
 # --- Signal Strength Control ---
-MIN_TRADE_SCORE = 2
+MIN_TRADE_SCORE = 2  # Reduced for testing
 SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
 
