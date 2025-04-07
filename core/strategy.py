@@ -63,7 +63,7 @@ def get_htf_trend(symbol, tf="1h"):
     return df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
 
 
-def should_enter_trade(symbol, df, last_trade_times, last_trade_times_lock):
+def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")
         return None

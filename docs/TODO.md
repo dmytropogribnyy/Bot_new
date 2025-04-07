@@ -1,96 +1,61 @@
-# TODO: Binance USDC Futures Smart Bot
+# ✅ Binance USDC Futures Smart Bot — TODO.md
 
-Version: 1.2 STABLE
-Last Updated: April 2025
-
-This file tracks ongoing and planned tasks for the Binance USDC Futures Smart Bot, organized by priority and status.
+_Last updated: April 2025 — v1.3.1 STABLE_
 
 ---
 
-## Completed Tasks
+## 🟢 Completed (v1.3.1)
 
-- API Caching — get_cached_balance, get_cached_positions in utils.py
-- Thread Safety — Locks added for trade_stats, last_trade_info in config.py, trade_engine.py
-- Critical Event Logging — Logs limited to ERROR in real mode (REAL_RUN)
-- Backtesting — 15m for BTC/USDC and ETH/USDC (strategy.py)
-- Score History Logging — Scoring to score_history.csv
-- Smart Pair Rotation — Refreshes every 4 hours via main.py, pair_selector.py
-- MarkdownV2 Fixes — Unified escaping using escape_markdown_v2 (telegram_utils.py)
-- Long/Short Filter Separation — Implemented per-symbol filters in strategy.py, config.py
-
----
-
-## Priority 1: Core Enhancements
-
-- Binance WebSocket Integration
-
-  - Replace polling with real-time price updates
-  - Modify fetch_data in strategy.py
-  - Estimate: 6–8 hours
-
-- Mini-Deployment with Loss Control
-  - Test real-mode logic with 50–100 USDC and safety net
-  - Controlled launch via main.py, validate loss limits
-  - Estimate: 3–4 hours + live testing
+- Modular core structure: `core/`, `telegram/`, `data/`
+- Refactored main cycle into `engine_controller.py`
+- DRY_RUN support + Telegram notification system
+- Entry logging to `entry_log.csv` (with status & mode)
+- Centralized notifier system for Telegram + logs
+- Balance watcher: detects deposits/withdrawals
+- Smart Switching: score-based re-entry logic
+- Symbol rotation every 4h with anchor pairs
+- Safe IP monitoring + `/router_reboot`, `/cancel_stop`
+- TP1/TP2/SL system with trailing and break-even
+- Auto-close timeout logic with extension near TP1
+- Score filtering + `score_history.csv` logging
+- Adaptive TP optimization (`tp_optimizer.py`)
+- Daily & weekly Telegram stats
+- MarkdownV2-safe messaging for all outputs
+- Telegram command set: `/stop`, `/shutdown`, `/open`, `/summary`, etc.
 
 ---
 
-## Priority 2: Usability and Refinement
+## 🔄 In Progress
 
-- Simplify Telegram Logic
-
-  - Refactor send_telegram_message() in telegram_utils.py
-  - Estimate: 1–2 hours
-
-- Clean Up config.py
-
-  - Merge volatility-related configs like VOLATILITY_ATR_THRESHOLD
-  - Example: effective_atr = VOLATILITY_ATR_THRESHOLD \* (0.6 if DRY_RUN else 1)
-  - Estimate: 2 hours
-
-- Complete MarkdownV2 Formatting
-  - Ensure all Telegram messages are escaped properly
-  - Check all send_telegram_message() calls across modules
-  - Estimate: 2–3 hours
+- WebSocket price feed integration (Binance stream)
+- Telegram stats: PnL charts and summary graphs
+- Config cleanup: centralize volatility settings
+- Improve risk heuristics with filter-based scaling
 
 ---
 
-## Priority 3: Reliability and Scalability
+## 🟡 Planned
 
-- Auto-Reconnect on API Failures
-  - Improve resilience of exchange calls in real mode
-  - Add tenacity retry logic in utils.py
-  - Example: retry with wait_exponential in fetch_balance_with_retry()
-  - Estimate: 2 hours
-
----
-
-## Priority 4: Optional Features
-
-- PnL and Balance Charts
-  - Visual performance summary in Telegram
-  - Add chart generation via matplotlib or ASCII in stats.py
-  - Estimate: 4–6 hours
+- GUI or web dashboard for monitoring
+- Signal replay + score heatmap
+- Auto-reconnect logic on API failures
+- Cross-symbol correlation filters
+- Telegram-based real-time logs for strategy insights
 
 ---
 
-## Execution Order
+## 🧪 Optional (Post-Production Ideas)
 
-1. Binance WebSocket Integration
-2. Mini-Deployment with Loss Control
-3. Complete MarkdownV2 Formatting
-4. Simplify Telegram Logic
-5. Clean Up config.py
-6. Auto-Reconnect on API Failures
-7. PnL and Balance Charts (optional)
+- REST API for external dashboard or mobile integration
+- Strategy trainer: local backtest + learn loop
+- Paper trading backend for dry testing at scale
+- Discord alerts mirror
 
 ---
 
-## Notes
+## 📎 Notes
 
-Priority 1: Critical for performance and real-world validation
-Priority 2: Developer-friendly improvements and maintainability
-Priority 3: Resilience and long-term uptime
-Priority 4: Bonus features for user experience
-
-Next Focus: Start with WebSocket integration to enable real-time reactions and reduce latency.
+- All strategy logic centralized in `core/strategy.py`
+- Pair logic & scoring in `core/symbol_processor.py`
+- Entry logic is DRY_RUN-safe and logs even failed entries
+- Telegram and Markdown escaping fully stable

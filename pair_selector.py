@@ -1,26 +1,25 @@
 import json
 import os
 import time
-from threading import Lock  # Fix: Add threading import
+from threading import Lock
 
-import pandas as pd  # Keep for fetch_symbol_data  # noqa: F401  # Keep for calculate_volatility
+import pandas as pd
 
 from config import (
     DRY_RUN,
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
-    exchange,  # Keep for fetch_all_symbols
+    exchange,
 )
-from core.strategy import fetch_data, should_enter_trade
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance  # Keep for smart pair selection
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
-UPDATE_INTERVAL_SECONDS = 4 * 60 * 60
+UPDATE_INTERVAL_SECONDS = 4 * 60 * 60  # 4 hours
 symbols_file_lock = Lock()
 
+# Fallback list for DRY_RUN with valid Binance USDM Futures symbols
 DRY_RUN_FALLBACK_SYMBOLS = [
     "ADA/USDC",
     "XRP/USDC",
@@ -82,7 +81,15 @@ def fetch_all_symbols():
 
 
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
-    return fetch_data(symbol, timeframe)
+    try:
+        api_symbol = f"{symbol}:USDC"
+        ohlcv = exchange.fetch_ohlcv(api_symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        log(f"Error fetching data for {symbol}: {e}", level="ERROR")
+        return None
 
 
 def calculate_volatility(df):
@@ -92,47 +99,26 @@ def calculate_volatility(df):
     return df["range"].mean() / df["close"].mean()
 
 
-def select_active_symbols(last_trade_times, last_trade_times_lock):
+def select_active_symbols():
     all_symbols = fetch_all_symbols()
-    symbol_scores = {}
-
-    balance = get_cached_balance()
-    log(f"Current balance: {balance} USDC", level="INFO")
-
-    max_active_pairs = max(MIN_DYNAMIC_PAIRS, min(MAX_DYNAMIC_PAIRS, int(balance / 20)))
-    log(f"Max active pairs based on balance: {max_active_pairs}", level="INFO")
+    symbol_data = {}
 
     for symbol in all_symbols:
         if symbol in FIXED_PAIRS:
             continue
         df = fetch_symbol_data(symbol)
-        if df is None:
-            log(f"Skipping {symbol} due to data fetch error", level="WARNING")
-            continue
-        with last_trade_times_lock:
-            result = should_enter_trade(symbol, df, last_trade_times, last_trade_times_lock)
-        if result:
-            direction, score = result
-            symbol_scores[symbol] = {"score": score, "direction": direction}
-        else:
+        if df is not None:
             volatility = calculate_volatility(df)
             volume = df["volume"].mean()
-            symbol_scores[symbol] = {"score": volatility * volume, "direction": None}
+            symbol_data[symbol] = {"volatility": volatility, "volume": volume}
 
     sorted_symbols = sorted(
-        symbol_scores.items(),
-        key=lambda x: x[1]["score"],
+        symbol_data.items(),
+        key=lambda x: x[1]["volatility"] * x[1]["volume"],
         reverse=True,
     )
-
-    selected_dynamic = []
-    for symbol, info in sorted_symbols:
-        if len(selected_dynamic) >= max_active_pairs:
-            break
-        if info["direction"]:
-            selected_dynamic.append(symbol)
-        elif len(selected_dynamic) < MIN_DYNAMIC_PAIRS:
-            selected_dynamic.append(symbol)
+    dynamic_count = max(MIN_DYNAMIC_PAIRS, min(MAX_DYNAMIC_PAIRS, len(sorted_symbols)))
+    selected_dynamic = [s[0] for s in sorted_symbols[:dynamic_count]]
 
     active_symbols = FIXED_PAIRS + selected_dynamic
     log(
@@ -152,10 +138,10 @@ def select_active_symbols(last_trade_times, last_trade_times_lock):
     return active_symbols
 
 
-def start_symbol_rotation(last_trade_times, last_trade_times_lock):
+def start_symbol_rotation():
     while True:
         try:
-            new_symbols = select_active_symbols(last_trade_times, last_trade_times_lock)
+            new_symbols = select_active_symbols()
             msg = (
                 f"🔄 Symbol rotation completed:\n"
                 f"Total pairs: {len(new_symbols)}\n"
