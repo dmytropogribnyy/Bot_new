@@ -255,6 +255,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
             pnl_percent=round(pnl, 2),
             result="WIN" if pnl > 0 else "LOSS",
             duration_minutes=duration,
+            htf_trend=trade.get("htf_trend", False),  # ✅ добавлено
         )
 
         msg = (

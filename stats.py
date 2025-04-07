@@ -1,4 +1,5 @@
-# stats.py
+# stats.py (финальная версия с HTF, Heatmap и Auto ML)
+
 import os
 import threading
 import time
@@ -6,9 +7,12 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from config import TIMEZONE, is_aggressive, trade_stats, trade_stats_lock  # Added trade_stats_lock
+from config import TIMEZONE, is_aggressive, trade_stats, trade_stats_lock
+from htf_optimizer import analyze_htf_winrate
+from score_heatmap import generate_score_heatmap
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from tp_optimizer import run_tp_optimizer
+from tp_optimizer_ml import analyze_and_optimize_tp
 
 EXPORT_PATH = "data/tp_performance.csv"
 
@@ -21,12 +25,10 @@ def format_report_header(title: str) -> str:
     return f"\n{title}\n" + ("-" * 30)
 
 
-def get_mode_label() -> str:
+def get_mode_label():
     return "AGGRESSIVE" if is_aggressive else "SAFE"
 
 
-# Added: Helper function to get stats safely and reduce duplication
-# Reason: Ensures thread safety and simplifies report generation
 def get_safe_stats():
     with trade_stats_lock:
         return {
@@ -115,38 +117,6 @@ def export_trade_log():
 def send_daily_report():
     today = now_with_timezone().strftime("%d.%m.%Y")
     msg = build_performance_report("Daily Performance Summary", today)
-
-    if os.path.exists(EXPORT_PATH):
-        try:
-            # Updated: Added fallback for CSV errors
-            # Reason: Prevents crashes if tp_performance.csv is corrupted
-            df = (
-                pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
-                if os.path.exists(EXPORT_PATH)
-                else pd.DataFrame()
-            )
-            df_today = df[df["Date"].dt.date == now_with_timezone().date()]
-            if not df_today.empty:
-                df_today["PnL (%)"] = pd.to_numeric(df_today["PnL (%)"], errors="coerce")
-                avg_by_symbol = (
-                    df_today.groupby("Symbol")["PnL (%)"].mean().sort_values(ascending=False)
-                )
-                best = avg_by_symbol.head(2)
-                worst = avg_by_symbol.tail(2)
-
-                def format_line(items):
-                    return ", ".join(
-                        [
-                            f"{sym} ({'+' if v >= 0 else ''}{round(v, 1)}%)"
-                            for sym, v in items.items()
-                        ]
-                    )
-
-                msg += f"\n\nBest: {format_line(best)}"
-                msg += f"\nWorst: {format_line(worst)}"
-        except Exception as e:
-            msg += f"\nError parsing stats: {str(e)}"
-
     send_telegram_message(escape_markdown_v2(msg), force=True)
 
 
@@ -161,13 +131,7 @@ def should_run_optimizer():
     if not os.path.exists(EXPORT_PATH):
         return False
     try:
-        # Updated: Added fallback for CSV errors
-        # Reason: Ensures function doesn’t fail on corrupted data
-        df = (
-            pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
-            if os.path.exists(EXPORT_PATH)
-            else pd.DataFrame()
-        )
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
         df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=2)]
         recent_trades = df[df["Result"].isin(["TP1", "TP2", "SL"])]
         return len(recent_trades) >= 20
@@ -198,6 +162,7 @@ def start_report_loops():
             if t.day % 2 == 0 and t.hour == 21 and t.minute == 30:
                 if should_run_optimizer():
                     run_tp_optimizer()
+                    analyze_and_optimize_tp()
                 else:
                     send_telegram_message(
                         escape_markdown_v2("Not enough recent trades to optimize (min: 20)"),
@@ -206,6 +171,24 @@ def start_report_loops():
                 time.sleep(60)
             time.sleep(10)
 
+    def heatmap_loop():
+        while True:
+            t = now_with_timezone()
+            if t.weekday() == 4 and t.hour == 20 and t.minute == 0:
+                generate_score_heatmap(days=7)
+                time.sleep(60)
+            time.sleep(10)
+
+    def htf_optimizer_loop():
+        while True:
+            t = now_with_timezone()
+            if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
+                analyze_htf_winrate()
+                time.sleep(60)
+            time.sleep(10)
+
     threading.Thread(target=daily_loop, daemon=True).start()
     threading.Thread(target=weekly_loop, daemon=True).start()
     threading.Thread(target=optimizer_loop, daemon=True).start()
+    threading.Thread(target=heatmap_loop, daemon=True).start()
+    threading.Thread(target=htf_optimizer_loop, daemon=True).start()

@@ -73,3 +73,23 @@ def send_telegram_file(file_path: str, caption: str = ""):
             print(f"[telegram_utils] Failed to send file {file_path}: {response.text}")
     except Exception as e:
         print(f"[telegram_utils] Telegram file send error for {file_path}: {e}")
+
+
+def send_telegram_image(image_path, caption=""):
+    """Send image to Telegram via sendPhoto (inline preview)."""
+    from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        with open(image_path, "rb") as img:
+            files = {"photo": img}
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": caption,
+                "parse_mode": "MarkdownV2",
+            }
+            response = requests.post(url, data=data, files=files)
+            if not response.ok:
+                raise Exception(f"Telegram image upload failed: {response.text}")
+    except Exception as e:
+        print(f"[Telegram] Failed to send image: {e}")

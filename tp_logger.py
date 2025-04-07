@@ -1,8 +1,8 @@
 import csv
 import os
-from datetime import datetime
 
-from config import EXPORT_PATH, TIMEZONE
+from config import EXPORT_PATH, TP_LOG_FILE
+from stats import now_with_timezone
 from utils_logging import log
 
 
@@ -36,39 +36,69 @@ def log_trade_result(
     side,
     entry_price,
     exit_price,
-    tp1_hit,
-    tp2_hit,
-    sl_hit,
-    pnl_percent,
     result,
+    pnl_percent,
     duration_minutes,
-    atr=None,
-    adx=None,
-    bb_width=None,
-    price=None,
+    atr,
+    adx,
+    bb_width,
+    price,
+    hit_tp1,
+    hit_tp2,
+    hit_sl,
+    htf_trend,  # добавлено
 ):
-    ensure_log_exists()
-    with open(EXPORT_PATH, mode="a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
-                symbol,
-                side,
-                round(entry_price, 5),
-                round(exit_price, 5),
-                "YES" if tp1_hit else "NO",
-                "YES" if tp2_hit else "NO",
-                "YES" if sl_hit else "NO",
-                round(pnl_percent, 2),
-                result,
-                round(duration_minutes, 1),
-                atr if atr is not None else "",
-                adx if adx is not None else "",
-                bb_width if bb_width is not None else "",
-                price if price is not None else "",
-            ]
-        )
+    timestamp = now_with_timezone().strftime("%Y-%m-%d %H:%M")
+
+    row = [
+        timestamp,
+        symbol,
+        side,
+        entry_price,
+        exit_price,
+        result,
+        round(pnl_percent, 2),
+        duration_minutes,
+        round(atr, 6),
+        round(adx, 6),
+        round(bb_width, 6),
+        round(price, 6),
+        "YES" if hit_tp1 else "NO",
+        "YES" if hit_tp2 else "NO",
+        "YES" if hit_sl else "NO",
+        "YES" if htf_trend else "NO",  # добавлено
+    ]
+
+    header = [
+        "Date",
+        "Symbol",
+        "Side",
+        "Entry Price",
+        "Exit Price",
+        "Result",
+        "PnL (%)",
+        "Duration (min)",
+        "ATR",
+        "ADX",
+        "BB Width",
+        "Price",
+        "Hit TP1",
+        "Hit TP2",
+        "Hit SL",
+        "HTF Confirmed",  # добавлено
+    ]
+
+    file_exists = os.path.isfile(TP_LOG_FILE)
+
+    try:
+        with open(TP_LOG_FILE, mode="a", newline="") as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow(header)
+            writer.writerow(row)
+        log(f"TP result logged: {row}", level="INFO")
+    except Exception as e:
+        log(f"Failed to write TP log: {e}", level="ERROR")
 
 
 def get_last_trade():

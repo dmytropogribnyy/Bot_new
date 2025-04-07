@@ -5,6 +5,7 @@ import pandas as pd
 
 from config import DRY_RUN, EXPORT_PATH, exchange, is_aggressive, trade_stats
 from core.trade_engine import last_trade_info
+from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
@@ -75,6 +76,9 @@ def handle_telegram_command(message, state):
     elif text == "/summary":
         summary = generate_summary()
         send_telegram_message(escape_markdown_v2(summary), force=True)
+
+    elif text == "/heatmap":
+        generate_score_heatmap(days=7)
 
     elif text == "/pause":
         state["pause"] = True
