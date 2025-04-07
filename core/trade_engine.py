@@ -24,7 +24,9 @@ from utils_core import get_cached_positions
 from utils_logging import log, now
 
 last_trade_info = {}
+last_trade_info_lock = threading.Lock()
 monitored_stops = {}
+monitored_stops_lock = threading.Lock()
 
 
 def calculate_risk_amount(balance, risk_percent):
@@ -109,18 +111,19 @@ def enter_trade(symbol, side, qty, score=5):
         )
         send_telegram_message(msg, force=True)
 
-    last_trade_info[symbol] = {
-        "symbol": symbol,
-        "side": side,
-        "entry": round(entry_price, 4),
-        "qty": qty,
-        "tp1": round(tp1_percent * 100, 1),
-        "tp2": round(tp2_percent * 100, 1) if tp2_price else None,
-        "sl": round(sl_percent * 100, 1),
-        "start_time": start_time,
-        "tp1_hit": False,
-        "tp2_hit": False,
-    }
+    with last_trade_info_lock:
+        last_trade_info[symbol] = {
+            "symbol": symbol,
+            "side": side,
+            "entry": round(entry_price, 4),
+            "qty": qty,
+            "tp1": round(tp1_percent * 100, 1),
+            "tp2": round(tp2_percent * 100, 1) if tp2_price else None,
+            "sl": round(sl_percent * 100, 1),
+            "start_time": start_time,
+            "tp1_hit": False,
+            "tp2_hit": False,
+        }
 
     if not DRY_RUN:
         track_stop_loss(symbol, side, entry_price, qty, start_time)
@@ -139,12 +142,13 @@ def enter_trade(symbol, side, qty, score=5):
 
 
 def track_stop_loss(symbol, side, entry_price, qty, opened_at):
-    monitored_stops[symbol] = {
-        "side": side,
-        "entry": entry_price,
-        "qty": qty,
-        "opened_at": opened_at,
-    }
+    with monitored_stops_lock:
+        monitored_stops[symbol] = {
+            "side": side,
+            "entry": entry_price,
+            "qty": qty,
+            "opened_at": opened_at,
+        }
 
 
 def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
@@ -229,47 +233,47 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
 
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
-    global last_trade_info
-    trade = last_trade_info.get(symbol)
-    if not trade:
-        log(f"⚠️ No trade info for {symbol} — cannot record result")
-        return
+    with last_trade_info_lock:
+        trade = last_trade_info.get(symbol)
+        if not trade:
+            log(f"⚠️ No trade info for {symbol} — cannot record result")
+            return
 
-    duration = int((time.time() - trade["start_time"].timestamp()) / 60)
-    pnl = ((exit_price - entry_price) / entry_price) * 100
-    if side == "sell":
-        pnl *= -1
+        duration = int((time.time() - trade["start_time"].timestamp()) / 60)
+        pnl = ((exit_price - entry_price) / entry_price) * 100
+        if side == "sell":
+            pnl *= -1
 
-    log_trade_result(
-        symbol=symbol,
-        side=side,
-        entry_price=entry_price,
-        exit_price=exit_price,
-        tp1_hit=trade.get("tp1_hit", False),
-        tp2_hit=trade.get("tp2_hit", False),
-        sl_hit=(result_type == "sl"),
-        pnl_percent=round(pnl, 2),
-        result="WIN" if pnl > 0 else "LOSS",
-        duration_minutes=duration,
-    )
+        log_trade_result(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            tp1_hit=trade.get("tp1_hit", False),
+            tp2_hit=trade.get("tp2_hit", False),
+            sl_hit=(result_type == "sl"),
+            pnl_percent=round(pnl, 2),
+            result="WIN" if pnl > 0 else "LOSS",
+            duration_minutes=duration,
+        )
 
-    msg = (
-        f"📤 *Trade Closed* [{result_type.upper()}]\n"
-        f"• {symbol} — {side.upper()}\n"
-        f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-        f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
-    )
-    send_telegram_message(msg, force=True)
+        msg = (
+            f"📤 *Trade Closed* [{result_type.upper()}]\n"
+            f"• {symbol} — {side.upper()}\n"
+            f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
+            f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
+        )
+        send_telegram_message(msg, force=True)
 
-    if symbol in last_trade_info:
-        del last_trade_info[symbol]
+        if symbol in last_trade_info:
+            del last_trade_info[symbol]
 
 
 def close_dry_trade(symbol):
-    """Закрытие симулированной позиции в DRY_RUN."""
-    if DRY_RUN and symbol in last_trade_info:
-        trade = last_trade_info[symbol]
-        exit_price = exchange.fetch_ticker(symbol)["last"]
-        record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
-        log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
-        send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)
+    with last_trade_info_lock:
+        if DRY_RUN and symbol in last_trade_info:
+            trade = last_trade_info[symbol]
+            exit_price = exchange.fetch_ticker(symbol)["last"]
+            record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
+            log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
+            send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)

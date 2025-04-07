@@ -1,4 +1,3 @@
-# config.py
 import os
 from threading import Lock
 
@@ -35,7 +34,7 @@ SYMBOLS_ACTIVE = [
     "SUI/USDC",
     "LINK/USDC",
     "ARB/USDC",
-]  # Fallback list; main.py uses dynamic symbols from pair_selector.py
+]
 
 FIXED_PAIRS = ["BTC/USDC", "ETH/USDC", "DOGE/USDC", "SOL/USDC", "BNB/USDC"]
 MAX_DYNAMIC_PAIRS = 30
@@ -62,13 +61,6 @@ TP2_SHARE = 0.3
 SL_PERCENT = 0.01
 
 # --- Risk Management ---
-# Note: Risk is dynamically calculated via utils_core.get_adaptive_risk_percent:
-# - Balance < 100 USDC: 0.03
-# - Balance < 300 USDC: 0.05
-# - Balance >= 300 USDC: 0.07
-# Additional adjustments in main.py:
-# - PnL < RISK_DRAWDOWN_THRESHOLD: risk * 0.5
-# - Balance < initial_balance * 0.85: risk * 0.6
 AGGRESSIVE_THRESHOLD = 50
 SAFE_THRESHOLD = 10
 MIN_NOTIONAL = 5
@@ -100,7 +92,7 @@ ENABLE_BREAKEVEN = True
 BREAKEVEN_TRIGGER = 0.5
 
 # --- Signal Strength Control ---
-MIN_TRADE_SCORE = 2  # Reduced for testing
+MIN_TRADE_SCORE = 2
 SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
 
@@ -126,23 +118,85 @@ trade_stats = {
 }
 
 # --- Exchange ---
-exchange = ccxt.binance(
-    {
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "future",
-            "adjustForTimeDifference": True,
-        },
-        "urls": {
-            "api": {
-                "public": "https://fapi.binance.com/fapi/v1",
-                "private": "https://fapi.binance.com/fapi/v1",
+if DRY_RUN:
+
+    class MockExchange:
+        def fetch_ohlcv(self, symbol, timeframe, limit):
+            print(f"[MockExchange] fetch_ohlcv called for {symbol}")
+            base_price = 50000 if "BTC" in symbol else 2000 if "ETH" in symbol else 0.1
+            # Return a static list to avoid any loop issues
+            return [
+                [0, base_price, base_price + 10, base_price - 10, base_price, 1000],
+                [1, base_price, base_price + 10, base_price - 10, base_price + 1, 1000],
+                [2, base_price, base_price + 10, base_price - 10, base_price + 2, 1000],
+                [3, base_price, base_price + 10, base_price - 10, base_price + 3, 1000],
+                [4, base_price, base_price + 10, base_price - 10, base_price + 4, 1000],
+                [5, base_price, base_price + 10, base_price - 10, base_price + 5, 1000],
+                [6, base_price, base_price + 10, base_price - 10, base_price + 6, 1000],
+                [7, base_price, base_price + 10, base_price - 10, base_price + 7, 1000],
+                [8, base_price, base_price + 10, base_price - 10, base_price + 8, 1000],
+                [9, base_price, base_price + 10, base_price - 10, base_price + 9, 1000],
+                [10, base_price, base_price + 10, base_price - 10, base_price + 10, 1000],
+                [11, base_price, base_price + 10, base_price - 10, base_price + 11, 1000],
+                [12, base_price, base_price + 10, base_price - 10, base_price + 12, 1000],
+                [13, base_price, base_price + 10, base_price - 10, base_price + 13, 1000],
+                [14, base_price, base_price + 10, base_price - 10, base_price + 14, 1000],
+            ]
+
+        def fetch_ticker(self, symbol):
+            print(f"[MockExchange] fetch_ticker called for {symbol}")
+            base_price = 50000 if "BTC" in symbol else 2000 if "ETH" in symbol else 0.1
+            return {"last": base_price}
+
+        def fetch_balance(self):
+            print("[MockExchange] fetch_balance called")
+            return {"total": {"USDC": 44.0654828}}
+
+        def fetch_positions(self):
+            print("[MockExchange] fetch_positions called")
+            return []
+
+        def create_limit_order(self, symbol, side, amount, price):
+            print(f"[MockExchange] create_limit_order called for {symbol}")
+            pass
+
+        def create_order(self, symbol, type, side, amount, price=None, params=None):
+            print(f"[MockExchange] create_order called for {symbol}")
+            pass
+
+        def create_market_sell_order(self, symbol, amount):
+            print(f"[MockExchange] create_market_sell_order called for {symbol}")
+            pass
+
+        def create_market_buy_order(self, symbol, amount):
+            print(f"[MockExchange] create_market_buy_order called for {symbol}")
+            pass
+
+        def load_markets(self):
+            print("[MockExchange] load_markets called")
+            return {
+                f"{symbol}:USDC": {"type": "future", "active": True} for symbol in SYMBOLS_ACTIVE
             }
-        },
-    }
-)
+
+    exchange = MockExchange()
+else:
+    exchange = ccxt.binance(
+        {
+            "apiKey": API_KEY,
+            "secret": API_SECRET,
+            "enableRateLimit": True,
+            "options": {
+                "defaultType": "future",
+                "adjustForTimeDifference": True,
+            },
+            "urls": {
+                "api": {
+                    "public": "https://fapi.binance.com/fapi/v1",
+                    "private": "https://fapi.binance.com/fapi/v1",
+                }
+            },
+        }
+    )
 
 # --- Auto-learned Entry Filter Thresholds ---
 FILTER_THRESHOLDS = {

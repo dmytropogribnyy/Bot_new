@@ -1,4 +1,5 @@
-# strategy.py
+import queue
+import threading
 from datetime import datetime
 
 import pandas as pd
@@ -13,32 +14,79 @@ from config import (
     VOLATILITY_SKIP_ENABLED,
     exchange,
 )
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_logging import log
 from core.trade_engine import get_position_size
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance
-
-last_trade_times = {}
+from utils_logging import log
 
 
 def fetch_data(symbol, tf="15m"):
-    df = pd.DataFrame(
-        exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50),
-        columns=["time", "open", "high", "low", "close", "volume"],
-    )
-    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-    df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
-    df["macd"] = ta.trend.MACD(df["close"]).macd()
-    df["macd_signal"] = ta.trend.MACD(df["close"]).macd_signal()
-    df["atr"] = ta.volatility.AverageTrueRange(
-        df["high"], df["low"], df["close"], window=14
-    ).average_true_range()
-    df["fast_ema"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
-    df["slow_ema"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
-    df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
-    bb = ta.volatility.BollingerBands(df["close"], window=20)
-    df["bb_width"] = bb.bollinger_hband() - bb.bollinger_lband()
-    return df
+    def fetch_ohlcv_with_timeout():
+        try:
+            log(f"Starting fetch_ohlcv for {symbol} in thread", level="DEBUG")
+            data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
+            log(f"Completed fetch_ohlcv for {symbol}", level="DEBUG")
+            q.put(data)
+        except Exception as e:
+            log(f"Exception in fetch_ohlcv for {symbol}: {e}", level="ERROR")
+            q.put(e)
+
+    try:
+        q = queue.Queue()
+        fetch_thread = threading.Thread(target=fetch_ohlcv_with_timeout)
+        fetch_thread.daemon = True
+        fetch_thread.start()
+
+        # Use threading.Timer to enforce timeout
+        timeout = 10  # 10 seconds timeout
+        timer = threading.Timer(timeout, lambda: q.put(TimeoutError("Fetch OHLCV timed out")))
+        timer.start()
+
+        # Wait for the thread to complete or timeout
+        fetch_thread.join(timeout=timeout)
+        timer.cancel()  # Cancel the timer if the thread completes
+
+        if fetch_thread.is_alive():
+            log(f"Force stopping fetch thread for {symbol} after timeout", level="ERROR")
+            fetch_thread._stop()  # Attempt to stop the thread (not guaranteed to work)
+            return None
+
+        result = q.get()
+        if isinstance(result, Exception):
+            log(f"Error fetching OHLCV data for {symbol}: {result}", level="ERROR")
+            return None
+
+        data = result
+        if not data:
+            log(f"No data returned for {symbol} on timeframe {tf}", level="ERROR")
+            raise ValueError("No data returned from exchange")
+        df = pd.DataFrame(
+            data,
+            columns=["time", "open", "high", "low", "close", "volume"],
+        )
+        if df.empty or len(df) < 14:
+            log(
+                f"Insufficient data for {symbol} on timeframe {tf} (rows: {len(df)})", level="ERROR"
+            )
+            raise ValueError("Insufficient data for indicator calculation")
+
+        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+        df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
+        df["macd"] = ta.trend.MACD(df["close"]).macd()
+        df["macd_signal"] = ta.trend.MACD(df["close"]).macd_signal()
+        df["atr"] = ta.volatility.AverageTrueRange(
+            df["high"], df["low"], df["close"], window=14
+        ).average_true_range()
+        df["fast_ema"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
+        df["slow_ema"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
+        df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
+        bb = ta.volatility.BollingerBands(df["close"], window=20)
+        df["bb_width"] = bb.bollinger_hband() - bb.bollinger_lband()
+
+        return df
+    except Exception as e:
+        log(f"Error fetching or processing data for {symbol}: {e}", level="ERROR")
+        return None
 
 
 def get_htf_trend(symbol, tf="1h"):
@@ -46,28 +94,27 @@ def get_htf_trend(symbol, tf="1h"):
     return df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
 
 
-def should_enter_trade(symbol, df, exchange):
+def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
+    if df is None:
+        log(f"Skipping {symbol} due to data fetch error", level="WARNING")
+        return None
+
     utc_now = datetime.utcnow()
+    with last_trade_times_lock:
+        last_time = last_trade_times.get(symbol)
+        if last_time and (utc_now - last_time).total_seconds() < 1800:
+            if DRY_RUN:
+                log(f"{symbol} ⏳ Ignored due to cooldown")
+            pass
+        else:
+            last_time = None
 
-    # Cooldown check
-    last_time = last_trade_times.get(symbol)
-    if last_time and (utc_now - last_time).total_seconds() < 1800:
-        if DRY_RUN:
-            log(f"{symbol} ⏳ Ignored due to cooldown")
-        # Skip cooldown for very strong signals (score >= 4)
-        # We'll calculate the score first to decide
-        pass
-    else:
-        last_time = None
-
-    # Get current balance and position
     balance = get_cached_balance()
     position_size = get_position_size(symbol)
     has_long_position = position_size > 0
     has_short_position = position_size < 0
 
-    # Estimate available margin (simplified)
-    available_margin = balance * 0.1  # Assume 10% of balance is available
+    available_margin = balance * 0.1
 
     filters = FILTER_THRESHOLDS.get(symbol, {})
     atr_thres = filters.get("atr", 0.0015)
@@ -94,7 +141,6 @@ def should_enter_trade(symbol, df, exchange):
             f"{symbol} 🔎 RSI: {rsi:.1f}, MACD: {macd:.5f}, Signal: {macd_signal:.5f}, EMA: {ema:.5f}, HTF: {htf_trend}"
         )
 
-    # Volatility filters
     if VOLATILITY_SKIP_ENABLED:
         high = df["high"].iloc[-1]
         low = df["low"].iloc[-1]
@@ -119,23 +165,22 @@ def should_enter_trade(symbol, df, exchange):
             log(f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})")
         return None
 
-    # Calculate scores
     buy_score = 0
     sell_score = 0
 
-    if rsi < 35:  # Relaxed threshold for buy
+    if rsi < 35:
         buy_score += 1
-    if rsi > 65:  # Relaxed threshold for sell
+    if rsi > 65:
         sell_score += 1
 
-    if macd > macd_signal - abs(macd_signal) * 0.1:  # Relaxed threshold for buy
+    if macd > macd_signal - abs(macd_signal) * 0.1:
         buy_score += 1
-    if macd < macd_signal + abs(macd_signal) * 0.1:  # Relaxed threshold for sell
+    if macd < macd_signal + abs(macd_signal) * 0.1:
         sell_score += 1
 
-    if price > ema * 0.99:  # Relaxed threshold for buy
+    if price > ema * 0.99:
         buy_score += 1
-    if price < ema * 1.01:  # Relaxed threshold for sell
+    if price < ema * 1.01:
         sell_score += 1
 
     if htf_trend:
@@ -143,44 +188,44 @@ def should_enter_trade(symbol, df, exchange):
     if not htf_trend:
         sell_score += 1
 
-    # Adjust scores based on current position
     if has_long_position:
-        sell_score += 1  # Prefer closing long position
-        buy_score -= 1  # Avoid opening another long
+        sell_score += 1
+        buy_score -= 1
     if has_short_position:
-        buy_score += 1  # Prefer closing short position
-        sell_score -= 1  # Avoid opening another short
+        buy_score += 1
+        sell_score -= 1
 
-    # Adjust scores based on available margin
-    if available_margin < 10:  # Example threshold: 10 USDC
+    if available_margin < 10:
         if has_long_position:
-            sell_score += 1  # Prefer closing if margin is low
+            sell_score += 1
         if has_short_position:
             buy_score += 1
         if not has_long_position and not has_short_position:
-            buy_score -= 1  # Avoid new positions if margin is low
+            buy_score -= 1
             sell_score -= 1
 
     if DRY_RUN:
         log(f"{symbol} 🔎 Buy Score: {buy_score}/5, Sell Score: {sell_score}/5")
 
-    # Skip cooldown for very strong signals (score >= 4)
-    if last_time and (utc_now - last_time).total_seconds() < 1800:
-        if buy_score < 4 and sell_score < 4:
+    with last_trade_times_lock:
+        if last_time and (utc_now - last_time).total_seconds() < 1800:
+            if buy_score < 4 and sell_score < 4:
+                if DRY_RUN:
+                    log(
+                        f"{symbol} ⏳ Ignored due to cooldown (scores: {buy_score}/5, {sell_score}/5)"
+                    )
+                return None
+            else:
+                log(
+                    f"{symbol} ⚠️ Cooldown skipped due to strong signal (scores: {buy_score}/5, {sell_score}/5)"
+                )
+
+        if buy_score < MIN_TRADE_SCORE and sell_score < MIN_TRADE_SCORE:
             if DRY_RUN:
-                log(f"{symbol} ⏳ Ignored due to cooldown (scores: {buy_score}/5, {sell_score}/5)")
+                log(f"{symbol} ❌ No entry: insufficient score")
             return None
-        else:
-            log(
-                f"{symbol} ⚠️ Cooldown skipped due to strong signal (scores: {buy_score}/5, {sell_score}/5)"
-            )
 
-    if buy_score < MIN_TRADE_SCORE and sell_score < MIN_TRADE_SCORE:
-        if DRY_RUN:
-            log(f"{symbol} ❌ No entry: insufficient score")
-        return None
-
-    last_trade_times[symbol] = utc_now
+        last_trade_times[symbol] = utc_now
 
     if buy_score >= sell_score and buy_score >= MIN_TRADE_SCORE:
         if DRY_RUN:

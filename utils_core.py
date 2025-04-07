@@ -1,4 +1,3 @@
-# utils_core.py
 import json
 import os
 import time
@@ -23,7 +22,7 @@ api_cache = {
     "positions": {"value": [], "timestamp": 0},
 }
 cache_lock = Lock()
-state_lock = Lock()  # Added: Lock for state operations
+state_lock = Lock()
 
 
 def get_last_signal_time():
@@ -68,12 +67,15 @@ def get_open_symbols():
 def get_cached_balance():
     with cache_lock:
         now = time.time()
+        log("Checking balance cache...", level="DEBUG")
         if (
             now - api_cache["balance"]["timestamp"] > CACHE_TTL
             or api_cache["balance"]["value"] is None
         ):
             try:
+                log("Fetching balance from exchange...", level="DEBUG")
                 api_cache["balance"]["value"] = exchange.fetch_balance()["total"]["USDC"]
+                log(f"Fetched balance: {api_cache['balance']['value']}", level="DEBUG")
                 api_cache["balance"]["timestamp"] = now
                 log(
                     f"Updated balance cache: {api_cache['balance']['value']} USDC",
@@ -86,6 +88,7 @@ def get_cached_balance():
                     if api_cache["balance"]["value"] is not None
                     else 0.0
                 )
+        log(f"Returning cached balance: {api_cache['balance']['value']}", level="DEBUG")
         return api_cache["balance"]["value"]
 
 
@@ -116,8 +119,6 @@ def initialize_cache():
 
 
 def load_state():
-    # Updated: Added state_lock for thread safety
-    # Reason: Prevents race conditions when multiple threads access bot_state.json
     with state_lock:
         try:
             if not os.path.exists(STATE_FILE):
@@ -153,8 +154,6 @@ def load_state():
 
 
 def save_state(state, retries=3, delay=1):
-    # Updated: Added state_lock for thread safety
-    # Reason: Ensures consistent state writes across threads
     attempt = 0
     while attempt < retries:
         with state_lock:

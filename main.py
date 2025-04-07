@@ -1,7 +1,8 @@
-# main.py
 import os
+import signal
 import threading
 import time
+from datetime import datetime
 
 from config import (
     DRY_RUN,
@@ -10,6 +11,7 @@ from config import (
     RISK_DRAWDOWN_THRESHOLD,
     SL_PERCENT,
     VERBOSE,
+    exchange,
     is_aggressive,
     trade_stats,
     trade_stats_lock,
@@ -26,26 +28,53 @@ from pair_selector import start_symbol_rotation
 from telegram.telegram_commands import handle_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import (
-    get_adaptive_risk_percent,
-    get_cached_balance,
-    load_state,
-    save_state,
-)
-from utils_logging import (
-    log,
-    log_dry_entry,
-    notify_error,
-    now,
-)
+from utils_core import get_adaptive_risk_percent, get_cached_balance, load_state, save_state
+from utils_logging import log, log_dry_entry, notify_error, now
 
-SYMBOLS_FILE = "data/dynamic_symbols.json"
+last_trade_times = {}
+last_trade_times_lock = threading.Lock()
+
+
+def signal_handler(sig, frame):
+    log("Force stopping bot due to Ctrl+C", important=True, level="INFO")
+    os._exit(1)
+
+
+signal.signal(signal.SIGINT, signal_handler)
 
 
 def load_symbols():
     from pair_selector import select_active_symbols
 
-    return select_active_symbols()
+    # Run select_active_symbols in a separate thread with a timeout
+    result = []
+
+    def run_select_active_symbols():
+        try:
+            symbols = select_active_symbols(exchange, last_trade_times, last_trade_times_lock)
+            result.append(symbols)
+        except Exception as e:
+            log(f"Error in select_active_symbols: {e}", level="ERROR")
+            result.append([])
+
+    thread = threading.Thread(target=run_select_active_symbols)
+    thread.daemon = True
+    thread.start()
+
+    # Manual timeout loop
+    start_time = time.time()
+    timeout = 30  # 30 seconds timeout
+    while time.time() - start_time < timeout:
+        if not thread.is_alive():
+            break
+        time.sleep(0.1)
+
+    if thread.is_alive():
+        log(f"Timeout in select_active_symbols after {timeout} seconds", level="ERROR")
+        thread._stop()  # Attempt to stop the thread (not guaranteed to work)
+        return []
+
+    return result[0] if result else []
 
 
 def start_trading_loop():
@@ -141,16 +170,41 @@ def start_trading_loop():
                 symbols = load_symbols()
                 log(f"Checking {len(symbols)} symbols in trading loop", level="INFO")
 
+                max_positions = 5
+                open_positions = 0
                 for symbol in symbols:
-                    if get_position_size(symbol) > 0:
+                    position_size = get_position_size(symbol)
+                    if position_size != 0:
+                        open_positions += 1
+
+                active_symbols = []
+                with last_trade_times_lock:
+                    for symbol in symbols:
+                        last_time = last_trade_times.get(symbol)
+                        if last_time and (datetime.utcnow() - last_time).total_seconds() < 1800:
+                            log(f"{symbol} ⏳ Skipped due to cooldown", level="INFO")
+                            continue
+                        active_symbols.append(symbol)
+
+                for symbol in active_symbols:
+                    if get_position_size(symbol) != 0:
                         continue
+                    if open_positions >= max_positions:
+                        log(
+                            f"Max positions ({max_positions}) reached, skipping {symbol}",
+                            level="INFO",
+                        )
+                        continue
+
                     df = fetch_data(symbol)
-                    result = should_enter_trade(symbol, df)
-                    if result in ["buy", "sell"]:
+                    result = should_enter_trade(
+                        symbol, df, exchange, last_trade_times, last_trade_times_lock
+                    )
+                    if isinstance(result, tuple) and result[0] in ["buy", "sell"]:
                         entry = df["close"].iloc[-1]
                         stop = (
                             entry * (1 - SL_PERCENT)
-                            if result == "buy"
+                            if result[0] == "buy"
                             else entry * (1 + SL_PERCENT)
                         )
                         risk_percent = get_adaptive_risk_percent(balance)
@@ -163,8 +217,6 @@ def start_trading_loop():
                                 log(
                                     f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%"
                                 )
-                        # Updated: Added score-based risk adjustment with base_risk logging
-                        # Reason: Enhances risk management and uses base_risk for logging
                         base_risk = risk_percent
                         score = result[1] if isinstance(result, tuple) else 0
                         if score == 3:
@@ -232,7 +284,7 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
     threading.Thread(
-        target=start_symbol_rotation,
+        target=lambda: start_symbol_rotation(last_trade_times, last_trade_times_lock),
         daemon=True,
     ).start()
     start_trading_loop()
