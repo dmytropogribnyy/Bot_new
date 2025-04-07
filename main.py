@@ -71,7 +71,7 @@ def load_symbols():
 
     if thread.is_alive():
         log(f"Timeout in select_active_symbols after {timeout} seconds", level="ERROR")
-        thread._stop()  # Attempt to stop the thread (not guaranteed to work)
+        # Do not attempt to stop the thread; let it run as a daemon
         return []
 
     return result[0] if result else []

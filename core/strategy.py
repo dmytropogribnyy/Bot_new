@@ -1,5 +1,3 @@
-import queue
-import threading
 from datetime import datetime
 
 import pandas as pd
@@ -21,55 +19,30 @@ from utils_logging import log
 
 
 def fetch_data(symbol, tf="15m"):
-    def fetch_ohlcv_with_timeout():
-        try:
-            log(f"Starting fetch_ohlcv for {symbol} in thread", level="DEBUG")
-            data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
-            log(f"Completed fetch_ohlcv for {symbol}", level="DEBUG")
-            q.put(data)
-        except Exception as e:
-            log(f"Exception in fetch_ohlcv for {symbol}: {e}", level="ERROR")
-            q.put(e)
-
     try:
-        q = queue.Queue()
-        fetch_thread = threading.Thread(target=fetch_ohlcv_with_timeout)
-        fetch_thread.daemon = True
-        fetch_thread.start()
+        log(f"Fetching OHLCV data for {symbol}", level="DEBUG")
+        data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
+        log(f"Completed fetch_ohlcv for {symbol}, data length: {len(data)}", level="DEBUG")
 
-        # Use threading.Timer to enforce timeout
-        timeout = 10  # 10 seconds timeout
-        timer = threading.Timer(timeout, lambda: q.put(TimeoutError("Fetch OHLCV timed out")))
-        timer.start()
-
-        # Wait for the thread to complete or timeout
-        fetch_thread.join(timeout=timeout)
-        timer.cancel()  # Cancel the timer if the thread completes
-
-        if fetch_thread.is_alive():
-            log(f"Force stopping fetch thread for {symbol} after timeout", level="ERROR")
-            fetch_thread._stop()  # Attempt to stop the thread (not guaranteed to work)
-            return None
-
-        result = q.get()
-        if isinstance(result, Exception):
-            log(f"Error fetching OHLCV data for {symbol}: {result}", level="ERROR")
-            return None
-
-        data = result
         if not data:
             log(f"No data returned for {symbol} on timeframe {tf}", level="ERROR")
             raise ValueError("No data returned from exchange")
+
+        # Create DataFrame and log its shape
         df = pd.DataFrame(
             data,
             columns=["time", "open", "high", "low", "close", "volume"],
         )
+        log(f"Created DataFrame for {symbol}, shape: {df.shape}", level="DEBUG")
+
+        # Ensure enough rows for indicators (window=14)
         if df.empty or len(df) < 14:
             log(
                 f"Insufficient data for {symbol} on timeframe {tf} (rows: {len(df)})", level="ERROR"
             )
             raise ValueError("Insufficient data for indicator calculation")
 
+        # Calculate indicators
         df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
         df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
         df["macd"] = ta.trend.MACD(df["close"]).macd()

@@ -124,24 +124,12 @@ if DRY_RUN:
         def fetch_ohlcv(self, symbol, timeframe, limit):
             print(f"[MockExchange] fetch_ohlcv called for {symbol}")
             base_price = 50000 if "BTC" in symbol else 2000 if "ETH" in symbol else 0.1
-            # Return a static list to avoid any loop issues
-            return [
-                [0, base_price, base_price + 10, base_price - 10, base_price, 1000],
-                [1, base_price, base_price + 10, base_price - 10, base_price + 1, 1000],
-                [2, base_price, base_price + 10, base_price - 10, base_price + 2, 1000],
-                [3, base_price, base_price + 10, base_price - 10, base_price + 3, 1000],
-                [4, base_price, base_price + 10, base_price - 10, base_price + 4, 1000],
-                [5, base_price, base_price + 10, base_price - 10, base_price + 5, 1000],
-                [6, base_price, base_price + 10, base_price - 10, base_price + 6, 1000],
-                [7, base_price, base_price + 10, base_price - 10, base_price + 7, 1000],
-                [8, base_price, base_price + 10, base_price - 10, base_price + 8, 1000],
-                [9, base_price, base_price + 10, base_price - 10, base_price + 9, 1000],
-                [10, base_price, base_price + 10, base_price - 10, base_price + 10, 1000],
-                [11, base_price, base_price + 10, base_price - 10, base_price + 11, 1000],
-                [12, base_price, base_price + 10, base_price - 10, base_price + 12, 1000],
-                [13, base_price, base_price + 10, base_price - 10, base_price + 13, 1000],
-                [14, base_price, base_price + 10, base_price - 10, base_price + 14, 1000],
+            # Static list of 50 rows to avoid loop issues
+            data = [
+                [i, base_price, base_price + 10, base_price - 10, base_price + i, 1000]
+                for i in range(50)
             ]
+            return data
 
         def fetch_ticker(self, symbol):
             print(f"[MockExchange] fetch_ticker called for {symbol}")
