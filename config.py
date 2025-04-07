@@ -100,7 +100,7 @@ ENABLE_BREAKEVEN = True
 BREAKEVEN_TRIGGER = 0.5
 
 # --- Signal Strength Control ---
-MIN_TRADE_SCORE = 3
+MIN_TRADE_SCORE = 2
 SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
 
@@ -126,12 +126,21 @@ trade_stats = {
 }
 
 # --- Exchange ---
-exchange = ccxt.binanceusdm(
+exchange = ccxt.binance(
     {
         "apiKey": API_KEY,
         "secret": API_SECRET,
         "enableRateLimit": True,
-        "options": {"defaultType": "future"},
+        "options": {
+            "defaultType": "future",
+            "adjustForTimeDifference": True,
+        },
+        "urls": {
+            "api": {
+                "public": "https://fapi.binance.com/fapi/v1",
+                "private": "https://fapi.binance.com/fapi/v1",
+            }
+        },
     }
 )
 

@@ -7,6 +7,7 @@ from threading import Lock
 import pandas as pd
 
 from config import (
+    DRY_RUN,
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
@@ -19,27 +20,77 @@ SYMBOLS_FILE = "data/dynamic_symbols.json"
 UPDATE_INTERVAL_SECONDS = 4 * 60 * 60  # 4 hours
 symbols_file_lock = Lock()
 
+# Fallback list for DRY_RUN with valid Binance USDM Futures symbols
+DRY_RUN_FALLBACK_SYMBOLS = [
+    "ADA/USDC",
+    "XRP/USDC",
+    "SUI/USDC",
+    "LINK/USDC",
+    "ARB/USDC",
+    "AVAX/USDC",
+    "LTC/USDC",
+    "BCH/USDC",
+    "NEAR/USDC",
+    "ALGO/USDC",
+]
+
 
 def fetch_all_symbols():
     try:
         markets = exchange.load_markets()
-        symbols = [
+        log(f"Loaded markets: {len(markets)} total symbols", level="DEBUG")
+        log(f"Sample markets: {list(markets.keys())[:5]}...", level="DEBUG")
+
+        # Filter for USDC symbols with new format (e.g., BTC/USDC:USDC)
+        usdc_symbols = [
             symbol
             for symbol in markets.keys()
-            if symbol.endswith("/USDC")
-            and markets[symbol]["active"]
-            and markets[symbol]["type"] == "future"
+            if symbol.endswith("/USDC:USDC") or symbol.endswith("USDC:USDC")
         ]
-        log(f"Fetched {len(symbols)} USDC futures symbols", level="INFO")
+        log(f"Found {len(usdc_symbols)} USDC symbols: {usdc_symbols[:5]}...", level="INFO")
+
+        # Log details of the first few USDC symbols
+        for symbol in usdc_symbols[:5]:
+            log(
+                f"Symbol: {symbol}, Type: {markets[symbol]['type']}, Active: {markets[symbol]['active']}",
+                level="DEBUG",
+            )
+
+        # Updated: Add back filters for type and active status
+        # Reason: Now that API works, we can filter for active futures/swap pairs
+        active_usdc_symbols = [symbol for symbol in usdc_symbols if markets[symbol]["active"]]
+        log(
+            f"Found {len(active_usdc_symbols)} active USDC symbols: {active_usdc_symbols[:5]}...",
+            level="DEBUG",
+        )
+
+        symbols = [
+            symbol
+            for symbol in active_usdc_symbols
+            if markets[symbol]["type"] in ["future", "swap"]
+        ]
+
+        # Normalize symbols to remove :USDC suffix (e.g., BTC/USDC:USDC -> BTC/USDC)
+        symbols = [symbol.replace(":USDC", "") for symbol in symbols]
+        log(f"Fetched {len(symbols)} USDC futures symbols: {symbols[:5]}...", level="INFO")
+
+        if not symbols and DRY_RUN:
+            log("No symbols fetched from API in DRY_RUN, using fallback symbols", level="WARNING")
+            return DRY_RUN_FALLBACK_SYMBOLS
         return symbols
     except Exception as e:
-        log(f"Error fetching all symbols: {e}", level="ERROR")
+        log(f"Error fetching all symbols: {str(e)}", level="ERROR")
+        if DRY_RUN:
+            log("API error in DRY_RUN, using fallback symbols", level="WARNING")
+            return DRY_RUN_FALLBACK_SYMBOLS
         return []
 
 
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        # Convert symbol back to API format for fetching data (e.g., BTC/USDC -> BTC/USDC:USDC)
+        api_symbol = f"{symbol}:USDC"
+        ohlcv = exchange.fetch_ohlcv(api_symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df

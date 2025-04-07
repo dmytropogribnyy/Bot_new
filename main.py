@@ -7,7 +7,7 @@ from config import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     MIN_NOTIONAL,
-    RISK_DRAWDOWN_THRESHOLD,  # Added from trader.py
+    RISK_DRAWDOWN_THRESHOLD,
     SL_PERCENT,
     VERBOSE,
     is_aggressive,
@@ -22,6 +22,7 @@ from core.trade_engine import (
     get_position_size,
 )
 from ip_monitor import start_ip_monitor
+from pair_selector import start_symbol_rotation
 from telegram.telegram_commands import handle_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
@@ -137,6 +138,9 @@ def start_trading_loop():
                     log("Starting symbol loop...", level="INFO")
                     last_loop_log_time = now_time
 
+                symbols = load_symbols()
+                log(f"Checking {len(symbols)} symbols in trading loop", level="INFO")
+
                 for symbol in symbols:
                     if get_position_size(symbol) > 0:
                         continue
@@ -149,8 +153,6 @@ def start_trading_loop():
                             if result == "buy"
                             else entry * (1 + SL_PERCENT)
                         )
-                        # Updated: Integrated trader.py risk logic
-                        # Reason: Unifies advanced risk management across the project
                         risk_percent = get_adaptive_risk_percent(balance)
                         with trade_stats_lock:
                             if trade_stats["pnl"] < -RISK_DRAWDOWN_THRESHOLD:
@@ -161,24 +163,40 @@ def start_trading_loop():
                                 log(
                                     f"⚠️ Risk lowered due to capital drop: {risk_percent * 100:.1f}%"
                                 )
+                        # Updated: Added score-based risk adjustment with base_risk logging
+                        # Reason: Enhances risk management and uses base_risk for logging
+                        base_risk = risk_percent
+                        score = result[1] if isinstance(result, tuple) else 0
+                        if score == 3:
+                            risk_percent *= 0.7
+                            log(
+                                f"⚠️ Entry score {score}/5 → reduced risk: base {base_risk * 100:.1f}% → effective {risk_percent * 100:.1f}%"
+                            )
+                        elif score >= 4:
+                            log(f"📈 Entry score {score}/5 → full risk: {risk_percent * 100:.1f}%")
+                        else:
+                            log(
+                                f"Entry score {score}/5 → using base risk: {risk_percent * 100:.1f}%"
+                            )
+
                         risk = calculate_risk_amount(balance, risk_percent)
                         qty = calculate_position_size(entry, stop, risk)
                         if qty * entry >= MIN_NOTIONAL:
                             if DRY_RUN:
                                 log(
-                                    f"[DRY] Entering {result.upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
+                                    f"[DRY] Entering {result[0].upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
                                     level="INFO",
                                 )
                                 log_dry_entry(
-                                    f"{result.upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})"
+                                    f"{result[0].upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})"
                                 )
-                                msg = f"DRY RUN: {result.upper()} {symbol} at {entry:.5f} (qty: {qty:.2f})"
+                                msg = f"DRY RUN: {result[0].upper()} {symbol} at {entry:.5f} (qty: {qty:.2f})"
                                 send_telegram_message(msg, force=True)
                             else:
-                                enter_trade(symbol, result, qty)
+                                enter_trade(symbol, result[0], qty, score)
                                 position_timestamps[symbol] = now()
                                 log(
-                                    f"Entered {result.upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
+                                    f"Entered {result[0].upper()} on {symbol} at {entry:.5f} (qty: {qty:.2f})",
                                     level="INFO",
                                 )
                 save_state(state)
@@ -211,6 +229,10 @@ if __name__ == "__main__":
     ).start()
     threading.Thread(
         target=lambda: start_ip_monitor(handle_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=start_symbol_rotation,
         daemon=True,
     ).start()
     start_trading_loop()
