@@ -1,7 +1,7 @@
 import csv
 import os
 
-from config import EXPORT_PATH, TP_LOG_FILE
+from config import DRY_RUN, EXPORT_PATH, TP_LOG_FILE
 from stats import now_with_timezone
 from utils_logging import log
 
@@ -33,72 +33,102 @@ def ensure_log_exists():
 
 def log_trade_result(
     symbol,
-    side,
+    direction,
     entry_price,
     exit_price,
-    result,
+    qty,
+    tp1_hit,
+    tp2_hit,
+    sl_hit,
     pnl_percent,
     duration_minutes,
+    htf_confirmed,
     atr,
     adx,
     bb_width,
-    price,
-    hit_tp1,
-    hit_tp2,
-    hit_sl,
-    htf_trend,  # добавлено
 ):
-    timestamp = now_with_timezone().strftime("%Y-%m-%d %H:%M")
+    if DRY_RUN:
+        log(f"[DRY_RUN] Skipping TP log for {symbol}, PnL: {round(pnl_percent, 2)}%", level="INFO")
+        return
 
+    date_str = now_with_timezone().strftime("%Y-%m-%d %H:%M:%S")
     row = [
-        timestamp,
+        date_str,
         symbol,
-        side,
-        entry_price,
-        exit_price,
-        result,
+        direction,
+        round(entry_price, 6),
+        round(exit_price, 6),
+        round(qty, 2),
+        tp1_hit,
+        tp2_hit,
+        sl_hit,
         round(pnl_percent, 2),
         duration_minutes,
+        htf_confirmed,
         round(atr, 6),
         round(adx, 6),
         round(bb_width, 6),
-        round(price, 6),
-        "YES" if hit_tp1 else "NO",
-        "YES" if hit_tp2 else "NO",
-        "YES" if hit_sl else "NO",
-        "YES" if htf_trend else "NO",  # добавлено
     ]
-
-    header = [
-        "Date",
-        "Symbol",
-        "Side",
-        "Entry Price",
-        "Exit Price",
-        "Result",
-        "PnL (%)",
-        "Duration (min)",
-        "ATR",
-        "ADX",
-        "BB Width",
-        "Price",
-        "Hit TP1",
-        "Hit TP2",
-        "Hit SL",
-        "HTF Confirmed",  # добавлено
-    ]
-
-    file_exists = os.path.isfile(TP_LOG_FILE)
 
     try:
+        # Save main TP log
+        file_exists = os.path.isfile(TP_LOG_FILE)
         with open(TP_LOG_FILE, mode="a", newline="") as file:
             writer = csv.writer(file)
             if not file_exists:
-                writer.writerow(header)
+                writer.writerow(
+                    [
+                        "Date",
+                        "Symbol",
+                        "Direction",
+                        "Entry Price",
+                        "Exit Price",
+                        "Qty",
+                        "TP1 Hit",
+                        "TP2 Hit",
+                        "SL Hit",
+                        "PnL (%)",
+                        "Duration (min)",
+                        "HTF Confirmed",
+                        "ATR",
+                        "ADX",
+                        "BB Width",
+                    ]
+                )
             writer.writerow(row)
-        log(f"TP result logged: {row}", level="INFO")
+
+        # Save summary/export log
+        file_exists = os.path.isfile(EXPORT_PATH)
+        with open(EXPORT_PATH, mode="a", newline="") as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow(
+                    [
+                        "Date",
+                        "Symbol",
+                        "Direction",
+                        "Entry Price",
+                        "Exit Price",
+                        "Qty",
+                        "TP1 Hit",
+                        "TP2 Hit",
+                        "SL Hit",
+                        "PnL (%)",
+                        "Duration (min)",
+                        "HTF Confirmed",
+                        "ATR",
+                        "ADX",
+                        "BB Width",
+                    ]
+                )
+            writer.writerow(row)
+
+        log(
+            f"[REAL_RUN] Logged TP result for {symbol}, PnL: {round(pnl_percent, 2)}%", level="INFO"
+        )
+
     except Exception as e:
-        log(f"Failed to write TP log: {e}", level="ERROR")
+        log(f"[TP Logger] Failed to log trade for {symbol}: {e}", level="ERROR")
 
 
 def get_last_trade():

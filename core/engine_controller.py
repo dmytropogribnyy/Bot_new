@@ -28,13 +28,20 @@ MIN_SCORE_DELTA_SWITCH = 2  # You can move this to config.py if needed
 
 def get_smart_switch_stats():
     try:
+        if not os.path.exists("data/tp_performance.csv"):
+            log(
+                "[SmartSwitch] tp_performance.csv not found, skipping winrate calculation.",
+                level="WARNING",
+            )
+            return 0.5  # Возвращаем нейтральную winrate на старте
+
         df = pd.read_csv("data/tp_performance.csv", parse_dates=["Date"])
         recent = df[df["ResultType"] == "smart_switch"].tail(10)
         winrate = len(recent[recent["PnL (%)"] > 0]) / len(recent) if not recent.empty else 0
         return round(winrate, 2)
     except Exception as e:
         log(f"[SmartSwitch] Failed to calculate winrate: {e}", level="WARNING")
-        return 0.5
+        return 0.5  # Возвращаем нейтральную winrate при ошибке
 
 
 def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate):
