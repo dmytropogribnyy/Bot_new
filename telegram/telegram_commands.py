@@ -1,9 +1,18 @@
 # telegram_commands.py
+
 import time
 
 import pandas as pd
 
-from config import DRY_RUN, EXPORT_PATH, exchange, is_aggressive, trade_stats
+from config import (
+    AGGRESSIVENESS_THRESHOLD,
+    DRY_RUN,
+    EXPORT_PATH,
+    LOG_LEVEL,
+    exchange,
+    trade_stats,
+)
+from core.aggressiveness_controller import get_aggressiveness_score  # Добавляем импорт
 from core.trade_engine import last_trade_info
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
@@ -16,10 +25,7 @@ from utils_core import (
     load_state,
     save_state,
 )
-from utils_logging import (
-    log,
-    now,
-)
+from utils_logging import log, now
 
 
 def handle_telegram_command(message, state):
@@ -69,16 +75,22 @@ def handle_telegram_command(message, state):
             "🌐 /ipstatus - Show current/previous IP + router mode\n"
             "📡 /forceipcheck - Force immediate IP check\n"
             "🔒 /close_dry - Close a DRY position (DRY_RUN only, e.g., /close_dry BTC/USDC)\n"
-            "▶️ /resume_after_ip - Resume bot after IP change (REAL_RUN only)\n"  # Added
+            "▶️ /resume_after_ip - Resume bot after IP change (REAL_RUN only)\n"
         )
         send_telegram_message(escape_markdown_v2(message), force=True)
+        if LOG_LEVEL == "DEBUG":
+            log("Sent help message.", level="DEBUG")
 
     elif text == "/summary":
         summary = generate_summary()
         send_telegram_message(escape_markdown_v2(summary), force=True)
+        if LOG_LEVEL == "DEBUG":
+            log("Sent summary via /summary command.", level="DEBUG")
 
     elif text == "/heatmap":
         generate_score_heatmap(days=7)
+        if LOG_LEVEL == "DEBUG":
+            log("Generated score heatmap via /heatmap command.", level="DEBUG")
 
     elif text == "/pause":
         state["pause"] = True
@@ -140,7 +152,7 @@ def handle_telegram_command(message, state):
         )
         log("Stop process cancelled via /cancel_stop command.", level="INFO")
 
-    # Added: Handle /resume_after_ip to resume bot after IP change in REAL_RUN
+    # Handle /resume_after_ip to resume bot after IP change in REAL_RUN
     # Reason: Allows user to continue bot operation after updating Binance IP whitelist
     elif text == "/resume_after_ip":
         if DRY_RUN:
@@ -167,7 +179,9 @@ def handle_telegram_command(message, state):
                 log("Resume command ignored: bot not stopping.", level="INFO")
 
     elif text == "/mode":
-        mode = "AGGRESSIVE" if is_aggressive else "SAFE"
+        mode = (
+            "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
+        )  # Исправляем
         send_telegram_message(escape_markdown_v2(f"Current mode: {mode}"), force=True)
         log(f"Mode command: Current mode is {mode}.", level="INFO")
 
@@ -276,7 +290,9 @@ def handle_telegram_command(message, state):
             idle = f"{(current_time - last_sig).seconds // 60} min ago" if last_sig else "N/A"
 
             balance = get_cached_balance()
-            mode = "AGGRESSIVE" if is_aggressive else "SAFE"
+            mode = (
+                "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
+            )  # Исправляем
             paused = "Paused" if state.get("pause") else "Running"
             stopping = "Stopping after trades" if state.get("stopping") else ""
 

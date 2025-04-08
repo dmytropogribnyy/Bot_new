@@ -1,50 +1,82 @@
-# score_evaluator.py — адаптивный модуль расчёта сигнального score
+# score_evaluator.py — адаптивный модуль расчёта сигнального score с весами и нормализацией
 
-from config import ADAPTIVE_SCORE_ENABLED, DRY_RUN, MIN_TRADE_SCORE
+import threading
+from datetime import datetime
+
+from config import ADAPTIVE_SCORE_ENABLED, DRY_RUN, MIN_TRADE_SCORE, SCORE_WEIGHTS
 from utils_logging import log
+
+last_score_data = {}
+last_score_lock = threading.Lock()
 
 
 def calculate_score(df, symbol=None):
     """
-    Вычисляет итоговый score по индикаторам с возможностью гибкой адаптации.
+    Вычисляет итоговый score на основе взвешенной системы показателей с нормализацией до 0–5.
     """
-    score = 0
+    raw_score = 0.0
+    price = df["close"].iloc[-1]
+    ema = df["ema"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
     macd = df["macd"].iloc[-1]
     signal = df["macd_signal"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    price = df["close"].iloc[-1]
     htf_trend = df.get("htf_trend", [False])[-1]
 
-    # Адаптивные границы RSI (если включено)
-    rsi_lo, rsi_hi = (30, 70)
+    score_weights = SCORE_WEIGHTS
+    max_raw_score = sum(score_weights.values())
+
+    breakdown = {
+        "RSI": 0,
+        "MACD_RSI": 0,
+        "MACD_EMA": 0,
+        "HTF": 0,
+    }
+
+    rsi_lo, rsi_hi = (35, 65)
     if ADAPTIVE_SCORE_ENABLED:
         if price > ema:
-            rsi_lo, rsi_hi = 35, 75
+            rsi_lo, rsi_hi = 40, 70
         else:
-            rsi_lo, rsi_hi = 25, 65
+            rsi_lo, rsi_hi = 30, 60
 
     if rsi < rsi_lo or rsi > rsi_hi:
-        score += 1
+        raw_score += score_weights["RSI"]
+        breakdown["RSI"] = score_weights["RSI"]
     if (macd > signal and rsi < 50) or (macd < signal and rsi > 50):
-        score += 1
+        raw_score += score_weights["MACD_RSI"]
+        breakdown["MACD_RSI"] = score_weights["MACD_RSI"]
     if (macd > signal and price > ema) or (macd < signal and price < ema):
-        score += 1
+        raw_score += score_weights["MACD_EMA"]
+        breakdown["MACD_EMA"] = score_weights["MACD_EMA"]
     if htf_trend and price > ema:
-        score += 1
+        raw_score += score_weights["HTF"]
+        breakdown["HTF"] = score_weights["HTF"]
+
+    normalized_score = (raw_score / max_raw_score) * 5
+    final_score = round(normalized_score, 1)
+
+    with last_score_lock:
+        last_score_data[symbol] = {
+            "symbol": symbol,
+            "total": final_score,
+            "details": breakdown,
+            "threshold": MIN_TRADE_SCORE,
+            "final": final_score >= MIN_TRADE_SCORE,
+            "timestamp": datetime.utcnow(),
+        }
 
     if DRY_RUN:
-        log(f"{symbol or ''} 📊 Score: {score}/5", level="DEBUG")
+        log(
+            f"{symbol or ''} 📊 Score: {final_score:.1f}/5 (raw: {raw_score:.2f}/{max_raw_score:.1f})",
+            level="DEBUG",
+        )
 
-    return score
+    return final_score
 
 
 def get_adaptive_min_score(trade_count_last_days=0, winrate=0.0):
-    """
-    Возвращает адаптивный порог score в зависимости от накопленных данных.
-    """
     if trade_count_last_days < 20:
-        return max(MIN_TRADE_SCORE - 1, 1)  # мягкий старт
+        return max(MIN_TRADE_SCORE - 1, 1)
     if winrate < 0.4:
         return MIN_TRADE_SCORE - 1
     if winrate > 0.6:
@@ -53,24 +85,30 @@ def get_adaptive_min_score(trade_count_last_days=0, winrate=0.0):
 
 
 def explain_score(df):
-    """
-    Возвращает подробный breakdown score для Telegram-отчётов
-    """
+    price = df["close"].iloc[-1]
+    ema = df["ema"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
     macd = df["macd"].iloc[-1]
     signal = df["macd_signal"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    price = df["close"].iloc[-1]
     htf_trend = df.get("htf_trend", [False])[-1]
 
-    components = []
-    if rsi < 30 or rsi > 70:
-        components.append("✅ RSI extreme")
+    parts = []
+    if rsi < 35 or rsi > 65:
+        parts.append("✅ RSI extreme")
     if (macd > signal and rsi < 50) or (macd < signal and rsi > 50):
-        components.append("✅ MACD/RSI aligned")
+        parts.append("✅ MACD/RSI aligned")
     if (macd > signal and price > ema) or (macd < signal and price < ema):
-        components.append("✅ Price/MACD vs EMA aligned")
+        parts.append("✅ Price/MACD vs EMA aligned")
     if htf_trend and price > ema:
-        components.append("✅ HTF trend confirmed")
+        parts.append("✅ HTF trend confirmed")
 
-    return "\n".join(components)
+    return "\n".join(parts)
+
+
+def get_last_score_breakdown(symbol=None):
+    with last_score_lock:
+        if not last_score_data:
+            return None
+        if symbol:
+            return last_score_data.get(symbol)
+        return max(last_score_data.values(), key=lambda x: x["timestamp"], default=None)

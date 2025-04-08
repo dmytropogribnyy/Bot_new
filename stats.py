@@ -7,12 +7,22 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from config import TIMEZONE, is_aggressive, trade_stats, trade_stats_lock
+from config import (
+    AGGRESSIVENESS_THRESHOLD,
+    LOG_LEVEL,
+    TIMEZONE,
+    trade_stats,
+    trade_stats_lock,
+)
+
+# Добавляем AGGRESSIVENESS_THRESHOLD
+from core.aggressiveness_controller import get_aggressiveness_score  # Добавляем импорт
 from htf_optimizer import analyze_htf_winrate
 from score_heatmap import generate_score_heatmap
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
+from utils_logging import log  # Добавляем импорт для логирования
 
 EXPORT_PATH = "data/tp_performance.csv"
 
@@ -26,7 +36,7 @@ def format_report_header(title: str) -> str:
 
 
 def get_mode_label():
-    return "AGGRESSIVE" if is_aggressive else "SAFE"
+    return "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
 
 
 def get_safe_stats():
@@ -110,14 +120,19 @@ def export_trade_log():
                 f"Losses: {stats['losses']}, PnL: {stats['pnl']}, Withdrawals: {stats['withdrawals']}\n"
             )
         send_telegram_message(escape_markdown_v2("Trade log exported."), force=True)
+        if LOG_LEVEL == "DEBUG":
+            log("Trade log exported successfully.", level="DEBUG")
     except Exception as e:
         send_telegram_message(escape_markdown_v2(f"Failed to export trade log: {e}"), force=True)
+        log(f"Failed to export trade log: {e}", level="ERROR")
 
 
 def send_daily_report():
     today = now_with_timezone().strftime("%d.%m.%Y")
     msg = build_performance_report("Daily Performance Summary", today)
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    if LOG_LEVEL == "DEBUG":
+        log(f"Sent daily report for {today}.", level="DEBUG")
 
 
 def send_weekly_report():
@@ -125,6 +140,8 @@ def send_weekly_report():
     start = (end - timedelta(days=7)).strftime("%d.%m")
     msg = build_performance_report("Weekly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    if LOG_LEVEL == "DEBUG":
+        log(f"Sent weekly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
 
 def send_monthly_report():
@@ -134,6 +151,8 @@ def send_monthly_report():
         "Monthly Performance Summary", f"{start}-{end.strftime('%d.%m')}"
     )
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    if LOG_LEVEL == "DEBUG":
+        log(f"Sent monthly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
 
 def send_quarterly_report():
@@ -143,6 +162,8 @@ def send_quarterly_report():
         "3-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}"
     )
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    if LOG_LEVEL == "DEBUG":
+        log(f"Sent quarterly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
 
 def send_halfyear_report():
@@ -152,6 +173,8 @@ def send_halfyear_report():
         "6-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}"
     )
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    if LOG_LEVEL == "DEBUG":
+        log(f"Sent half-year report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
 
 def send_yearly_report():
@@ -159,6 +182,8 @@ def send_yearly_report():
     start = (end - timedelta(days=365)).strftime("%d.%m")
     msg = build_performance_report("Yearly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    if LOG_LEVEL == "DEBUG":
+        log(f"Sent yearly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
 
 def should_run_optimizer():
@@ -169,7 +194,8 @@ def should_run_optimizer():
         df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=2)]
         recent_trades = df[df["Result"].isin(["TP1", "TP2", "SL"])]
         return len(recent_trades) >= 20
-    except Exception:
+    except Exception as e:
+        log(f"Error checking optimizer condition: {e}", level="ERROR")
         return False
 
 
@@ -195,9 +221,13 @@ def start_report_loops():
             t = now_with_timezone()
             if t.day == 1 and t.hour == 21 and t.minute == 0:
                 send_monthly_report()
-            if t.day == 1 and t.month in [1, 4, 7, 10] and t.hour == 21 and t.minute == 5:
+            if (
+                t.day == 1 and t.month in [1, 4, 7, 10] and t.hour == 21 and t.minute == 5
+            ):  # Исправляем of на in
                 send_quarterly_report()
-            if t.day == 1 and t.month in [1, 7] and t.hour == 21 and t.minute == 10:
+            if (
+                t.day == 1 and t.month in [1, 7] and t.hour == 21 and t.minute == 10
+            ):  # Исправляем of на in
                 send_halfyear_report()
             if t.day == 1 and t.month == 1 and t.hour == 21 and t.minute == 15:
                 send_yearly_report()

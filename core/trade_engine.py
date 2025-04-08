@@ -1,3 +1,5 @@
+# trade_engine.py
+
 import threading
 import time
 
@@ -5,6 +7,7 @@ import pandas as pd
 import ta
 
 from config import (
+    AGGRESSIVENESS_THRESHOLD,  # Импортируем порог
     BREAKEVEN_TRIGGER,
     DRY_RUN,
     ENABLE_BREAKEVEN,
@@ -16,8 +19,8 @@ from config import (
     TP2_PERCENT,
     TP2_SHARE,
     exchange,
-    is_aggressive,
 )
+from core.aggressiveness_controller import get_aggressiveness_score
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
 from utils_core import get_cached_positions
@@ -189,7 +192,9 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
         atr = max([h - low for h, low in zip(highs, lows)])
         df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
-        multiplier = 3 if is_aggressive else 2
+        multiplier = (
+            3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
+        )  # Используем порог из config
         if adx > 25:
             multiplier *= 0.7
         trailing_distance = atr * multiplier
@@ -255,7 +260,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
             pnl_percent=round(pnl, 2),
             result="WIN" if pnl > 0 else "LOSS",
             duration_minutes=duration,
-            htf_trend=trade.get("htf_trend", False),  # ✅ добавлено
+            htf_trend=trade.get("htf_trend", False),
         )
 
         msg = (

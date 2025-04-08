@@ -7,12 +7,12 @@ import ta
 from config import (
     DRY_RUN,
     FILTER_THRESHOLDS,
-    MIN_TRADE_SCORE,
     VOLATILITY_ATR_THRESHOLD,
     VOLATILITY_RANGE_THRESHOLD,
     VOLATILITY_SKIP_ENABLED,
     exchange,
 )
+from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.trade_engine import get_position_size  # Keep for should_enter_trade
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance  # Keep for should_enter_trade
@@ -80,7 +80,6 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     position_size = get_position_size(symbol)
     has_long_position = position_size > 0
     has_short_position = position_size < 0
-
     available_margin = balance * 0.1
 
     filters = FILTER_THRESHOLDS.get(symbol, {})
@@ -97,16 +96,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     atr = df["atr"].iloc[-1]
     adx_val = df["adx"].iloc[-1]
     bb_width = df["bb_width"].iloc[-1]
-    rsi = df["rsi"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    macd = df["macd"].iloc[-1]
-    macd_signal = df["macd_signal"].iloc[-1]
-    htf_trend = get_htf_trend(symbol)
-
-    if DRY_RUN:
-        log(
-            f"{symbol} 🔎 RSI: {rsi:.1f}, MACD: {macd:.5f}, Signal: {macd_signal:.5f}, EMA: {ema:.5f}, HTF: {htf_trend}"
-        )
+    get_htf_trend(symbol)
 
     if VOLATILITY_SKIP_ENABLED:
         high = df["high"].iloc[-1]
@@ -132,28 +122,16 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             log(f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})")
         return None
 
-    score = 0
-    if rsi < 30 or rsi > 70:
-        score += 1
-    if (macd > macd_signal and rsi < 50) or (macd < macd_signal and rsi > 50):
-        score += 1
-    if (macd > macd_signal and price > ema) or (macd < macd_signal and price < ema):
-        score += 1
-    if htf_trend and price > ema:
-        score += 1
+    score = calculate_score(df, symbol)
+    min_required = get_adaptive_min_score()
 
-    if has_long_position:
-        score -= 1  # Avoid opening another long position
-    if has_short_position:
-        score -= 1  # Avoid opening another short position
-
-    if available_margin < 10:
-        score -= 1  # Avoid new positions if margin is low
+    if has_long_position or has_short_position or available_margin < 10:
+        score -= 0.5
 
     if DRY_RUN:
-        log(f"{symbol} 🔎 Final Score: {score}/5")
+        log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")
 
-    if score < MIN_TRADE_SCORE:
+    if score < min_required:
         if DRY_RUN:
             log(f"{symbol} ❌ No entry: insufficient score")
         return None
@@ -161,17 +139,15 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     with last_trade_times_lock:
         last_trade_times[symbol] = utc_now
 
+    direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+
     if DRY_RUN:
-        log(
-            f"{symbol} 🧪 [DRY_RUN] Signal → {('BUY' if macd > macd_signal else 'SELL')}, score: {score}/5"
-        )
+        log(f"{symbol} 🧪 [DRY_RUN] Signal → {direction}, score: {score}/5")
         send_telegram_message(
-            escape_markdown_v2(
-                f"🧪 [DRY_RUN] {symbol} → {('BUY' if macd > macd_signal else 'SELL')} | Score: {score}/5"
-            ),
+            escape_markdown_v2(f"🧪 [DRY_RUN] {symbol} → {direction} | Score: {score}/5"),
             force=True,
         )
-    log(
-        f"{symbol} ✅ {('BUY' if macd > macd_signal else 'SELL')} signal triggered (score: {score}/5)"
-    )
-    return ("buy" if macd > macd_signal else "sell", score)
+    else:
+        log(f"{symbol} ✅ {direction} signal triggered (score: {score}/5)")
+
+    return ("buy" if direction == "BUY" else "sell", score)

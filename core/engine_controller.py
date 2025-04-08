@@ -4,7 +4,8 @@ import time
 
 import pandas as pd
 
-from config import DRY_RUN, is_aggressive
+from config import AGGRESSIVENESS_THRESHOLD, DRY_RUN
+from core.aggressiveness_controller import get_aggressiveness_score
 from core.balance_watcher import check_balance_change
 from core.entry_logger import log_entry
 from core.notifier import notify_dry_trade, notify_error
@@ -48,7 +49,7 @@ def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate):
     base_limit = 1 if balance < 50 else 2
     if active_positions == 0:
         base_limit += 1
-    if is_aggressive:
+    if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD:  # Используем порог из config
         base_limit += 1
     if recent_switch_winrate > 0.7:
         base_limit += 1

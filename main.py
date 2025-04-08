@@ -1,12 +1,15 @@
+# main.py
+
 import threading
 import time
 
 from config import (
+    AGGRESSIVENESS_THRESHOLD,  # NEW: Импортируем порог
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     VERBOSE,
-    is_aggressive,
 )
+from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
 from ip_monitor import start_ip_monitor
 from pair_selector import select_active_symbols, start_symbol_rotation
@@ -28,9 +31,14 @@ def start_trading_loop():
     mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
+    aggressive_mode = (
+        get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD
+    )  # Используем порог из config
+    mode_text = "AGGRESSIVE" if aggressive_mode else "SAFE"
+
     message = (
         f"Bot started in {mode} mode\n"
-        f"Mode: {'SAFE' if not is_aggressive else 'AGGRESSIVE'}\n"
+        f"Mode: {mode_text}\n"
         f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     )
     send_telegram_message(escape_markdown_v2(message), force=True)

@@ -1,3 +1,5 @@
+# config.py
+
 import os
 from threading import Lock
 
@@ -20,7 +22,8 @@ LOG_FILE_PATH = "telegram_log.txt"
 EXPORT_PATH = "data/tp_performance.csv"
 
 # --- Logging ---
-LOG_LEVEL = "INFO"
+LOG_LEVEL = "INFO"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
+LOG_SCORE_EVERYWHERE = False  # NEW: Allow score logging in REAL_RUN if True
 
 # --- Symbols & Leverage (fallback) ---
 SYMBOLS_ACTIVE = [
@@ -61,6 +64,7 @@ TP2_SHARE = 0.3
 SL_PERCENT = 0.01
 
 # --- Risk Management ---
+AGGRESSIVENESS_THRESHOLD = 0.6  # NEW: Порог для определения AGGRESSIVE режима
 AGGRESSIVE_THRESHOLD = 50
 SAFE_THRESHOLD = 10
 MIN_NOTIONAL = 5
@@ -96,11 +100,19 @@ MIN_TRADE_SCORE = 2
 SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
 
+SCORE_WEIGHTS = {
+    "RSI": 0.3,
+    "MACD_RSI": 0.3,
+    "MACD_EMA": 0.3,
+    "HTF": 0.4,
+}  # Weights used in score evaluation
+
 # --- Mode & Debug ---
 DRY_RUN = True
 VERBOSE = DRY_RUN
-is_aggressive = False
 USE_DYNAMIC_IN_DRY_RUN = True
+
+ADAPTIVE_SCORE_ENABLED = True
 
 # --- Runtime Trade Stats ---
 trade_stats_lock = Lock()
@@ -162,7 +174,6 @@ TP_ML_MIN_TRADES_INITIAL = 12
 TP_ML_MIN_TRADES_FULL = 20
 TP_ML_THRESHOLD = 0.05  # 5% преимущество
 TP_ML_SWITCH_THRESHOLD = 0.05
-
 
 # --- Config File ---
 CONFIG_FILE = "config.py"
