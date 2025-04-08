@@ -14,7 +14,7 @@ from config import (
 )
 from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.trade_engine import get_position_size  # Keep for should_enter_trade
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance  # Keep for should_enter_trade
 from utils_logging import log
 
@@ -143,10 +143,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     if DRY_RUN:
         log(f"{symbol} 🧪 [DRY_RUN] Signal → {direction}, score: {score}/5")
-        send_telegram_message(
-            escape_markdown_v2(f"🧪 [DRY_RUN] {symbol} → {direction} | Score: {score}/5"),
-            force=True,
-        )
+        msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+        send_telegram_message(msg, force=True, parse_mode="")
     else:
         log(f"{symbol} ✅ {direction} signal triggered (score: {score}/5)")
 

@@ -93,7 +93,7 @@ def log_dry_entry(entry_data):
     entry_price = entry_data.get("entry", 0)
     direction = entry_data.get("direction", "N/A")
     score = entry_data.get("score", "N/A")
-    msg = f"DRY_RUN entry: {symbol} {direction} @ {entry_price} (score: {score})"
+    msg = f"DRY-RUN {symbol} {direction}@{entry_price} (score:{score})"
     log(msg, important=False, level="INFO")
 
 

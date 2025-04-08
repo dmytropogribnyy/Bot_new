@@ -21,6 +21,7 @@ from config import (
     exchange,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
+from core.binance_api import safe_call
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
 from utils_core import get_cached_positions
@@ -53,7 +54,12 @@ def get_position_size(symbol):
 
 
 def enter_trade(symbol, side, qty, score=5):
-    entry_price = exchange.fetch_ticker(symbol)["last"]
+    ticker = safe_call(exchange.fetch_ticker, symbol, label=f"enter_trade {symbol}")
+    if not ticker:
+        log(f"[ERROR] Failed to fetch ticker for {symbol}", level="ERROR")
+        send_telegram_message(f"⚠️ Failed to fetch ticker for {symbol}", force=True)
+        return
+    entry_price = ticker["last"]
     start_time = now()
 
     if qty * entry_price < MIN_NOTIONAL:
@@ -90,8 +96,8 @@ def enter_trade(symbol, side, qty, score=5):
             f"[DRY] Entering {side.upper()} on {symbol} at {entry_price:.5f} (qty: {qty:.2f})",
             level="INFO",
         )
-        msg = f"DRY RUN: {side.upper()} {symbol} at {entry_price:.5f} (qty: {qty:.2f})"
-        send_telegram_message(msg, force=True)
+        msg = f"DRY-RUN {side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.2f}"
+        send_telegram_message(msg, force=True, parse_mode=None)  # Отключаем MarkdownV2
     else:
         exchange.create_limit_order(symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price)
         if tp2_price and qty_tp2 > 0:
@@ -106,11 +112,19 @@ def enter_trade(symbol, side, qty, score=5):
             params={"stopPrice": round(sl_price, 4), "reduceOnly": True},
         )
         msg = (
-            f"✅ NEW TRADE\n"
-            f"Symbol: {symbol}\nSide: {side.upper()}\nEntry: {round(entry_price, 4)}\n"
-            f"Qty: {qty}\nTP1: +{round(tp1_percent * 100, 1)}%"
-            + (f" / TP2: +{round(tp2_percent * 100, 1)}%" if tp2_price else "")
-            + f"\nSL: -{round(sl_percent * 100, 1)}%"
+            r"✅ NEW TRADE\n"
+            r"Symbol: {symbol}\nSide: {side_upper}\nEntry: {entry_price}\n"
+            r"Qty: {qty}\nTP1: +{tp1_percent}%"
+            + (r" / TP2: +{tp2_percent}%" if tp2_price else "")
+            + r"\nSL: -{sl_percent}%"
+        ).format(
+            symbol=symbol,
+            side_upper=side.upper(),
+            entry_price=round(entry_price, 4),
+            qty=qty,
+            tp1_percent=round(tp1_percent * 100, 1),
+            tp2_percent=round(tp2_percent * 100, 1) if tp2_price else "",
+            sl_percent=round(sl_percent * 100, 1),
         )
         send_telegram_message(msg, force=True)
 

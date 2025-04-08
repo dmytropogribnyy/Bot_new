@@ -1,10 +1,8 @@
-# main.py
-
 import threading
 import time
 
 from config import (
-    AGGRESSIVENESS_THRESHOLD,  # NEW: Импортируем порог
+    AGGRESSIVENESS_THRESHOLD,
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     VERBOSE,
@@ -15,7 +13,7 @@ from ip_monitor import start_ip_monitor
 from pair_selector import select_active_symbols, start_symbol_rotation
 from telegram.telegram_commands import handle_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from utils_core import load_state, save_state
 from utils_logging import log
 
@@ -31,9 +29,7 @@ def start_trading_loop():
     mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
-    aggressive_mode = (
-        get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD
-    )  # Используем порог из config
+    aggressive_mode = get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD
     mode_text = "AGGRESSIVE" if aggressive_mode else "SAFE"
 
     message = (
@@ -41,7 +37,7 @@ def start_trading_loop():
         f"Mode: {mode_text}\n"
         f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     )
-    send_telegram_message(escape_markdown_v2(message), force=True)
+    send_telegram_message(message, force=True, parse_mode="")  # Отключаем Markdown
 
     symbols = load_symbols()
     log(f"[Refactor] Loaded symbols: {symbols}", important=True, level="INFO")
@@ -61,7 +57,9 @@ def start_trading_loop():
 
     except KeyboardInterrupt:
         log("[Refactor] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
-        send_telegram_message("🛑 Bot manually stopped via console (Ctrl+C)", force=True)
+        send_telegram_message(
+            "🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode=""
+        )
 
 
 if __name__ == "__main__":

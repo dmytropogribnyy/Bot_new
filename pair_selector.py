@@ -12,7 +12,7 @@ from config import (
     MIN_DYNAMIC_PAIRS,
     exchange,
 )
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
@@ -147,11 +147,8 @@ def start_symbol_rotation():
                 f"Total pairs: {len(new_symbols)}\n"
                 f"Fixed: {len(FIXED_PAIRS)}, Dynamic: {len(new_symbols) - len(FIXED_PAIRS)}"
             )
-            send_telegram_message(escape_markdown_v2(msg), force=True)
+            send_telegram_message(msg, force=True, parse_mode="")  # Отключаем Markdown
         except Exception as e:
             log(f"Symbol rotation error: {e}", level="ERROR")
-            send_telegram_message(
-                escape_markdown_v2(f"⚠️ Symbol rotation failed: {str(e)}"),
-                force=True,
-            )
+            send_telegram_message(f"⚠️ Symbol rotation failed: {str(e)}", force=True, parse_mode="")
         time.sleep(UPDATE_INTERVAL_SECONDS)
