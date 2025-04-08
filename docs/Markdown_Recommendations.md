@@ -1,133 +1,89 @@
-# MarkdownV2 Recommendations for Binance USDC Futures Smart Bot
+# ✅ Telegram Messaging Guide for BinanceBot v1.6.1-final
 
-**Last Updated**: April 2025
-
-This document summarizes Telegram MarkdownV2 parsing errors encountered during the development of the Binance USDC Futures Smart Bot (v1.2 STABLE), their causes, fixes applied, and best practices to avoid recurrence. It’s a guide for ensuring reliable Telegram integration.
+This is the final and unified guide for how to correctly handle all Telegram messages in the BinanceBot system. It reflects all recent fixes, best practices, and escaping rules to ensure zero MarkdownV2 errors and clean message output.
 
 ---
 
-## Overview
+## ✅ Message Formatting Rules
 
-The bot uses Telegram for notifications and commands (e.g., `/help`, `/summary`), leveraging MarkdownV2 for styled messages (bold, italic, emojis). Telegram’s strict parsing rules require escaping special characters (e.g., `_`, `-`, `*`) with a backslash (`\`). Unescaped characters caused recurring API errors, now resolved.
-
----
-
-## Errors Encountered
-
-### 1. Unclosed Italic Marker
-
-- **Error**: `Telegram response 400: can't parse entities: Can't find end of Italic entity at byte offset 43`
-- **Where**: `main.py` (`start_trading_loop`)
-- **Cause**: Unescaped `_` in `DRY_RUN`, interpreted as start of italic.
-
-### 2. Reserved Character Parsing
-
-- **Error**: `Telegram response 400: Character '-' is reserved and must be escaped with '\'`
-- **Where**: `telegram_commands.py` (`/summary`)
-- **Cause**: Unescaped `-` in messages (e.g., "waiting for signals - nothing yet")
-
-### 3. Preemptive Fixes
-
-- Issues anticipated and avoided in `/help`, `/status`, etc. by escaping `-`, `(`, `)`.
+| Context                 | parse_mode     | Use escape_markdown_v2? | Notes                                        |
+| ----------------------- | -------------- | ----------------------- | -------------------------------------------- |
+| DRY_RUN, logs, status   | `""` or `None` | ❌ No                   | Plain text only — no formatting or escaping  |
+| Alerts, errors          | `""`           | ❌ No                   | Emojis OK, no special symbols like `*`, `_`  |
+| Reports (e.g. /summary) | `"MarkdownV2"` | ✅ Yes                  | Use `escape_markdown_v2()` for full messages |
 
 ---
 
-## Root Causes
+## 🔧 When to escape
 
-- **Unescaped Characters**: MarkdownV2 reserves `_`, `*`, `-`, `(`, `)` — they must be escaped.
-- **Inconsistent Escaping**: Only dynamic content escaped; static text like "DRY_RUN:" was not.
-- **Double Escaping**: Messages escaped twice (e.g., in generator and sender), breaking formatting.
-- **Python Warnings**: Invalid escapes like `\,` triggered syntax warnings.
+Only apply `escape_markdown_v2(text)` if you're using `parse_mode="MarkdownV2"` **and** you expect formatting like bold, italic, links, etc.
+
+For everything else — especially DRY_RUN — never escape manually.
 
 ---
 
-## Fixes Applied
+## ✅ Recommended Examples
 
-### 1. Escape Entire Messages
+### DRY_RUN (strategy.py):
 
-Instead of escaping fragments:
+```python
+msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+send_telegram_message(msg, force=True, parse_mode="")
+```
+
+### Start message (main.py):
 
 ```python
 message = (
     f"Bot started in {mode} mode\n"
-    f"Mode: {'SAFE' if not is_aggressive else 'AGGRESSIVE'}\n"
+    f"Mode: {mode_text}\n"
     f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
 )
-send_telegram_message(escape_markdown_v2(message), force=True)
+send_telegram_message(message, force=True, parse_mode="")
 ```
 
-### 2. Remove Manual Escapes
-
-Let `escape_markdown_v2` handle all characters:
+### Shutdown message:
 
 ```python
-message = (
-    "🤖 *Available Commands:*\n\n"
-    "📖 /help - Show this message\n"
-    "📊 /summary - Show summary\n"
-)
-send_telegram_message(escape_markdown_v2(message), force=True)
+send_telegram_message("🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode="")
 ```
 
-### 3. Centralize Escaping in Generators
-
-Escape directly inside functions like `generate_summary()`:
+### Symbol rotation result (pair_selector.py):
 
 ```python
-def generate_summary():
-    today = now().strftime("%d.%m.%Y")
-    summary = build_performance_report("Current Bot Summary", today)
-    last_trade = str(get_human_summary_line())
-    summary += f"\n\nLast trade summary:\n{last_trade}"
-    return escape_markdown_v2(summary)
-```
-
-### 4. Avoid Double Escaping
-
-Call `send_telegram_message(summary)` directly if already escaped.
-
-### 5. Fix Python Syntax
-
-Remove `\,` and similar invalid sequences:
-
-```python
-# Before:
-message = f"DRY\_RUN: {escape_markdown_v2(str(DRY_RUN))}\\, VERBOSE: ..."
-
-# After:
-message = f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: ..."
-message = escape_markdown_v2(message)
-```
-
-### 6. Simplify Message Structure
-
-Avoid `-` and lists unless necessary. Prefer newlines or emojis.
-
-```python
-report = (
-    f"📊 *{title}*\n"
-    f"Trades: {total} (W: {wins} / L: {losses})\n"
-    f"PnL: {'+' if pnl >= 0 else ''}{pnl} USDC\n"
-)
+msg = f"🔄 Symbol rotation completed:\nTotal: {total}\nFixed: {fixed}, Dynamic: {dynamic}"
+send_telegram_message(msg, force=True, parse_mode="")
 ```
 
 ---
 
-## Best Practices
+## ❌ What NOT to do
 
-- **Escape Entire Messages**: Always apply `escape_markdown_v2` after message construction.
-- **Test with Special Characters**: Use a private Telegram chat to test before deploying.
-- **Centralize Escaping**: Do escaping inside generators to ensure consistency.
-- **Avoid Reserved Characters**: Use emojis or alternative symbols when possible.
-- **Handle Dynamic Data**: Always convert to string with `str()` before escaping.
-- **Monitor Responses**: Log success/failure of each Telegram message (already in `utils.py`).
+### Don't escape when parse_mode is off:
+
+```python
+# ❌ Incorrect
+send_telegram_message(escape_markdown_v2(msg), parse_mode="")
+
+# ✅ Correct
+send_telegram_message(msg, parse_mode="")
+```
+
+### Don't mix formatting modes:
+
+```python
+# ❌ Incorrect: MarkdownV2 used without escaping
+send_telegram_message("*Started* (mode: DRY_RUN)", parse_mode="MarkdownV2")
+
+# ✅ Correct:
+send_telegram_message(escape_markdown_v2("*Started* (mode: DRY_RUN)"), parse_mode="MarkdownV2")
+```
 
 ---
 
-## Impact of Fixes
+## 🔁 Summary
 
-- ✅ Eliminated Telegram API 400 errors
-- ✅ Reliable MarkdownV2 formatting in all commands
-- ✅ Easier maintenance and scaling
-
----
+- DRY_RUN and logs → always plain text (`parse_mode=""`)
+- Reports like `/summary`, `/status` → use MarkdownV2 with proper escaping
+- Don't use `escape_markdown_v2()` unless you're using Markdown formatting
+- No more `\`, no more Telegram 400 errors — clean, readable, and consistent 💯
