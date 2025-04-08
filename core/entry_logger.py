@@ -2,8 +2,10 @@ import csv
 import os
 from datetime import datetime
 
-ENTRY_LOG_PATH = "data/entry_log.csv"
+from config import DRY_RUN
+from utils_logging import log_dry_entry
 
+ENTRY_LOG_PATH = "data/entry_log.csv"
 
 FIELDNAMES = [
     "timestamp",
@@ -18,6 +20,10 @@ FIELDNAMES = [
 
 
 def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
+    if DRY_RUN:
+        log_dry_entry(trade)
+        return
+
     os.makedirs(os.path.dirname(ENTRY_LOG_PATH), exist_ok=True)
     entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

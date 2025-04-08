@@ -89,8 +89,12 @@ def get_recent_logs(n=50):
 
 
 def log_dry_entry(entry_data):
-    """Log a dry run entry."""
-    log(f"Dry entry log: {entry_data}", important=False, level="INFO")
+    symbol = entry_data.get("symbol", "N/A")
+    entry_price = entry_data.get("entry", 0)
+    direction = entry_data.get("direction", "N/A")
+    score = entry_data.get("score", "N/A")
+    msg = f"DRY_RUN entry: {symbol} {direction} @ {entry_price} (score: {score})"
+    log(msg, important=False, level="INFO")
 
 
 def now():
