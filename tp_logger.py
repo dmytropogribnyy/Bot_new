@@ -1,6 +1,8 @@
 import csv
 import os
 
+import pandas as pd
+
 from config import DRY_RUN, EXPORT_PATH, TP_LOG_FILE
 from stats import now_with_timezone
 from utils_logging import log
@@ -142,7 +144,7 @@ def get_last_trade():
             return None
         return df.iloc[-1]
     except (pd.errors.EmptyDataError, ValueError) as e:
-        log(f"[ERROR] Failed to load last trade: {e}")  # Добавляем логирование
+        log(f"[ERROR] Failed to load last trade: {e}")
         return None
 
 
@@ -163,3 +165,17 @@ def get_human_summary_line():
         return f"{symbol} — {result} ({pnl:.2f}%), held {held} min"
     except Exception as e:
         return f"Summary error: {e}"
+
+
+def get_trade_stats():
+    if not os.path.exists(EXPORT_PATH):
+        return 0, 0.0
+    try:
+        df = pd.read_csv(EXPORT_PATH)
+        df = df[df["Result"].isin(["TP1", "TP2", "SL"])]
+        total = len(df)
+        win = len(df[df["Result"].isin(["TP1", "TP2"])])
+        return total, (win / total) if total else 0.0
+    except Exception as e:
+        log(f"[ERROR] Failed to read trade stats: {e}")
+        return 0, 0.0

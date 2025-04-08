@@ -1,0 +1,29 @@
+# --- tp_logger.py ---
+# Вставить в tp_logger.py
+
+def get_trade_stats():
+    if not os.path.exists(EXPORT_PATH):
+        return 0, 0.0
+    try:
+        df = pd.read_csv(EXPORT_PATH)
+        df = df[df["Result"].isin(["TP1", "TP2", "SL"])]
+        total = len(df)
+        win = len(df[df["Result"].isin(["TP1", "TP2"])])
+        return total, (win / total) if total else 0.0
+    except Exception as e:
+        log(f"[ERROR] Failed to read trade stats: {e}")
+        return 0, 0.0
+
+# --- strategy.py ---
+# Вставить в strategy.py, внутри should_enter_trade()
+
+from tp_logger import get_trade_stats
+
+trade_count, winrate = get_trade_stats()
+min_required = get_adaptive_min_score(trade_count, winrate)
+
+if DRY_RUN:
+    log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")
+
+if score < min_required:
+    return None

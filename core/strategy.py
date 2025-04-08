@@ -1,4 +1,4 @@
-import threading  # Fix: Add threading import
+import threading
 from datetime import datetime
 
 import pandas as pd
@@ -13,9 +13,10 @@ from config import (
     exchange,
 )
 from core.score_evaluator import calculate_score, get_adaptive_min_score
-from core.trade_engine import get_position_size  # Keep for should_enter_trade
+from core.trade_engine import get_position_size
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance  # Keep for should_enter_trade
+from tp_logger import get_trade_stats  # Добавлен импорт
+from utils_core import get_cached_balance
 from utils_logging import log
 
 last_trade_times = {}
@@ -59,7 +60,7 @@ def fetch_data(symbol, tf="15m"):
 def get_htf_trend(symbol, tf="1h"):
     df_htf = fetch_data(symbol, tf=tf)
     if df_htf is None:
-        return False  # Default to False if data fetch fails
+        return False
     return df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
 
 
@@ -123,13 +124,16 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         return None
 
     score = calculate_score(df, symbol)
-    min_required = get_adaptive_min_score()
 
-    if has_long_position or has_short_position or available_margin < 10:
-        score -= 0.5
+    # Вставка Adaptive MIN_TRADE_SCORE
+    trade_count, winrate = get_trade_stats()
+    min_required = get_adaptive_min_score(trade_count, winrate)
 
     if DRY_RUN:
         log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")
+
+    if has_long_position or has_short_position or available_margin < 10:
+        score -= 0.5
 
     if score < min_required:
         if DRY_RUN:

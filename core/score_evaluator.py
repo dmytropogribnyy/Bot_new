@@ -74,14 +74,11 @@ def calculate_score(df, symbol=None):
     return final_score
 
 
-def get_adaptive_min_score(trade_count_last_days=0, winrate=0.0):
-    if trade_count_last_days < 20:
-        return max(MIN_TRADE_SCORE - 1, 1)
-    if winrate < 0.4:
-        return MIN_TRADE_SCORE - 1
-    if winrate > 0.6:
-        return MIN_TRADE_SCORE + 1
-    return MIN_TRADE_SCORE
+def get_adaptive_min_score(trade_count, winrate):
+    base = 3.0
+    if trade_count < 20:
+        return base + 0.5  # Строгий порог для малого числа сделок
+    return base - (winrate - 0.5) * 0.5  # Адаптация по винрейту
 
 
 def explain_score(df):
