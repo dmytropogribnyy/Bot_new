@@ -21,7 +21,7 @@ EXPORT_PATH = "data/tp_performance.csv"
 TP_LOG_FILE = "data/tp_performance.csv"
 
 # --- Logging ---
-LOG_LEVEL = "INFO"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
+LOG_LEVEL = "DEBUG"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
 LOG_SCORE_EVERYWHERE = False  # NEW: Allow score logging in REAL_RUN if True
 
 # --- Symbols & Leverage (fallback) ---
@@ -186,6 +186,13 @@ BREAKEVEN_TRIGGER = 0.5
 SOFT_EXIT_ENABLED = True  # Включаем Soft Exit
 SOFT_EXIT_THRESHOLD = 0.9  # 90% от TP1
 SOFT_EXIT_SHARE = 0.5  # Закрываем 50% позиции
+
+# Auto TP/SL Adjustments
+AUTO_TP_SL_ENABLED = True
+FLAT_ADJUSTMENT = 0.7
+TREND_ADJUSTMENT = 1.3
+ADX_TREND_THRESHOLD = 20
+ADX_FLAT_THRESHOLD = 15
 
 # --- Config File ---
 CONFIG_FILE = "config.py"

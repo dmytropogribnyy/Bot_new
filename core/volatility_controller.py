@@ -1,12 +1,15 @@
+# volatility_controller.py
 import time
 
 import pandas as pd
 
-from config import EXPORT_PATH
+from config import DRY_RUN, EXPORT_PATH  # Добавляем импорт DRY_RUN
 from utils_logging import log
 
 
 def get_filter_relax_factor():
+    if DRY_RUN:  # В DRY_RUN возвращаем дефолтное значение
+        return 1.0
     try:
         df = pd.read_csv(EXPORT_PATH)
         df = df[df["Result"].isin(["TP1", "TP2", "SL"])]

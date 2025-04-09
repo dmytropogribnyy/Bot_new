@@ -1,3 +1,4 @@
+# engine_controller.py
 import os
 import threading
 import time
@@ -98,18 +99,12 @@ def run_trading_cycle(symbols):
             if current_time - last_check_log_time >= 300:  # 5 минут
                 log(f"🔍 Checking {symbol}", level="INFO")
                 last_check_log_time = current_time
-            trade = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
-            if not trade:
+            trade_data = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
+            if not trade_data:
                 continue
 
-            # Распаковываем кортеж с is_reentry
-            direction, score, is_reentry = trade
-            trade_data = {
-                "symbol": symbol,
-                "direction": direction,
-                "qty": trade.get("qty", 0),
-                "score": score,
-            }
+            # Извлекаем только score, так как direction и qty передаются через trade_data
+            score = trade_data["score"]
 
             current_trade = trade_manager.get_trade(symbol)
             if current_trade:
@@ -137,7 +132,7 @@ def run_trading_cycle(symbols):
                     else:
                         close_real_trade(symbol)
                     smart_switch_count += 1
-                    is_reentry = True  # Переопределяем как re-entry после Smart Switch
+                    trade_data["is_reentry"] = True  # Обновляем is_reentry в trade_data
                     time.sleep(1)
                 else:
                     log(
@@ -155,7 +150,7 @@ def run_trading_cycle(symbols):
                     trade_data["direction"],
                     trade_data["qty"],
                     trade_data["score"],
-                    is_reentry,
+                    trade_data["is_reentry"],
                 )
                 log_entry(trade_data, status="SUCCESS", mode="REAL_RUN")
 

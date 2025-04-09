@@ -6,11 +6,15 @@ import pandas as pd
 import ta
 
 from config import (
+    ADX_FLAT_THRESHOLD,
+    ADX_TREND_THRESHOLD,
     AGGRESSIVENESS_THRESHOLD,
+    AUTO_TP_SL_ENABLED,
     BREAKEVEN_TRIGGER,
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
+    FLAT_ADJUSTMENT,
     MIN_NOTIONAL,
     SL_PERCENT,
     SOFT_EXIT_ENABLED,
@@ -20,6 +24,7 @@ from config import (
     TP1_SHARE,
     TP2_PERCENT,
     TP2_SHARE,
+    TREND_ADJUSTMENT,
     exchange,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
@@ -95,6 +100,41 @@ def get_position_size(symbol):
     return 0
 
 
+def get_market_regime(symbol):
+    try:
+        ohlcv = safe_call_retry(
+            exchange.fetch_ohlcv, symbol, timeframe="15m", limit=15, label=f"fetch_ohlcv {symbol}"
+        )
+        highs = [c[2] for c in ohlcv]
+        lows = [c[3] for c in ohlcv]
+        closes = [c[4] for c in ohlcv]
+        df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
+        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
+
+        log(f"{symbol} 🔍 Market regime: ADX = {adx:.2f}", level="DEBUG")
+        if adx > ADX_TREND_THRESHOLD:
+            log(
+                f"{symbol} 🔍 Market regime determined: trend (ADX > {ADX_TREND_THRESHOLD})",
+                level="INFO",
+            )
+            return "trend"
+        elif adx < ADX_FLAT_THRESHOLD:
+            log(
+                f"{symbol} 🔍 Market regime determined: flat (ADX < {ADX_FLAT_THRESHOLD})",
+                level="INFO",
+            )
+            return "flat"
+        else:
+            log(
+                f"{symbol} 🔍 Market regime determined: neutral (ADX between {ADX_FLAT_THRESHOLD} and {ADX_TREND_THRESHOLD})",
+                level="INFO",
+            )
+            return "neutral"
+    except Exception as e:
+        log(f"[ERROR] Failed to determine market regime for {symbol}: {e}", level="ERROR")
+        return "neutral"
+
+
 def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     global open_positions_count
     with open_positions_lock:
@@ -125,9 +165,26 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             open_positions_count -= 1
         return
 
+    # Базовые значения TP/SL
     tp1_percent = TP1_PERCENT
     tp2_percent = TP2_PERCENT
     sl_percent = SL_PERCENT
+
+    # Адаптация TP/SL по режиму
+    if AUTO_TP_SL_ENABLED:
+        regime = get_market_regime(symbol)
+        if regime == "flat":
+            tp1_percent *= FLAT_ADJUSTMENT
+            tp2_percent *= FLAT_ADJUSTMENT if tp2_percent else None
+            sl_percent *= FLAT_ADJUSTMENT
+            log(f"Adjusted TP/SL for {symbol}: flat regime (x{FLAT_ADJUSTMENT})", level="INFO")
+        elif regime == "trend":
+            tp2_percent *= TREND_ADJUSTMENT if tp2_percent else None
+            sl_percent *= TREND_ADJUSTMENT
+            log(
+                f"Adjusted TP/SL for {symbol}: trend regime (x{TREND_ADJUSTMENT} for TP2/SL)",
+                level="INFO",
+            )
 
     if score == 3:
         tp1_percent *= 0.8
@@ -213,7 +270,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         "tp1_hit": False,
         "tp2_hit": False,
         "score": score,
-        "soft_exit_hit": False,  # Новое поле для Soft Exit
+        "soft_exit_hit": False,
     }
     trade_manager.add_trade(symbol, trade_data)
 

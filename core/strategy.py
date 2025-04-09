@@ -107,6 +107,7 @@ def passes_filters(df, symbol):
     return True
 
 
+# strategy.py (фрагмент)
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")
@@ -175,6 +176,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
                 return None
             log(f"Re-entry signal for {symbol}: score {score} > 4 within cooldown", level="INFO")
             direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+            log(
+                f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
+                level="DEBUG",
+            )
             last_trade_times[symbol] = utc_now
             if DRY_RUN:
                 log(f"{symbol} 🧪 [DRY_RUN] Re-entry Signal → {direction}, score: {score}/5")
@@ -189,6 +194,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             log(f"Re-entry allowed for {symbol}: score {score} vs last {last_score}", level="INFO")
             last_trade_times[symbol] = utc_now
             direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+            log(
+                f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
+                level="DEBUG",
+            )
             if DRY_RUN:
                 log(f"{symbol} 🧪 [DRY_RUN] Re-entry Signal → {direction}, score: {score}/5")
                 msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
@@ -207,6 +216,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         last_trade_times[symbol] = utc_now
 
     direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+    log(
+        f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
+        level="DEBUG",
+    )
     if DRY_RUN:
         log(f"{symbol} 🧪 [DRY_RUN] Signal → {direction}, score: {score}/5")
         msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"

@@ -1,3 +1,4 @@
+# symbol_processor.py
 from config import MIN_NOTIONAL, SL_PERCENT
 from core.strategy import fetch_data, should_enter_trade
 from core.trade_engine import (
@@ -37,7 +38,8 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(f"❌ No signal for {symbol}", level="DEBUG")
             return None
 
-        direction, score = result
+        # Распаковываем кортеж из should_enter_trade
+        direction, score, is_reentry = result
         entry = df["close"].iloc[-1]
         stop = entry * (1 - SL_PERCENT) if direction == "buy" else entry * (1 + SL_PERCENT)
         risk_percent = get_adaptive_risk_percent(balance)
@@ -54,6 +56,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             "qty": qty,
             "entry": entry,
             "score": score,
+            "is_reentry": is_reentry,  # Добавляем is_reentry в словарь
         }
 
     except Exception as e:
