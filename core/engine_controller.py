@@ -102,10 +102,19 @@ def run_trading_cycle(symbols):
             if not trade:
                 continue
 
+            # Распаковываем кортеж с is_reentry
+            direction, score, is_reentry = trade
+            trade_data = {
+                "symbol": symbol,
+                "direction": direction,
+                "qty": trade.get("qty", 0),
+                "score": score,
+            }
+
             current_trade = trade_manager.get_trade(symbol)
             if current_trade:
                 current_score = current_trade.get("score", 0)
-                new_score = trade.get("score", 0)
+                new_score = score
                 if new_score - current_score >= MIN_SCORE_DELTA_SWITCH:
                     if smart_switch_count >= switch_limit:
                         log(
@@ -128,6 +137,7 @@ def run_trading_cycle(symbols):
                     else:
                         close_real_trade(symbol)
                     smart_switch_count += 1
+                    is_reentry = True  # Переопределяем как re-entry после Smart Switch
                     time.sleep(1)
                 else:
                     log(
@@ -137,11 +147,17 @@ def run_trading_cycle(symbols):
                     continue
 
             if DRY_RUN:
-                notify_dry_trade(trade)
-                log_entry(trade, status="SUCCESS", mode="DRY_RUN")
+                notify_dry_trade(trade_data)
+                log_entry(trade_data, status="SUCCESS", mode="DRY_RUN")
             else:
-                enter_trade(trade["symbol"], trade["direction"], trade["qty"], trade["score"])
-                log_entry(trade, status="SUCCESS", mode="REAL_RUN")
+                enter_trade(
+                    trade_data["symbol"],
+                    trade_data["direction"],
+                    trade_data["qty"],
+                    trade_data["score"],
+                    is_reentry,
+                )
+                log_entry(trade_data, status="SUCCESS", mode="REAL_RUN")
 
         except Exception as e:
             notify_error(f"🔥 Error during {symbol}: {str(e)}")

@@ -178,5 +178,14 @@ TP_ML_MIN_TRADES_FULL = 20
 TP_ML_THRESHOLD = 0.05  # 5% преимущество
 TP_ML_SWITCH_THRESHOLD = 0.05
 
+# --- Strategy Toggles ---
+ENABLE_TRAILING = True
+TRAILING_PERCENT = 0.02
+ENABLE_BREAKEVEN = True
+BREAKEVEN_TRIGGER = 0.5
+SOFT_EXIT_ENABLED = True  # Включаем Soft Exit
+SOFT_EXIT_THRESHOLD = 0.9  # 90% от TP1
+SOFT_EXIT_SHARE = 0.5  # Закрываем 50% позиции
+
 # --- Config File ---
 CONFIG_FILE = "config.py"

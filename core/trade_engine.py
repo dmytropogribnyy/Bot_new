@@ -1,4 +1,4 @@
-# trade_engine.py (фрагмент с изменениями)
+# trade_engine.py
 import threading
 import time
 
@@ -13,6 +13,9 @@ from config import (
     ENABLE_TRAILING,
     MIN_NOTIONAL,
     SL_PERCENT,
+    SOFT_EXIT_ENABLED,
+    SOFT_EXIT_SHARE,
+    SOFT_EXIT_THRESHOLD,
     TP1_PERCENT,
     TP1_SHARE,
     TP2_PERCENT,
@@ -26,7 +29,6 @@ from utils_core import get_cached_positions, safe_call_retry
 from utils_logging import log, now
 
 
-# Определяем TradeInfoManager глобально
 class TradeInfoManager:
     def __init__(self):
         self._trades = {}
@@ -48,6 +50,20 @@ class TradeInfoManager:
     def remove_trade(self, symbol):
         with self._lock:
             return self._trades.pop(symbol, None)
+
+    def get_last_score(self, symbol):
+        with self._lock:
+            return self._trades.get(symbol, {}).get("score", 0)
+
+    def get_last_closed_time(self, symbol):
+        with self._lock:
+            return self._trades.get(symbol, {}).get("last_closed_time", None)
+
+    def set_last_closed_time(self, symbol, timestamp):
+        with self._lock:
+            if symbol not in self._trades:
+                self._trades[symbol] = {}
+            self._trades[symbol]["last_closed_time"] = timestamp
 
 
 trade_manager = TradeInfoManager()
@@ -79,7 +95,7 @@ def get_position_size(symbol):
     return 0
 
 
-def enter_trade(symbol, side, qty, score=5):
+def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     global open_positions_count
     with open_positions_lock:
         open_positions_count += 1
@@ -93,6 +109,15 @@ def enter_trade(symbol, side, qty, score=5):
         return
     entry_price = ticker["last"]
     start_time = now()
+
+    if is_reentry:
+        if get_position_size(symbol) > 0:
+            log(f"Skipping re-entry for {symbol}: position already open", level="WARNING")
+            with open_positions_lock:
+                open_positions_count -= 1
+            return
+        log(f"Re-entry triggered for {symbol} at {entry_price}", level="INFO")
+        send_telegram_message(f"🔄 Re-entry {symbol} @ {entry_price}", force=True)
 
     if qty * entry_price < MIN_NOTIONAL:
         send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
@@ -130,7 +155,7 @@ def enter_trade(symbol, side, qty, score=5):
             f"[DRY] Entering {side.upper()} on {symbol} at {entry_price:.5f} (qty: {qty:.2f})",
             level="INFO",
         )
-        msg = f"DRY-RUN {side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.2f}"
+        msg = f"DRY-RUN {'REENTRY ' if is_reentry else ''}{side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.2f}"
         send_telegram_message(msg, force=True, parse_mode=None)
     else:
         safe_call_retry(
@@ -160,7 +185,7 @@ def enter_trade(symbol, side, qty, score=5):
             label=f"create_stop_order {symbol}",
         )
         msg = (
-            r"✅ NEW TRADE\n"
+            r"✅ NEW TRADE" + (" (Re-entry)" if is_reentry else "") + r"\n"
             r"Symbol: {symbol}\nSide: {side_upper}\nEntry: {entry_price}\n"
             r"Qty: {qty}\nTP1: +{tp1_percent}%"
             + (r" / TP2: +{tp2_percent}%" if tp2_price else "")
@@ -187,6 +212,8 @@ def enter_trade(symbol, side, qty, score=5):
         "start_time": start_time,
         "tp1_hit": False,
         "tp2_hit": False,
+        "score": score,
+        "soft_exit_hit": False,  # Новое поле для Soft Exit
     }
     trade_manager.add_trade(symbol, trade_data)
 
@@ -202,6 +229,12 @@ def enter_trade(symbol, side, qty, score=5):
             threading.Thread(
                 target=run_break_even,
                 args=(symbol, side, entry_price, tp1_percent),
+                daemon=True,
+            ).start()
+        if SOFT_EXIT_ENABLED:
+            threading.Thread(
+                target=run_soft_exit,
+                args=(symbol, side, entry_price, tp1_percent, qty),
                 daemon=True,
             ).start()
 
@@ -241,7 +274,7 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
                     label=f"create_break_even {symbol}",
                 )
                 send_telegram_message(f"🔒 Break-even activated for {symbol}", force=True)
-                trade_manager.update_trade(symbol, "tp1_hit", True)  # Пример обновления
+                trade_manager.update_trade(symbol, "tp1_hit", True)
                 break
             time.sleep(check_interval)
         except Exception as e:
@@ -315,6 +348,48 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
             break
 
 
+def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5):
+    tp1_price = (
+        entry_price * (1 + tp1_percent) if side == "buy" else entry_price * (1 - tp1_percent)
+    )
+    soft_exit_price = (
+        entry_price + (tp1_price - entry_price) * SOFT_EXIT_THRESHOLD
+        if side == "buy"
+        else entry_price - (entry_price - tp1_price) * SOFT_EXIT_THRESHOLD
+    )
+    soft_exit_qty = qty * SOFT_EXIT_SHARE
+
+    while True:
+        try:
+            price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
+                "last"
+            ]
+            if (side == "buy" and price >= soft_exit_price) or (
+                side == "sell" and price <= soft_exit_price
+            ):
+                if DRY_RUN:
+                    log(
+                        f"[DRY] Soft Exit triggered for {symbol} at {price}: closing {soft_exit_qty}",
+                        level="INFO",
+                    )
+                    send_telegram_message(f"🔄 [DRY] Soft Exit {symbol} @ {price}", force=True)
+                else:
+                    safe_call_retry(
+                        exchange.create_market_order,
+                        symbol,
+                        "sell" if side == "buy" else "buy",
+                        soft_exit_qty,
+                        label=f"soft_exit {symbol}",
+                    )
+                    send_telegram_message(f"🔄 Soft Exit {symbol} @ {price}", force=True)
+                    trade_manager.update_trade(symbol, "soft_exit_hit", True)
+                break
+            time.sleep(check_interval)
+        except Exception as e:
+            log(f"[ERROR] Soft Exit error for {symbol}: {e}", level="ERROR")
+            break
+
+
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     global open_positions_count
     with open_positions_lock:
@@ -345,7 +420,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     )
 
     msg = (
-        f"📤 *Trade Closed* [{result_type.upper()}]\n"
+        f"📤 *Trade Closed* [{result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
         f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
@@ -364,6 +439,7 @@ def close_dry_trade(symbol):
         record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
         log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
         send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)
+        trade_manager.set_last_closed_time(symbol, time.time())
 
 
 def close_real_trade(symbol):
@@ -391,8 +467,8 @@ def close_real_trade(symbol):
 
         record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
         log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
+        trade_manager.set_last_closed_time(symbol, time.time())
 
-        trade_manager.remove_trade(symbol)
     except Exception as e:
         log(f"[SmartSwitch] Error closing real trade {symbol}: {e}", level="ERROR")
         send_telegram_message(f"❌ Failed to close trade {symbol}: {str(e)}", force=True)
