@@ -15,7 +15,7 @@ from core.trade_engine import (
     close_real_trade,
     enter_trade,
     get_position_size,
-    last_trade_info,
+    trade_manager,
 )
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance, load_state
@@ -24,7 +24,9 @@ from utils_logging import log
 last_trade_times = {}
 last_trade_times_lock = threading.Lock()
 last_balance = 0
-MIN_SCORE_DELTA_SWITCH = 2  # You can move this to config.py if needed
+MIN_SCORE_DELTA_SWITCH = 2
+last_check_log_time = 0  # Для ограничения лога Checking
+last_balance_log_time = 0  # Для ограничения лога Balance
 
 
 def get_smart_switch_stats():
@@ -34,7 +36,7 @@ def get_smart_switch_stats():
                 "[SmartSwitch] tp_performance.csv not found, skipping winrate calculation.",
                 level="WARNING",
             )
-            return 0.5  # Возвращаем нейтральную winrate на старте
+            return 0.5
 
         df = pd.read_csv("data/tp_performance.csv", parse_dates=["Date"])
         recent = df[df["ResultType"] == "smart_switch"].tail(10)
@@ -42,14 +44,14 @@ def get_smart_switch_stats():
         return round(winrate, 2)
     except Exception as e:
         log(f"[SmartSwitch] Failed to calculate winrate: {e}", level="WARNING")
-        return 0.5  # Возвращаем нейтральную winrate при ошибке
+        return 0.5
 
 
 def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate):
     base_limit = 1 if balance < 50 else 2
     if active_positions == 0:
         base_limit += 1
-    if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD:  # Используем порог из config
+    if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD:
         base_limit += 1
     if recent_switch_winrate > 0.7:
         base_limit += 1
@@ -59,7 +61,7 @@ def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate):
 
 
 def run_trading_cycle(symbols):
-    global last_balance
+    global last_balance, last_check_log_time, last_balance_log_time
     state = load_state()
 
     if state.get("pause") or state.get("stopping"):
@@ -81,7 +83,10 @@ def run_trading_cycle(symbols):
 
     balance = get_cached_balance()
     last_balance = check_balance_change(balance, last_balance)
-    log(f"Balance for cycle: {round(balance, 2)} USDC", level="DEBUG")
+    current_time = time.time()
+    if current_time - last_balance_log_time >= 300:  # 5 минут
+        log(f"Balance for cycle: {round(balance, 2)} USDC", level="INFO")
+        last_balance_log_time = current_time
 
     active_positions = sum(get_position_size(sym) > 0 for sym in symbols)
     recent_wr = get_smart_switch_stats()
@@ -90,13 +95,14 @@ def run_trading_cycle(symbols):
 
     for symbol in symbols:
         try:
-            log(f"🔍 Checking {symbol}", level="INFO")
+            if current_time - last_check_log_time >= 300:  # 5 минут
+                log(f"🔍 Checking {symbol}", level="INFO")
+                last_check_log_time = current_time
             trade = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
             if not trade:
                 continue
 
-            # 🧠 Smart Switching Check
-            current_trade = last_trade_info.get(symbol)
+            current_trade = trade_manager.get_trade(symbol)
             if current_trade:
                 current_score = current_trade.get("score", 0)
                 new_score = trade.get("score", 0)
@@ -130,7 +136,6 @@ def run_trading_cycle(symbols):
                     )
                     continue
 
-            # Execute trade
             if DRY_RUN:
                 notify_dry_trade(trade)
                 log_entry(trade, status="SUCCESS", mode="DRY_RUN")

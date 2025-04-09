@@ -5,7 +5,13 @@ from datetime import datetime, timedelta
 
 import requests
 
-from config import IP_MONITOR_INTERVAL_SECONDS, ROUTER_REBOOT_MODE_TIMEOUT_MINUTES
+from config import (
+    DRY_RUN,
+    IP_MONITOR_INTERVAL_SECONDS,
+    ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
+)
+
+# Добавляем DRY_RUN
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 
@@ -54,8 +60,6 @@ def check_ip_change(stop_callback):
     last_ip = read_last_ip()
     last_ip_check_time = datetime.now()
 
-    # Updated: Notify with recovery instructions if IP changes outside reboot mode
-    # Reason: Ensures user can recover bot after IP change in REAL_RUN
     if current_ip and current_ip != last_ip:
         write_last_ip(current_ip)
         now = datetime.now().strftime("%d %b %Y, %H:%M")
@@ -195,7 +199,10 @@ def start_ip_monitor(stop_callback, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
             time.sleep(interval_seconds)
         else:
             time_since_last_check = (datetime.now() - last_ip_check_time).total_seconds()
-            if time_since_last_check >= 30 * 60:
+            check_interval = (
+                120 if DRY_RUN else 30 * 60
+            )  # 120 секунд в DRY_RUN, 30 минут в REAL_RUN
+            if time_since_last_check >= check_interval:
                 check_ip_change(stop_callback)
                 last_ip_check_time = datetime.now()
-            time.sleep(60)
+            time.sleep(60 if DRY_RUN else 60)  # Минимальная задержка

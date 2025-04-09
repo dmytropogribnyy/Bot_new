@@ -3,7 +3,7 @@ import time
 
 import requests
 
-from config import TELEGRAM_TOKEN, VERBOSE
+from config import DRY_RUN, TELEGRAM_TOKEN, VERBOSE  # Добавляем импорт DRY_RUN
 
 UPDATE_FILE = "data/last_update.txt"
 
@@ -33,7 +33,6 @@ def get_latest_update_id():
     return None
 
 
-# ✅ Умная инициализация
 last_update_id = load_last_update_id()
 if last_update_id is None:
     latest_id = get_latest_update_id()
@@ -43,7 +42,7 @@ if last_update_id is None:
 
 def process_telegram_commands(state: dict, handler_fn):
     global last_update_id
-    while True:  # Добавляем цикл для постоянного опроса
+    while True:
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_update_id}",
@@ -61,7 +60,6 @@ def process_telegram_commands(state: dict, handler_fn):
                 if not isinstance(message, dict):
                     continue
 
-                # Обработка кодировки текста сообщения
                 if "text" in message:
                     message["text"] = (
                         message["text"].encode("utf-8", errors="ignore").decode("utf-8")
@@ -81,4 +79,4 @@ def process_telegram_commands(state: dict, handler_fn):
             if VERBOSE:
                 print(f"⚠️ Telegram polling error: {e}")
 
-        time.sleep(3)  # Задержка 3 секунды между опросами
+        time.sleep(60 if DRY_RUN else 3)  # 60 секунд в DRY_RUN, 3 секунды в REAL_RUN

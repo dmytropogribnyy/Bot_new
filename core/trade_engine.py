@@ -1,3 +1,4 @@
+# trade_engine.py (фрагмент с изменениями)
 import threading
 import time
 
@@ -21,11 +22,36 @@ from config import (
 from core.aggressiveness_controller import get_aggressiveness_score
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
-from utils_core import get_cached_positions, safe_call_retry  # Добавлен импорт
+from utils_core import get_cached_positions, safe_call_retry
 from utils_logging import log, now
 
-last_trade_info = {}
-last_trade_info_lock = threading.Lock()
+
+# Определяем TradeInfoManager глобально
+class TradeInfoManager:
+    def __init__(self):
+        self._trades = {}
+        self._lock = threading.Lock()
+
+    def add_trade(self, symbol, trade_data):
+        with self._lock:
+            self._trades[symbol] = trade_data
+
+    def get_trade(self, symbol):
+        with self._lock:
+            return self._trades.get(symbol)
+
+    def update_trade(self, symbol, key, value):
+        with self._lock:
+            if symbol in self._trades:
+                self._trades[symbol][key] = value
+
+    def remove_trade(self, symbol):
+        with self._lock:
+            return self._trades.pop(symbol, None)
+
+
+trade_manager = TradeInfoManager()
+
 monitored_stops = {}
 monitored_stops_lock = threading.Lock()
 
@@ -150,19 +176,19 @@ def enter_trade(symbol, side, qty, score=5):
         )
         send_telegram_message(msg, force=True)
 
-    with last_trade_info_lock:
-        last_trade_info[symbol] = {
-            "symbol": symbol,
-            "side": side,
-            "entry": round(entry_price, 4),
-            "qty": qty,
-            "tp1": round(tp1_percent * 100, 1),
-            "tp2": round(tp2_percent * 100, 1) if tp2_price else None,
-            "sl": round(sl_percent * 100, 1),
-            "start_time": start_time,
-            "tp1_hit": False,
-            "tp2_hit": False,
-        }
+    trade_data = {
+        "symbol": symbol,
+        "side": side,
+        "entry": round(entry_price, 4),
+        "qty": qty,
+        "tp1": round(tp1_percent * 100, 1),
+        "tp2": round(tp2_percent * 100, 1) if tp2_price else None,
+        "sl": round(sl_percent * 100, 1),
+        "start_time": start_time,
+        "tp1_hit": False,
+        "tp2_hit": False,
+    }
+    trade_manager.add_trade(symbol, trade_data)
 
     if not DRY_RUN:
         track_stop_loss(symbol, side, entry_price, qty, start_time)
@@ -215,6 +241,7 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
                     label=f"create_break_even {symbol}",
                 )
                 send_telegram_message(f"🔒 Break-even activated for {symbol}", force=True)
+                trade_manager.update_trade(symbol, "tp1_hit", True)  # Пример обновления
                 break
             time.sleep(check_interval)
         except Exception as e:
@@ -293,84 +320,79 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     with open_positions_lock:
         open_positions_count -= 1
 
-    with last_trade_info_lock:
-        trade = last_trade_info.get(symbol)
-        if not trade:
-            log(f"⚠️ No trade info for {symbol} — cannot record result")
-            return
+    trade = trade_manager.get_trade(symbol)
+    if not trade:
+        log(f"⚠️ No trade info for {symbol} — cannot record result")
+        return
 
-        duration = int((time.time() - trade["start_time"].timestamp()) / 60)
-        pnl = ((exit_price - entry_price) / entry_price) * 100
-        if side == "sell":
-            pnl *= -1
+    duration = int((time.time() - trade["start_time"].timestamp()) / 60)
+    pnl = ((exit_price - entry_price) / entry_price) * 100
+    if side == "sell":
+        pnl *= -1
 
-        log_trade_result(
-            symbol=symbol,
-            side=side,
-            entry_price=entry_price,
-            exit_price=exit_price,
-            tp1_hit=trade.get("tp1_hit", False),
-            tp2_hit=trade.get("tp2_hit", False),
-            sl_hit=(result_type == "sl"),
-            pnl_percent=round(pnl, 2),
-            result="WIN" if pnl > 0 else "LOSS",
-            duration_minutes=duration,
-            htf_trend=trade.get("htf_trend", False),
-        )
+    log_trade_result(
+        symbol=symbol,
+        side=side,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        tp1_hit=trade.get("tp1_hit", False),
+        tp2_hit=trade.get("tp2_hit", False),
+        sl_hit=(result_type == "sl"),
+        pnl_percent=round(pnl, 2),
+        result="WIN" if pnl > 0 else "LOSS",
+        duration_minutes=duration,
+        htf_trend=trade.get("htf_trend", False),
+    )
 
-        msg = (
-            f"📤 *Trade Closed* [{result_type.upper()}]\n"
-            f"• {symbol} — {side.upper()}\n"
-            f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-            f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
-        )
-        send_telegram_message(msg, force=True)
+    msg = (
+        f"📤 *Trade Closed* [{result_type.upper()}]\n"
+        f"• {symbol} — {side.upper()}\n"
+        f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
+        f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
+    )
+    send_telegram_message(msg, force=True)
 
-        if symbol in last_trade_info:
-            del last_trade_info[symbol]
+    trade_manager.remove_trade(symbol)
 
 
 def close_dry_trade(symbol):
-    with last_trade_info_lock:
-        if DRY_RUN and symbol in last_trade_info:
-            trade = last_trade_info[symbol]
-            exit_price = safe_call_retry(
-                exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}"
-            )["last"]
-            record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
-            log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
-            send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)
+    trade = trade_manager.get_trade(symbol)
+    if DRY_RUN and trade:
+        exit_price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
+            "last"
+        ]
+        record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
+        log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
+        send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)
 
 
 def close_real_trade(symbol):
-    with last_trade_info_lock:
-        trade = last_trade_info.get(symbol)
-        if not trade:
-            log(f"[SmartSwitch] No active trade found for {symbol}", level="WARNING")
-            return
+    trade = trade_manager.get_trade(symbol)
+    if not trade:
+        log(f"[SmartSwitch] No active trade found for {symbol}", level="WARNING")
+        return
 
-        try:
-            side = trade["side"]
-            entry_price = trade["entry"]
-            qty = trade["qty"]
-            exit_price = safe_call_retry(
-                exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}"
-            )["last"]
+    try:
+        side = trade["side"]
+        entry_price = trade["entry"]
+        qty = trade["qty"]
+        exit_price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
+            "last"
+        ]
 
-            if side == "buy":
-                safe_call_retry(
-                    exchange.create_market_sell_order, symbol, qty, label=f"close_sell {symbol}"
-                )
-            else:
-                safe_call_retry(
-                    exchange.create_market_buy_order, symbol, qty, label=f"close_buy {symbol}"
-                )
+        if side == "buy":
+            safe_call_retry(
+                exchange.create_market_sell_order, symbol, qty, label=f"close_sell {symbol}"
+            )
+        else:
+            safe_call_retry(
+                exchange.create_market_buy_order, symbol, qty, label=f"close_buy {symbol}"
+            )
 
-            record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
-            log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
+        record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
+        log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
 
-            if symbol in last_trade_info:
-                del last_trade_info[symbol]
-        except Exception as e:
-            log(f"[SmartSwitch] Error closing real trade {symbol}: {e}", level="ERROR")
-            send_telegram_message(f"❌ Failed to close trade {symbol}: {str(e)}", force=True)
+        trade_manager.remove_trade(symbol)
+    except Exception as e:
+        log(f"[SmartSwitch] Error closing real trade {symbol}: {e}", level="ERROR")
+        send_telegram_message(f"❌ Failed to close trade {symbol}: {str(e)}", force=True)

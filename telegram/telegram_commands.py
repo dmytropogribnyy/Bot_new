@@ -13,7 +13,7 @@ from config import (
     trade_stats,
 )
 from core.aggressiveness_controller import get_aggressiveness_score  # Добавляем импорт
-from core.trade_engine import last_trade_info
+from core.trade_engine import trade_manager
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
@@ -33,7 +33,7 @@ def handle_telegram_command(message, state):
     text = message.get("text", "").strip().lower()
     chat_id = message.get("chat", {}).get("id", 0)
 
-    log(f"Received command: {text} from chat ID {chat_id}", level="INFO")
+    log(f"Received command: {text} from chat ID {chat_id}", level="DEBUG")
 
     if "last_command" not in state:
         state["last_command"] = None
@@ -190,7 +190,7 @@ def handle_telegram_command(message, state):
             if DRY_RUN:
                 open_positions = [
                     f"{trade['symbol']} - {trade['side'].upper()} {trade['qty']} @ {trade['entry']}"
-                    for trade in last_trade_info.values()
+                    for trade in trade_manager._trades.values()
                 ]
                 msg = (
                     "Open DRY Positions:\n" + "\n".join(open_positions)
