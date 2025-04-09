@@ -11,14 +11,13 @@ from config import (
     exchange,
 )
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance  # Добавляем импорт
+from utils_core import get_cached_balance, safe_call_retry  # Добавлен импорт safe_call_retry
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
 UPDATE_INTERVAL_SECONDS = 60 * 60  # 1 час
 symbols_file_lock = Lock()
 
-# Fallback list for DRY_RUN with valid Binance USDM Futures symbols
 DRY_RUN_FALLBACK_SYMBOLS = [
     "ADA/USDC",
     "XRP/USDC",
@@ -35,7 +34,13 @@ DRY_RUN_FALLBACK_SYMBOLS = [
 
 def fetch_all_symbols():
     try:
-        markets = exchange.load_markets()
+        markets = safe_call_retry(exchange.load_markets, label="load_markets")
+        if not markets:
+            log("No markets returned from API", level="ERROR")
+            if DRY_RUN:
+                log("Using fallback symbols in DRY_RUN", level="WARNING")
+                return DRY_RUN_FALLBACK_SYMBOLS
+            return []
         log(f"Loaded markets: {len(markets)} total symbols", level="DEBUG")
         log(f"Sample markets: {list(markets.keys())[:5]}...", level="DEBUG")
 
@@ -82,7 +87,12 @@ def fetch_all_symbols():
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
     try:
         api_symbol = f"{symbol}:USDC"
-        ohlcv = exchange.fetch_ohlcv(api_symbol, timeframe, limit=limit)
+        ohlcv = safe_call_retry(
+            exchange.fetch_ohlcv, api_symbol, timeframe, limit=limit, label=f"fetch_ohlcv {symbol}"
+        )
+        if not ohlcv:
+            log(f"No OHLCV data returned for {symbol}", level="ERROR")
+            return None
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
@@ -101,18 +111,16 @@ def calculate_volatility(df):
 def select_active_symbols():
     balance = get_cached_balance()
 
-    # Определяем количество пар в зависимости от депозита
     if balance < 100:
         min_dynamic = 5
         max_dynamic = 5
     else:
         min_dynamic = 10
-        max_dynamic = 25  # Итого 5 + 25 = 30 пар
+        max_dynamic = 25
 
     all_symbols = fetch_all_symbols()
     symbol_data = {}
 
-    # Фильтруем 30 лучших пар по волатильности и объёму
     for symbol in all_symbols:
         if symbol in FIXED_PAIRS:
             continue
@@ -126,7 +134,7 @@ def select_active_symbols():
         symbol_data.items(),
         key=lambda x: x[1]["volatility"] * x[1]["volume"],
         reverse=True,
-    )[:30]  # Берем 30 лучших
+    )[:30]
 
     dynamic_count = max(min_dynamic, min(max_dynamic, len(sorted_symbols)))
     selected_dynamic = [s[0] for s in sorted_symbols[:dynamic_count]]
@@ -162,4 +170,4 @@ def start_symbol_rotation():
         except Exception as e:
             log(f"Symbol rotation error: {e}", level="ERROR")
             send_telegram_message(f"⚠️ Symbol rotation failed: {str(e)}", force=True, parse_mode="")
-        time.sleep(UPDATE_INTERVAL_SECONDS)  # 1 час
+        time.sleep(UPDATE_INTERVAL_SECONDS)

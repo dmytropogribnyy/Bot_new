@@ -17,7 +17,7 @@ from core.trade_engine import get_position_size
 from core.volatility_controller import get_volatility_filters
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
-from utils_core import get_cached_balance
+from utils_core import get_cached_balance, safe_call_retry  # Добавлен импорт
 from utils_logging import log
 
 last_trade_times = {}
@@ -26,7 +26,9 @@ last_trade_times_lock = threading.Lock()
 
 def fetch_data(symbol, tf="15m"):
     try:
-        data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
+        data = safe_call_retry(
+            exchange.fetch_ohlcv, symbol, timeframe=tf, limit=50, label=f"fetch_ohlcv {symbol}"
+        )
         if not data:
             log(f"No data returned for {symbol} on timeframe {tf}", level="ERROR")
             return None
@@ -67,11 +69,9 @@ def get_htf_trend(symbol, tf="1h"):
 
 def passes_filters(df, symbol):
     balance = get_cached_balance()
-    # Выбираем режим фильтров в зависимости от депозита
     filter_mode = "default_light" if balance < 100 else "default"
     base_filters = FILTER_THRESHOLDS.get(symbol, FILTER_THRESHOLDS[filter_mode])
 
-    # Получаем адаптированные пороги с учётом relax factor
     filters = get_volatility_filters(symbol, base_filters)
     relax_factor = filters["relax_factor"]
 
@@ -138,7 +138,6 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
                 )
             return None
 
-    # Проверяем фильтры волатильности перед расчётом score
     if not passes_filters(df, symbol):
         return None
 

@@ -178,6 +178,22 @@ def save_state(state, retries=3, delay=1):
                     time.sleep(delay)
 
 
+def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
+    for attempt in range(tries):
+        try:
+            result = func(*args, **kwargs)
+            if result is None:
+                raise ValueError(f"{label} returned None")
+            return result
+        except Exception as e:
+            log(f"{label} failed (attempt {attempt + 1}/{tries}): {e}", level="ERROR")
+            if attempt < tries - 1:
+                time.sleep(delay)
+            else:
+                log(f"{label} exhausted retries", level="ERROR")
+                return None
+
+
 def get_adaptive_risk_percent(balance):
     """Calculate adaptive risk percentage based on balance."""
     if balance < 100:

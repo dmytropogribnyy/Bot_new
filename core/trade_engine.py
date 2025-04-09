@@ -19,10 +19,9 @@ from config import (
     exchange,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
-from core.binance_api import safe_call
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
-from utils_core import get_cached_positions
+from utils_core import get_cached_positions, safe_call_retry  # Добавлен импорт
 from utils_logging import log, now
 
 last_trade_info = {}
@@ -30,7 +29,6 @@ last_trade_info_lock = threading.Lock()
 monitored_stops = {}
 monitored_stops_lock = threading.Lock()
 
-# Добавляем глобальный счётчик открытых позиций
 open_positions_count = 0
 open_positions_lock = threading.Lock()
 
@@ -58,14 +56,14 @@ def get_position_size(symbol):
 def enter_trade(symbol, side, qty, score=5):
     global open_positions_count
     with open_positions_lock:
-        open_positions_count += 1  # Увеличиваем счётчик при открытии позиции
+        open_positions_count += 1
 
-    ticker = safe_call(exchange.fetch_ticker, symbol, label=f"enter_trade {symbol}")
+    ticker = safe_call_retry(exchange.fetch_ticker, symbol, label=f"enter_trade {symbol}")
     if not ticker:
         log(f"[ERROR] Failed to fetch ticker for {symbol}", level="ERROR")
         send_telegram_message(f"⚠️ Failed to fetch ticker for {symbol}", force=True)
         with open_positions_lock:
-            open_positions_count -= 1  # Уменьшаем, если не удалось открыть
+            open_positions_count -= 1
         return
     entry_price = ticker["last"]
     start_time = now()
@@ -109,17 +107,31 @@ def enter_trade(symbol, side, qty, score=5):
         msg = f"DRY-RUN {side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.2f}"
         send_telegram_message(msg, force=True, parse_mode=None)
     else:
-        exchange.create_limit_order(symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price)
-        if tp2_price and qty_tp2 > 0:
-            exchange.create_limit_order(
-                symbol, "sell" if side == "buy" else "buy", qty_tp2, tp2_price
-            )
-        exchange.create_order(
+        safe_call_retry(
+            exchange.create_limit_order,
             symbol,
-            type="STOP_MARKET",
-            side="sell" if side == "buy" else "buy",
-            amount=qty,
+            "sell" if side == "buy" else "buy",
+            qty_tp1,
+            tp1_price,
+            label=f"create_limit_order TP1 {symbol}",
+        )
+        if tp2_price and qty_tp2 > 0:
+            safe_call_retry(
+                exchange.create_limit_order,
+                symbol,
+                "sell" if side == "buy" else "buy",
+                qty_tp2,
+                tp2_price,
+                label=f"create_limit_order TP2 {symbol}",
+            )
+        safe_call_retry(
+            exchange.create_order,
+            symbol,
+            "STOP_MARKET",
+            "sell" if side == "buy" else "buy",
+            qty,
             params={"stopPrice": round(sl_price, 4), "reduceOnly": True},
+            label=f"create_stop_order {symbol}",
         )
         msg = (
             r"✅ NEW TRADE\n"
@@ -188,16 +200,19 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 
     while True:
         try:
-            price = exchange.fetch_ticker(symbol)["last"]
+            price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
+                "last"
+            ]
             if (side == "buy" and price >= trigger) or (side == "sell" and price <= trigger):
                 stop_price = round(entry_price, 4)
-                exchange.create_order(
+                safe_call_retry(
+                    exchange.create_order,
                     symbol,
                     "STOP_MARKET",
                     "sell" if side == "buy" else "buy",
                     None,
-                    None,
-                    {"stopPrice": stop_price, "reduceOnly": True},
+                    params={"stopPrice": stop_price, "reduceOnly": True},
+                    label=f"create_break_even {symbol}",
                 )
                 send_telegram_message(f"🔒 Break-even activated for {symbol}", force=True)
                 break
@@ -209,7 +224,9 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 
 def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe="15m", limit=15)
+        ohlcv = safe_call_retry(
+            exchange.fetch_ohlcv, symbol, timeframe="15m", limit=15, label=f"fetch_ohlcv {symbol}"
+        )
         highs = [c[2] for c in ohlcv]
         lows = [c[3] for c in ohlcv]
         closes = [c[4] for c in ohlcv]
@@ -230,13 +247,20 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
     while True:
         try:
-            price = exchange.fetch_ticker(symbol)["last"]
+            price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
+                "last"
+            ]
             if side == "buy":
                 if price > highest:
                     highest = price
                 if price <= highest - trailing_distance:
                     size = get_position_size(symbol)
-                    exchange.create_market_sell_order(symbol, size)
+                    safe_call_retry(
+                        exchange.create_market_sell_order,
+                        symbol,
+                        size,
+                        label=f"trailing_sell {symbol}",
+                    )
                     send_telegram_message(
                         f"📉 Trailing stop hit (LONG) {symbol} @ {price}", force=True
                     )
@@ -247,7 +271,12 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
                     lowest = price
                 if price >= lowest + trailing_distance:
                     size = get_position_size(symbol)
-                    exchange.create_market_buy_order(symbol, size)
+                    safe_call_retry(
+                        exchange.create_market_buy_order,
+                        symbol,
+                        size,
+                        label=f"trailing_buy {symbol}",
+                    )
                     send_telegram_message(
                         f"📈 Trailing stop hit (SHORT) {symbol} @ {price}", force=True
                     )
@@ -262,7 +291,7 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     global open_positions_count
     with open_positions_lock:
-        open_positions_count -= 1  # Уменьшаем счётчик при закрытии позиции
+        open_positions_count -= 1
 
     with last_trade_info_lock:
         trade = last_trade_info.get(symbol)
@@ -305,7 +334,9 @@ def close_dry_trade(symbol):
     with last_trade_info_lock:
         if DRY_RUN and symbol in last_trade_info:
             trade = last_trade_info[symbol]
-            exit_price = exchange.fetch_ticker(symbol)["last"]
+            exit_price = safe_call_retry(
+                exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}"
+            )["last"]
             record_trade_result(symbol, trade["side"], trade["entry"], exit_price, "manual")
             log(f"[DRY] Closed {symbol} at {exit_price}", level="INFO")
             send_telegram_message(f"DRY RUN: Closed {symbol} at {exit_price}", force=True)
@@ -322,12 +353,18 @@ def close_real_trade(symbol):
             side = trade["side"]
             entry_price = trade["entry"]
             qty = trade["qty"]
-            exit_price = exchange.fetch_ticker(symbol)["last"]
+            exit_price = safe_call_retry(
+                exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}"
+            )["last"]
 
             if side == "buy":
-                exchange.create_market_sell_order(symbol, qty)
+                safe_call_retry(
+                    exchange.create_market_sell_order, symbol, qty, label=f"close_sell {symbol}"
+                )
             else:
-                exchange.create_market_buy_order(symbol, qty)
+                safe_call_retry(
+                    exchange.create_market_buy_order, symbol, qty, label=f"close_buy {symbol}"
+                )
 
             record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
             log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
