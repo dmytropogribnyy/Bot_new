@@ -37,10 +37,15 @@ def start_trading_loop():
         f"Mode: {mode_text}\n"
         f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     )
-    send_telegram_message(message, force=True, parse_mode="")  # Отключаем Markdown
+    send_telegram_message(message, force=True, parse_mode="")
 
     symbols = load_symbols()
     log(f"[Refactor] Loaded symbols: {symbols}", important=True, level="INFO")
+
+    # Разбиваем пары на группы по 5
+    group_size = 5
+    symbol_groups = [symbols[i : i + group_size] for i in range(0, len(symbols), group_size)]
+    current_group_index = 0
 
     try:
         while True:
@@ -51,10 +56,19 @@ def start_trading_loop():
                 time.sleep(10)
                 continue
 
-            run_trading_cycle(symbols)
+            # Проверяем текущую группу
+            current_group = symbol_groups[current_group_index]
+            log(
+                f"Checking group {current_group_index + 1}/{len(symbol_groups)}: {current_group}",
+                level="DEBUG",
+            )
+            run_trading_cycle(current_group)
+
+            # Переходим к следующей группе
+            current_group_index = (current_group_index + 1) % len(symbol_groups)
+
             save_state(state)
             time.sleep(10)
-
     except KeyboardInterrupt:
         log("[Refactor] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
         send_telegram_message(

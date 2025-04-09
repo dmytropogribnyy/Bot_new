@@ -8,15 +8,14 @@ import pandas as pd
 from config import (
     DRY_RUN,
     FIXED_PAIRS,
-    MAX_DYNAMIC_PAIRS,
-    MIN_DYNAMIC_PAIRS,
     exchange,
 )
 from telegram.telegram_utils import send_telegram_message
+from utils_core import get_cached_balance  # Добавляем импорт
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
-UPDATE_INTERVAL_SECONDS = 4 * 60 * 60  # 4 hours
+UPDATE_INTERVAL_SECONDS = 60 * 60  # 1 час
 symbols_file_lock = Lock()
 
 # Fallback list for DRY_RUN with valid Binance USDM Futures symbols
@@ -100,9 +99,20 @@ def calculate_volatility(df):
 
 
 def select_active_symbols():
+    balance = get_cached_balance()
+
+    # Определяем количество пар в зависимости от депозита
+    if balance < 100:
+        min_dynamic = 5
+        max_dynamic = 5
+    else:
+        min_dynamic = 10
+        max_dynamic = 25  # Итого 5 + 25 = 30 пар
+
     all_symbols = fetch_all_symbols()
     symbol_data = {}
 
+    # Фильтруем 30 лучших пар по волатильности и объёму
     for symbol in all_symbols:
         if symbol in FIXED_PAIRS:
             continue
@@ -116,8 +126,9 @@ def select_active_symbols():
         symbol_data.items(),
         key=lambda x: x[1]["volatility"] * x[1]["volume"],
         reverse=True,
-    )
-    dynamic_count = max(MIN_DYNAMIC_PAIRS, min(MAX_DYNAMIC_PAIRS, len(sorted_symbols)))
+    )[:30]  # Берем 30 лучших
+
+    dynamic_count = max(min_dynamic, min(max_dynamic, len(sorted_symbols)))
     selected_dynamic = [s[0] for s in sorted_symbols[:dynamic_count]]
 
     active_symbols = FIXED_PAIRS + selected_dynamic
@@ -147,8 +158,8 @@ def start_symbol_rotation():
                 f"Total pairs: {len(new_symbols)}\n"
                 f"Fixed: {len(FIXED_PAIRS)}, Dynamic: {len(new_symbols) - len(FIXED_PAIRS)}"
             )
-            send_telegram_message(msg, force=True, parse_mode="")  # Отключаем Markdown
+            send_telegram_message(msg, force=True, parse_mode="")
         except Exception as e:
             log(f"Symbol rotation error: {e}", level="ERROR")
             send_telegram_message(f"⚠️ Symbol rotation failed: {str(e)}", force=True, parse_mode="")
-        time.sleep(UPDATE_INTERVAL_SECONDS)
+        time.sleep(UPDATE_INTERVAL_SECONDS)  # 1 час

@@ -15,7 +15,7 @@ from config import (
 from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.trade_engine import get_position_size
 from telegram.telegram_utils import send_telegram_message
-from tp_logger import get_trade_stats  # Добавлен импорт
+from tp_logger import get_trade_stats
 from utils_core import get_cached_balance
 from utils_logging import log
 
@@ -125,9 +125,12 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     score = calculate_score(df, symbol)
 
-    # Вставка Adaptive MIN_TRADE_SCORE
     trade_count, winrate = get_trade_stats()
     min_required = get_adaptive_min_score(trade_count, winrate)
+
+    # Снижаем порог в DRY_RUN для более частых сигналов
+    if DRY_RUN:
+        min_required *= 0.3  # Снижаем с 3.5 до 1.05
 
     if DRY_RUN:
         log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")

@@ -1,12 +1,28 @@
 from config import MIN_NOTIONAL, SL_PERCENT
 from core.strategy import fetch_data, should_enter_trade
-from core.trade_engine import calculate_position_size, calculate_risk_amount, get_position_size
-from utils_core import get_adaptive_risk_percent
+from core.trade_engine import (
+    calculate_position_size,
+    calculate_risk_amount,
+    get_position_size,
+    open_positions_count,
+    open_positions_lock,
+)
+from utils_core import get_adaptive_risk_percent, get_cached_balance
 from utils_logging import log
 
 
 def process_symbol(symbol, balance, last_trade_times, lock):
     try:
+        # Проверяем общее количество открытых позиций
+        max_open_positions = 10 if get_cached_balance() < 100 else 20
+        with open_positions_lock:
+            if open_positions_count >= max_open_positions:
+                log(
+                    f"⏩ Skipping {symbol} — max open positions ({max_open_positions}) reached",
+                    level="DEBUG",
+                )
+                return None
+
         if get_position_size(symbol) > 0:
             log(f"⏩ Skipping {symbol} — already in position", level="DEBUG")
             return None

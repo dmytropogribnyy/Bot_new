@@ -1,5 +1,3 @@
-# trade_engine.py
-
 import threading
 import time
 
@@ -7,7 +5,7 @@ import pandas as pd
 import ta
 
 from config import (
-    AGGRESSIVENESS_THRESHOLD,  # Импортируем порог
+    AGGRESSIVENESS_THRESHOLD,
     BREAKEVEN_TRIGGER,
     DRY_RUN,
     ENABLE_BREAKEVEN,
@@ -32,6 +30,10 @@ last_trade_info_lock = threading.Lock()
 monitored_stops = {}
 monitored_stops_lock = threading.Lock()
 
+# Добавляем глобальный счётчик открытых позиций
+open_positions_count = 0
+open_positions_lock = threading.Lock()
+
 
 def calculate_risk_amount(balance, risk_percent):
     return balance * risk_percent
@@ -54,16 +56,24 @@ def get_position_size(symbol):
 
 
 def enter_trade(symbol, side, qty, score=5):
+    global open_positions_count
+    with open_positions_lock:
+        open_positions_count += 1  # Увеличиваем счётчик при открытии позиции
+
     ticker = safe_call(exchange.fetch_ticker, symbol, label=f"enter_trade {symbol}")
     if not ticker:
         log(f"[ERROR] Failed to fetch ticker for {symbol}", level="ERROR")
         send_telegram_message(f"⚠️ Failed to fetch ticker for {symbol}", force=True)
+        with open_positions_lock:
+            open_positions_count -= 1  # Уменьшаем, если не удалось открыть
         return
     entry_price = ticker["last"]
     start_time = now()
 
     if qty * entry_price < MIN_NOTIONAL:
         send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
+        with open_positions_lock:
+            open_positions_count -= 1
         return
 
     tp1_percent = TP1_PERCENT
@@ -97,7 +107,7 @@ def enter_trade(symbol, side, qty, score=5):
             level="INFO",
         )
         msg = f"DRY-RUN {side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.2f}"
-        send_telegram_message(msg, force=True, parse_mode=None)  # Отключаем MarkdownV2
+        send_telegram_message(msg, force=True, parse_mode=None)
     else:
         exchange.create_limit_order(symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price)
         if tp2_price and qty_tp2 > 0:
@@ -206,9 +216,7 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
         atr = max([h - low for h, low in zip(highs, lows)])
         df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
-        multiplier = (
-            3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
-        )  # Используем порог из config
+        multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
         if adx > 25:
             multiplier *= 0.7
         trailing_distance = atr * multiplier
@@ -252,6 +260,10 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
 
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
+    global open_positions_count
+    with open_positions_lock:
+        open_positions_count -= 1  # Уменьшаем счётчик при закрытии позиции
+
     with last_trade_info_lock:
         trade = last_trade_info.get(symbol)
         if not trade:
@@ -312,19 +324,16 @@ def close_real_trade(symbol):
             qty = trade["qty"]
             exit_price = exchange.fetch_ticker(symbol)["last"]
 
-            # Закрываем противоположной сделкой
             if side == "buy":
                 exchange.create_market_sell_order(symbol, qty)
             else:
                 exchange.create_market_buy_order(symbol, qty)
 
-            # Логируем результат
             record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
             log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
 
             if symbol in last_trade_info:
                 del last_trade_info[symbol]
-
         except Exception as e:
             log(f"[SmartSwitch] Error closing real trade {symbol}: {e}", level="ERROR")
             send_telegram_message(f"❌ Failed to close trade {symbol}: {str(e)}", force=True)
