@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime
 
 from config import (
     AGGRESSIVENESS_THRESHOLD,
@@ -9,11 +10,24 @@ from config import (
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
+from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
 from pair_selector import select_active_symbols, start_symbol_rotation
+from score_heatmap import generate_score_heatmap
+from stats import (
+    generate_daily_report,
+    send_halfyear_report,
+    send_monthly_report,
+    send_quarterly_report,
+    send_weekly_report,
+    send_yearly_report,
+    should_run_optimizer,
+)
 from telegram.telegram_commands import handle_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
-from telegram.telegram_utils import send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from tp_optimizer import run_tp_optimizer
+from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import load_state, save_state
 from utils_logging import log
 
@@ -76,6 +90,75 @@ def start_trading_loop():
         )
 
 
+def start_report_loops():
+    def daily_loop():
+        while True:
+            t = datetime.now()
+            if t.hour == 21 and t.minute == 0:
+                generate_daily_report()
+                time.sleep(60)
+            time.sleep(10)
+
+    def weekly_loop():
+        while True:
+            t = datetime.now()
+            if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
+                send_weekly_report()
+                time.sleep(60)
+            time.sleep(10)
+
+    def extended_reports_loop():
+        while True:
+            t = datetime.now()
+            if t.day == 1 and t.hour == 21 and t.minute == 0:
+                send_monthly_report()
+            if t.day == 1 and t.month in [1, 4, 7, 10] and t.hour == 21 and t.minute == 5:
+                send_quarterly_report()
+            if t.day == 1 and t.month in [1, 7] and t.hour == 21 and t.minute == 10:
+                send_halfyear_report()
+            if t.day == 1 and t.month == 1 and t.hour == 21 and t.minute == 15:
+                send_yearly_report()
+            time.sleep(10)
+
+    def optimizer_loop():
+        while True:
+            t = datetime.now()
+            if t.day % 2 == 0 and t.hour == 21 and t.minute == 30:
+                if should_run_optimizer():
+                    run_tp_optimizer()
+                    analyze_and_optimize_tp()
+                else:
+                    send_telegram_message(
+                        escape_markdown_v2("Not enough recent trades to optimize (min: 20)"),
+                        force=True,
+                    )
+                time.sleep(60)
+            time.sleep(10)
+
+    def heatmap_loop():
+        while True:
+            t = datetime.now()
+            if t.weekday() == 4 and t.hour == 20 and t.minute == 0:
+                generate_score_heatmap(days=7)
+                time.sleep(60)
+            time.sleep(10)
+
+    def htf_optimizer_loop():
+        while True:
+            t = datetime.now()
+            if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
+                analyze_htf_winrate()
+                time.sleep(60)
+            time.sleep(10)
+
+    threading.Thread(target=daily_loop, daemon=True).start()
+    threading.Thread(target=weekly_loop, daemon=True).start()
+    threading.Thread(target=extended_reports_loop, daemon=True).start()
+    threading.Thread(target=optimizer_loop, daemon=True).start()
+    threading.Thread(target=heatmap_loop, daemon=True).start()
+    threading.Thread(target=htf_optimizer_loop, daemon=True).start()
+
+
 if __name__ == "__main__":
     state = load_state()
     threading.Thread(
@@ -88,6 +171,10 @@ if __name__ == "__main__":
     ).start()
     threading.Thread(
         target=start_symbol_rotation,
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=start_report_loops,
         daemon=True,
     ).start()
 

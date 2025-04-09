@@ -1,30 +1,23 @@
 # stats.py (обновлённый с расширенными отчётами)
 
 import os
-import threading
-import time
 from datetime import datetime, timedelta
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from config import (
     AGGRESSIVENESS_THRESHOLD,
+    EXPORT_PATH,
     LOG_LEVEL,
     TIMEZONE,
     trade_stats,
     trade_stats_lock,
 )
-
-# Добавляем AGGRESSIVENESS_THRESHOLD
-from core.aggressiveness_controller import get_aggressiveness_score  # Добавляем импорт
-from htf_optimizer import analyze_htf_winrate
-from score_heatmap import generate_score_heatmap
+from core.aggressiveness_controller import get_aggressiveness_score
+from core.volatility_controller import get_filter_relax_factor
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from tp_optimizer import run_tp_optimizer
-from tp_optimizer_ml import analyze_and_optimize_tp
-from utils_logging import log  # Добавляем импорт для логирования
-
-EXPORT_PATH = "data/tp_performance.csv"
+from utils_logging import log
 
 
 def now_with_timezone():
@@ -199,74 +192,79 @@ def should_run_optimizer():
         return False
 
 
-def start_report_loops():
-    def daily_loop():
-        while True:
-            t = now_with_timezone()
-            if t.hour == 21 and t.minute == 0:
-                send_daily_report()
-                time.sleep(60)
-            time.sleep(10)
+def generate_pnl_graph(days=7):
+    df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+    df = df[df["Date"] >= datetime.now() - timedelta(days=days)]
+    if df.empty:
+        return
+    df["Cumulative PnL"] = df["PnL (%)"].cumsum()
+    plt.figure(figsize=(10, 6))
+    plt.plot(df["Date"], df["Cumulative PnL"], label="Cumulative PnL (%)")
+    plt.title(f"PnL Over Last {days} Days")
+    plt.xlabel("Date")
+    plt.ylabel("Cumulative PnL (%)")
+    plt.legend()
+    plt.grid()
+    plt.savefig("data/pnl_graph.png")
+    plt.close()
+    send_telegram_message("data/pnl_graph.png", caption=f"PnL Graph ({days}d)")
+    log("PnL graph sent", level="INFO")
 
-    def weekly_loop():
-        while True:
-            t = now_with_timezone()
-            if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
-                send_weekly_report()
-                time.sleep(60)
-            time.sleep(10)
 
-    def extended_reports_loop():
-        while True:
-            t = now_with_timezone()
-            if t.day == 1 and t.hour == 21 and t.minute == 0:
-                send_monthly_report()
-            if (
-                t.day == 1 and t.month in [1, 4, 7, 10] and t.hour == 21 and t.minute == 5
-            ):  # Исправляем of на in
-                send_quarterly_report()
-            if (
-                t.day == 1 and t.month in [1, 7] and t.hour == 21 and t.minute == 10
-            ):  # Исправляем of на in
-                send_halfyear_report()
-            if t.day == 1 and t.month == 1 and t.hour == 21 and t.minute == 15:
-                send_yearly_report()
-            time.sleep(10)
+def generate_daily_report(days=1):
+    """
+    Генерирует ежедневный отчёт и отправляет его в Telegram.
+    Включает статистику по сделкам, винрейт, PnL и relax_factor.
 
-    def optimizer_loop():
-        while True:
-            t = now_with_timezone()
-            if t.day % 2 == 0 and t.hour == 21 and t.minute == 30:
-                if should_run_optimizer():
-                    run_tp_optimizer()
-                    analyze_and_optimize_tp()
-                else:
-                    send_telegram_message(
-                        escape_markdown_v2("Not enough recent trades to optimize (min: 20)"),
-                        force=True,
-                    )
-                time.sleep(60)
-            time.sleep(10)
+    Args:
+        days (int): Период для анализа (по умолчанию 1 день).
+    """
+    try:
+        # Читаем данные из tp_performance.csv
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        if df.empty:
+            report_message = "📊 Daily Report\n" "No trades recorded yet."
+            send_telegram_message(report_message, force=True, parse_mode="")
+            return
 
-    def heatmap_loop():
-        while True:
-            t = now_with_timezone()
-            if t.weekday() == 4 and t.hour == 20 and t.minute == 0:
-                generate_score_heatmap(days=7)
-                time.sleep(60)
-            time.sleep(10)
+        # Фильтруем данные за последние days дней
+        df = df[df["Date"] >= pd.Timestamp.now() - pd.Timedelta(days=days)]
+        if df.empty:
+            report_message = f"📊 Daily Report\n" f"No trades in the last {days} day(s)."
+            send_telegram_message(report_message, force=True, parse_mode="")
+            return
 
-    def htf_optimizer_loop():
-        while True:
-            t = now_with_timezone()
-            if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
-                analyze_htf_winrate()
-                time.sleep(60)
-            time.sleep(10)
+        # Общее количество сделок
+        total_trades = len(df)
 
-    threading.Thread(target=daily_loop, daemon=True).start()
-    threading.Thread(target=weekly_loop, daemon=True).start()
-    threading.Thread(target=extended_reports_loop, daemon=True).start()
-    threading.Thread(target=optimizer_loop, daemon=True).start()
-    threading.Thread(target=heatmap_loop, daemon=True).start()
-    threading.Thread(target=htf_optimizer_loop, daemon=True).start()
+        # Количество выигрышных сделок (TP1, TP2)
+        win_trades = len(df[df["Result"].isin(["TP1", "TP2"])])
+        winrate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
+
+        # Общий PnL
+        total_pnl = df["PnL (%)"].sum()
+
+        # Средний PnL за сделку
+        avg_pnl = df["PnL (%)"].mean() if total_trades > 0 else 0.0
+
+        # Получаем relax_factor
+        relax_factor = get_filter_relax_factor()
+
+        # Формируем отчёт
+        report_message = (
+            f"📊 Daily Report (Last {days} Day(s))\n"
+            f"Total Trades: {total_trades}\n"
+            f"Winrate: {winrate:.2f}%\n"
+            f"Total PnL: {total_pnl:.2f}%\n"
+            f"Average PnL per Trade: {avg_pnl:.2f}%\n"
+            f"Filter Relax Factor: {relax_factor:.2f}"
+        )
+        send_telegram_message(report_message, force=True, parse_mode="")
+
+        log(f"Daily report sent: {report_message}", level="INFO")
+
+    except Exception as e:
+        log(f"[ERROR] Failed to generate daily report: {e}", level="ERROR")
+        send_telegram_message(
+            f"⚠️ Failed to generate daily report: {str(e)}", force=True, parse_mode=""
+        )

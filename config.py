@@ -1,5 +1,3 @@
-# config.py
-
 import os
 from threading import Lock
 
@@ -20,6 +18,7 @@ ALLOWED_USER_ID = 383821734
 TIMEZONE = pytz.timezone("Europe/Bratislava")
 LOG_FILE_PATH = "telegram_log.txt"
 EXPORT_PATH = "data/tp_performance.csv"
+TP_LOG_FILE = "data/tp_performance.csv"
 
 # --- Logging ---
 LOG_LEVEL = "INFO"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
@@ -39,7 +38,7 @@ SYMBOLS_ACTIVE = [
     "ARB/USDC",
 ]
 
-FIXED_PAIRS = ["BTC/USDC", "ETH/USDC", "DOGE/USDC", "SOL/USDC", "BNB/USDC"]
+FIXED_PAIRS = ["BTC/USDC", "ETH/USDC", "XRP/USDC", "ADA/USDC", "SOL/USDC"]
 MAX_DYNAMIC_PAIRS = 30
 MIN_DYNAMIC_PAIRS = 15
 
@@ -64,7 +63,7 @@ TP2_SHARE = 0.3
 SL_PERCENT = 0.01
 
 # --- Risk Management ---
-AGGRESSIVENESS_THRESHOLD = 0.6  # NEW: Порог для определения AGGRESSIVE режима
+AGGRESSIVENESS_THRESHOLD = 0.6  # Порог для определения AGGRESSIVE режима
 AGGRESSIVE_THRESHOLD = 50
 SAFE_THRESHOLD = 10
 MIN_NOTIONAL = 5
@@ -80,7 +79,6 @@ BB_WIDTH_THRESHOLD = 0.008
 VOLATILITY_SKIP_ENABLED = True
 VOLATILITY_ATR_THRESHOLD = 0.0012
 VOLATILITY_RANGE_THRESHOLD = 0.015
-
 DRY_RUN_VOLATILITY_ATR_THRESHOLD = 0.0025
 DRY_RUN_VOLATILITY_RANGE_THRESHOLD = 0.0075
 
@@ -101,17 +99,17 @@ SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
 
 SCORE_WEIGHTS = {
-    "RSI": 0.3,
-    "MACD_RSI": 0.3,
-    "MACD_EMA": 0.3,
-    "HTF": 0.4,
-}  # Weights used in score evaluation
+    "RSI": 1.0,
+    "MACD_RSI": 1.0,
+    "MACD_EMA": 1.0,
+    "HTF": 1.0,
+    "VOLUME": 0.5,
+}
 
 # --- Mode & Debug ---
 DRY_RUN = True
 VERBOSE = DRY_RUN
 USE_DYNAMIC_IN_DRY_RUN = True
-
 ADAPTIVE_SCORE_ENABLED = True
 
 # --- Runtime Trade Stats ---
@@ -150,8 +148,10 @@ exchange = ccxt.binance(
 
 # --- Auto-learned Entry Filter Thresholds ---
 FILTER_THRESHOLDS = {
+    "default": {"atr": 0.0015, "adx": 7, "bb": 0.008},  # Для депозита ≥ 100 USDC
+    "default_light": {"atr": 0.001, "adx": 5, "bb": 0.006},  # Для депозита < 100 USDC
+    "BTC/USDC": {"atr": 0.002, "adx": 10, "bb": 0.01},
     "DOGE/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-    "BTC/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
     "ETH/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
     "BNB/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
     "ADA/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
@@ -166,7 +166,10 @@ FILTER_THRESHOLDS = {
 ROUTER_REBOOT_MODE_TIMEOUT_MINUTES = 30
 IP_MONITOR_INTERVAL_SECONDS = 180
 
-TP_LOG_FILE = "data/tp_performance.csv"
+# --- Symbol Rotation ---
+UPDATE_INTERVAL_SECONDS = 60 * 60  # 1 час
+
+# --- Additional Settings ---
 USE_HTF_CONFIRMATION = False
 
 # ML TP Optimization

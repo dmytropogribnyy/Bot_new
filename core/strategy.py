@@ -14,6 +14,7 @@ from config import (
 )
 from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.trade_engine import get_position_size
+from core.volatility_controller import get_volatility_filters
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
 from utils_core import get_cached_balance
@@ -64,6 +65,47 @@ def get_htf_trend(symbol, tf="1h"):
     return df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
 
 
+def passes_filters(df, symbol):
+    balance = get_cached_balance()
+    # Выбираем режим фильтров в зависимости от депозита
+    filter_mode = "default_light" if balance < 100 else "default"
+    base_filters = FILTER_THRESHOLDS.get(symbol, FILTER_THRESHOLDS[filter_mode])
+
+    # Получаем адаптированные пороги с учётом relax factor
+    filters = get_volatility_filters(symbol, base_filters)
+    relax_factor = filters["relax_factor"]
+
+    if DRY_RUN:
+        filters["atr"] *= 0.6
+        filters["adx"] *= 0.6
+        filters["bb"] *= 0.6
+
+    price = df["close"].iloc[-1]
+    atr = df["atr"].iloc[-1] / price
+    adx = df["adx"].iloc[-1]
+    bb_width = df["bb_width"].iloc[-1] / price
+
+    if atr < filters["atr"]:
+        log(
+            f"{symbol} ⛔️ Rejected: ATR {atr:.5f} < {filters['atr']} (relax={relax_factor})",
+            level="DEBUG",
+        )
+        return False
+    if adx < filters["adx"]:
+        log(
+            f"{symbol} ⛔️ Rejected: ADX {adx:.2f} < {filters['adx']} (relax={relax_factor})",
+            level="DEBUG",
+        )
+        return False
+    if bb_width < filters["bb"]:
+        log(
+            f"{symbol} ⛔️ Rejected: BB Width {bb_width:.5f} < {filters['bb']} (relax={relax_factor})",
+            level="DEBUG",
+        )
+        return False
+    return True
+
+
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")
@@ -83,54 +125,30 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     has_short_position = position_size < 0
     available_margin = balance * 0.1
 
-    filters = FILTER_THRESHOLDS.get(symbol, {})
-    atr_thres = filters.get("atr", 0.0015)
-    adx_thres = filters.get("adx", 7)
-    bb_thres = filters.get("bb", 0.008)
-
-    if DRY_RUN:
-        atr_thres *= 0.6
-        adx_thres *= 0.6
-        bb_thres *= 0.6
-
-    price = df["close"].iloc[-1]
-    atr = df["atr"].iloc[-1]
-    adx_val = df["adx"].iloc[-1]
-    bb_width = df["bb_width"].iloc[-1]
-    get_htf_trend(symbol)
-
     if VOLATILITY_SKIP_ENABLED:
+        price = df["close"].iloc[-1]
         high = df["high"].iloc[-1]
         low = df["low"].iloc[-1]
+        atr = df["atr"].iloc[-1] / price
         range_ratio = (high - low) / price
-        if atr / price < VOLATILITY_ATR_THRESHOLD and range_ratio < VOLATILITY_RANGE_THRESHOLD:
+        if atr < VOLATILITY_ATR_THRESHOLD and range_ratio < VOLATILITY_RANGE_THRESHOLD:
             if DRY_RUN:
                 log(
-                    f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr / price:.5f}, Range: {range_ratio:.5f})"
+                    f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr:.5f}, Range: {range_ratio:.5f})"
                 )
             return None
 
-    if atr / price < atr_thres:
-        if DRY_RUN:
-            log(f"{symbol} ⛔️ Rejected: ATR too low ({atr / price:.5f} < {atr_thres})")
+    # Проверяем фильтры волатильности перед расчётом score
+    if not passes_filters(df, symbol):
         return None
-    if adx_val < adx_thres:
-        if DRY_RUN:
-            log(f"{symbol} ⛔️ Rejected: ADX too low ({adx_val:.2f} < {adx_thres})")
-        return None
-    if bb_width / price < bb_thres:
-        if DRY_RUN:
-            log(f"{symbol} ⛔️ Rejected: BB Width too low ({bb_width / price:.5f} < {bb_thres})")
-        return None
-
-    score = calculate_score(df, symbol)
 
     trade_count, winrate = get_trade_stats()
+    score = calculate_score(df, symbol, trade_count, winrate)
+
     min_required = get_adaptive_min_score(trade_count, winrate)
 
-    # Снижаем порог в DRY_RUN для более частых сигналов
     if DRY_RUN:
-        min_required *= 0.3  # Снижаем с 3.5 до 1.05
+        min_required *= 0.3
 
     if DRY_RUN:
         log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")
