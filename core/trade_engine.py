@@ -105,7 +105,6 @@ def get_market_regime(symbol):
         ohlcv = safe_call_retry(
             exchange.fetch_ohlcv, symbol, timeframe="15m", limit=50, label=f"fetch_ohlcv {symbol}"
         )
-        # Debug the number of candles returned
         log(f"{symbol} 🔍 Fetched {len(ohlcv)} candles for timeframe 15m", level="DEBUG")
         if len(ohlcv) < 14:
             log(
@@ -147,14 +146,16 @@ def get_market_regime(symbol):
 def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     global open_positions_count
     with open_positions_lock:
-        open_positions_count += 1
+        if not DRY_RUN:  # Only increment in REAL_RUN
+            open_positions_count += 1
 
     ticker = safe_call_retry(exchange.fetch_ticker, symbol, label=f"enter_trade {symbol}")
     if not ticker:
         log(f"[ERROR] Failed to fetch ticker for {symbol}", level="ERROR")
         send_telegram_message(f"⚠️ Failed to fetch ticker for {symbol}", force=True)
         with open_positions_lock:
-            open_positions_count -= 1
+            if not DRY_RUN:  # Only decrement in REAL_RUN
+                open_positions_count -= 1
         return
     entry_price = ticker["last"]
     start_time = now()
@@ -163,7 +164,8 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         if get_position_size(symbol) > 0:
             log(f"Skipping re-entry for {symbol}: position already open", level="WARNING")
             with open_positions_lock:
-                open_positions_count -= 1
+                if not DRY_RUN:  # Only decrement in REAL_RUN
+                    open_positions_count -= 1
             return
         log(f"Re-entry triggered for {symbol} at {entry_price}", level="INFO")
         send_telegram_message(f"🔄 Re-entry {symbol} @ {entry_price}", force=True)
@@ -180,15 +182,16 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         )
         send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
         with open_positions_lock:
-            open_positions_count -= 1
+            if not DRY_RUN:  # Only decrement in REAL_RUN
+                open_positions_count -= 1
         return
 
-    # Базовые значения TP/SL
+    # Base TP/SL values
     tp1_percent = TP1_PERCENT
     tp2_percent = TP2_PERCENT
     sl_percent = SL_PERCENT
 
-    # Адаптация TP/SL по режиму
+    # Adjust TP/SL based on regime
     if AUTO_TP_SL_ENABLED:
         regime = get_market_regime(symbol)
         if regime == "flat":
