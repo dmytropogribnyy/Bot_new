@@ -107,7 +107,6 @@ def passes_filters(df, symbol):
     return True
 
 
-# strategy.py (фрагмент)
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")

@@ -103,8 +103,14 @@ def run_trading_cycle(symbols):
             if not trade_data:
                 continue
 
-            # Извлекаем только score, так как direction и qty передаются через trade_data
+            # Извлекаем только необходимые данные
             score = trade_data["score"]
+            is_reentry = trade_data["is_reentry"]
+
+            log(
+                f"{symbol} 🔍 Trade data before notify: qty = {trade_data['qty']:.3f}",
+                level="DEBUG",
+            )
 
             current_trade = trade_manager.get_trade(symbol)
             if current_trade:
@@ -132,7 +138,7 @@ def run_trading_cycle(symbols):
                     else:
                         close_real_trade(symbol)
                     smart_switch_count += 1
-                    trade_data["is_reentry"] = True  # Обновляем is_reentry в trade_data
+                    is_reentry = True  # Переопределяем как re-entry после Smart Switch
                     time.sleep(1)
                 else:
                     log(
@@ -144,13 +150,21 @@ def run_trading_cycle(symbols):
             if DRY_RUN:
                 notify_dry_trade(trade_data)
                 log_entry(trade_data, status="SUCCESS", mode="DRY_RUN")
+                # Call enter_trade in DRY_RUN mode for simulation purposes
+                enter_trade(
+                    trade_data["symbol"],
+                    trade_data["direction"],
+                    trade_data["qty"],
+                    trade_data["score"],
+                    is_reentry,
+                )
             else:
                 enter_trade(
                     trade_data["symbol"],
                     trade_data["direction"],
                     trade_data["qty"],
                     trade_data["score"],
-                    trade_data["is_reentry"],
+                    is_reentry,
                 )
                 log_entry(trade_data, status="SUCCESS", mode="REAL_RUN")
 

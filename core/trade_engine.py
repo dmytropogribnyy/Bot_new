@@ -103,8 +103,17 @@ def get_position_size(symbol):
 def get_market_regime(symbol):
     try:
         ohlcv = safe_call_retry(
-            exchange.fetch_ohlcv, symbol, timeframe="15m", limit=15, label=f"fetch_ohlcv {symbol}"
+            exchange.fetch_ohlcv, symbol, timeframe="15m", limit=50, label=f"fetch_ohlcv {symbol}"
         )
+        # Debug the number of candles returned
+        log(f"{symbol} 🔍 Fetched {len(ohlcv)} candles for timeframe 15m", level="DEBUG")
+        if len(ohlcv) < 14:
+            log(
+                f"{symbol} ⚠️ Insufficient data: only {len(ohlcv)} candles available, need at least 14 for ADX",
+                level="WARNING",
+            )
+            return "neutral"
+
         highs = [c[2] for c in ohlcv]
         lows = [c[3] for c in ohlcv]
         closes = [c[4] for c in ohlcv]
@@ -159,7 +168,16 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         log(f"Re-entry triggered for {symbol} at {entry_price}", level="INFO")
         send_telegram_message(f"🔄 Re-entry {symbol} @ {entry_price}", force=True)
 
+    log(
+        f"{symbol} 🔍 Entering trade: qty = {qty:.3f}, entry_price = {entry_price:.2f}, notional = {qty * entry_price:.2f}",
+        level="DEBUG",
+    )
+
     if qty * entry_price < MIN_NOTIONAL:
+        log(
+            f"{symbol} ⚠️ Notional too small: {qty * entry_price:.2f} < {MIN_NOTIONAL}",
+            level="WARNING",
+        )
         send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
         with open_positions_lock:
             open_positions_count -= 1
@@ -212,7 +230,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             f"[DRY] Entering {side.upper()} on {symbol} at {entry_price:.5f} (qty: {qty:.2f})",
             level="INFO",
         )
-        msg = f"DRY-RUN {'REENTRY ' if is_reentry else ''}{side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.2f}"
+        msg = f"DRY-RUN {'REENTRY ' if is_reentry else ''}{side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.3f}"
         send_telegram_message(msg, force=True, parse_mode=None)
     else:
         safe_call_retry(

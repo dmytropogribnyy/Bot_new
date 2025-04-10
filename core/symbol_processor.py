@@ -50,15 +50,19 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(f"⚠️ Notional too low for {symbol} — skipping", level="WARNING")
             return None
 
+        log(
+            f"{symbol} 🔍 Calculated qty: {qty:.3f}, entry: {entry:.2f}, notional: {qty * entry:.2f}",
+            level="DEBUG",
+        )
+
         return {
             "symbol": symbol,
             "direction": direction,
             "qty": qty,
             "entry": entry,
             "score": score,
-            "is_reentry": is_reentry,  # Добавляем is_reentry в словарь
+            "is_reentry": is_reentry,
         }
-
     except Exception as e:
         log(f"🔥 Error in process_symbol for {symbol}: {e}", level="ERROR")
         return None
