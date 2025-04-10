@@ -1,0 +1,106 @@
+# 📢 Telegram Syntax & Markdown Guide — BinanceBot v1.6.3
+
+This unified guide shows how to correctly handle all Telegram messages in the BinanceBot system. It ensures consistent behavior across DRY_RUN, REAL_RUN, logs, alerts, and reports.
+
+---
+
+## ✅ Message Formatting Rules
+
+| Context               | `parse_mode`   | `escape_markdown_v2()`? | Notes                                 |
+| --------------------- | -------------- | ----------------------- | ------------------------------------- |
+| DRY_RUN, logs, status | `""` or `None` | ❌ No                   | Plain text only — no escaping         |
+| Alerts, errors        | `""`           | ❌ No                   | Emojis OK, avoid `*`, `_`, `[`        |
+| Reports (/summary)    | `"MarkdownV2"` | ✅ Yes                  | Must escape Markdown symbols manually |
+
+Use `escape_markdown_v2(text)` **only** when using `parse_mode="MarkdownV2"` and formatting.
+
+---
+
+## ✅ Recommended Usage Examples
+
+### 🧪 DRY_RUN (strategy.py)
+
+```python
+msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+send_telegram_message(msg, force=True, parse_mode="")
+```
+
+### 📦 Start Message (main.py)
+
+```python
+message = (
+    f"Bot started in {mode} mode\n"
+    f"Mode: {mode_text}\n"
+    f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
+)
+send_telegram_message(message, force=True, parse_mode="")
+```
+
+### 🛑 Shutdown Notification
+
+```python
+send_telegram_message("🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode="")
+```
+
+### 🔄 Symbol Rotation
+
+```python
+msg = f"🔄 Symbol rotation completed:\nTotal: {total}\nFixed: {fixed}, Dynamic: {dynamic}"
+send_telegram_message(msg, force=True, parse_mode="")
+```
+
+### 📊 Formatted Report (MarkdownV2)
+
+```python
+from telegram.telegram_utils import escape_markdown_v2
+
+summary = generate_summary_text()
+msg = escape_markdown_v2(summary)
+send_telegram_message(msg, parse_mode="MarkdownV2")
+```
+
+---
+
+## ❌ Common Mistakes to Avoid
+
+### ❌ Escaping when not using MarkdownV2:
+
+```python
+# WRONG
+send_telegram_message(escape_markdown_v2(msg), parse_mode="")
+
+# RIGHT
+send_telegram_message(msg, parse_mode="")
+```
+
+### ❌ Unescaped MarkdownV2:
+
+```python
+# WRONG
+send_telegram_message("*Started*", parse_mode="MarkdownV2")
+
+# RIGHT
+send_telegram_message(escape_markdown_v2("*Started*"), parse_mode="MarkdownV2")
+```
+
+---
+
+## 📌 Summary Table
+
+| Type              | `parse_mode`   | `escape_markdown_v2()`? |
+| ----------------- | -------------- | ----------------------- |
+| DRY_RUN / logs    | `""` or `None` | ❌ No                   |
+| Alerts / Errors   | `""`           | ❌ No                   |
+| Formatted Reports | `"MarkdownV2"` | ✅ Yes                  |
+
+---
+
+## 💡 Tips
+
+- Avoid special characters `* _ [ ] ( ) ~` unless escaped in MarkdownV2.
+- Telegram has a 4096-char limit — truncate if needed.
+- Test your messages in DRY_RUN first if unsure.
+
+---
+
+> This guide ensures clean, safe, and professional message output for all BinanceBot environments (v1.6.3).
