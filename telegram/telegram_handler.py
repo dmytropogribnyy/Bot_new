@@ -3,7 +3,7 @@ import time
 
 import requests
 
-from config import DRY_RUN, TELEGRAM_TOKEN, VERBOSE  # Добавляем импорт DRY_RUN
+from config import TELEGRAM_TOKEN, VERBOSE
 
 UPDATE_FILE = "data/last_update.txt"
 
@@ -79,4 +79,4 @@ def process_telegram_commands(state: dict, handler_fn):
             if VERBOSE:
                 print(f"⚠️ Telegram polling error: {e}")
 
-        time.sleep(60 if DRY_RUN else 3)  # 60 секунд в DRY_RUN, 3 секунды в REAL_RUN
+        time.sleep(3)
