@@ -1,9 +1,9 @@
-# symbol_processor.py
-from config import MIN_NOTIONAL, SL_PERCENT
+from config import DRY_RUN, MIN_NOTIONAL, SL_PERCENT  # Добавляем DRY_RUN
 from core.strategy import fetch_data, should_enter_trade
 from core.trade_engine import (
     calculate_position_size,
     calculate_risk_amount,
+    dry_run_positions_count,  # Добавляем новый счётчик
     get_position_size,
     open_positions_count,
     open_positions_lock,
@@ -17,7 +17,8 @@ def process_symbol(symbol, balance, last_trade_times, lock):
         # Проверяем общее количество открытых позиций
         max_open_positions = 10 if get_cached_balance() < 100 else 20
         with open_positions_lock:
-            if open_positions_count >= max_open_positions:
+            active_count = dry_run_positions_count if DRY_RUN else open_positions_count
+            if active_count >= max_open_positions:
                 log(
                     f"⏩ Skipping {symbol} — max open positions ({max_open_positions}) reached",
                     level="DEBUG",

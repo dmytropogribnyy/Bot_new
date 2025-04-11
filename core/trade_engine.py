@@ -1,4 +1,3 @@
-# trade_engine.py
 import threading
 import time
 
@@ -76,7 +75,9 @@ trade_manager = TradeInfoManager()
 monitored_stops = {}
 monitored_stops_lock = threading.Lock()
 
+# Обновлённые глобальные объявления
 open_positions_count = 0
+dry_run_positions_count = 0  # NEW: Отдельный счётчик для DRY_RUN
 open_positions_lock = threading.Lock()
 
 
@@ -144,9 +145,12 @@ def get_market_regime(symbol):
 
 
 def enter_trade(symbol, side, qty, score=5, is_reentry=False):
-    global open_positions_count
+    # Обновлённая логика с двумя счётчиками
+    global open_positions_count, dry_run_positions_count
     with open_positions_lock:
-        if not DRY_RUN:  # Only increment in REAL_RUN
+        if DRY_RUN:
+            dry_run_positions_count += 1
+        else:
             open_positions_count += 1
 
     ticker = safe_call_retry(exchange.fetch_ticker, symbol, label=f"enter_trade {symbol}")
@@ -154,7 +158,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         log(f"[ERROR] Failed to fetch ticker for {symbol}", level="ERROR")
         send_telegram_message(f"⚠️ Failed to fetch ticker for {symbol}", force=True)
         with open_positions_lock:
-            if not DRY_RUN:  # Only decrement in REAL_RUN
+            if DRY_RUN:
+                dry_run_positions_count -= 1
+            else:
                 open_positions_count -= 1
         return
     entry_price = ticker["last"]
@@ -164,7 +170,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         if get_position_size(symbol) > 0:
             log(f"Skipping re-entry for {symbol}: position already open", level="WARNING")
             with open_positions_lock:
-                if not DRY_RUN:  # Only decrement in REAL_RUN
+                if DRY_RUN:
+                    dry_run_positions_count -= 1
+                else:
                     open_positions_count -= 1
             return
         log(f"Re-entry triggered for {symbol} at {entry_price}", level="INFO")
@@ -182,7 +190,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         )
         send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
         with open_positions_lock:
-            if not DRY_RUN:  # Only decrement in REAL_RUN
+            if DRY_RUN:
+                dry_run_positions_count -= 1
+            else:
                 open_positions_count -= 1
         return
 
@@ -469,9 +479,13 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
 
 
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
-    global open_positions_count
+    # Обновлённая логика с двумя счётчиками
+    global open_positions_count, dry_run_positions_count
     with open_positions_lock:
-        open_positions_count -= 1
+        if DRY_RUN:
+            dry_run_positions_count -= 1
+        else:
+            open_positions_count -= 1
 
     trade = trade_manager.get_trade(symbol)
     if not trade:
