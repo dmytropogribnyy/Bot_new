@@ -9,7 +9,7 @@ from ip_monitor import (
     get_ip_status_message,
 )
 from stats import send_daily_report
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from utils_logging import get_recent_logs, log
 
 
@@ -25,7 +25,7 @@ def handle_ip_and_misc_commands(text, handle_stop):
 
     elif text == "/ipstatus":
         msg = get_ip_status_message()
-        send_telegram_message(escape_markdown_v2(msg), force=True)
+        send_telegram_message(msg, force=True, parse_mode="")
         log("Fetched IP status via /ipstatus command.", level="INFO")
 
     elif text == "/forceipcheck":
@@ -38,17 +38,16 @@ def handle_ip_and_misc_commands(text, handle_stop):
                 pairs = json.load(f)
             fixed = [p for p in pairs if p in FIXED_PAIRS]
             dynamic = [p for p in pairs if p not in FIXED_PAIRS]
-
             msg = (
                 f"Active Pairs Today: {len(pairs)}\n\n"
                 f"Fixed: {', '.join([p.split('/')[0] for p in fixed])}\n"
                 f"Dynamic: {', '.join([p.split('/')[0] for p in dynamic])}"
             )
-            send_telegram_message(escape_markdown_v2(msg), force=True)
+            send_telegram_message(msg, force=True, parse_mode="")
             log("Fetched active pairs via /pairstoday command.", level="INFO")
         except Exception as e:
             error_msg = f"Failed to load symbol list: {str(e)}"
-            send_telegram_message(escape_markdown_v2(error_msg), force=True)
+            send_telegram_message(error_msg, force=True, parse_mode="")
             log(error_msg, level="ERROR")
 
     elif text.startswith("/close_dry"):
@@ -57,23 +56,20 @@ def handle_ip_and_misc_commands(text, handle_stop):
                 symbol = text.split()[1] if len(text.split()) > 1 else "BTC/USDC"
                 close_dry_trade(symbol)
                 send_telegram_message(
-                    escape_markdown_v2(f"Closed DRY position for {symbol}"), force=True
+                    f"Closed DRY position for {symbol}", force=True, parse_mode=""
                 )
             except Exception as e:
-                send_telegram_message(
-                    escape_markdown_v2(f"Error closing DRY position: {e}"), force=True
-                )
+                send_telegram_message(f"Error closing DRY position: {e}", force=True, parse_mode="")
 
     elif text == "/debuglog":
         if DRY_RUN:
             logs = get_recent_logs()
             msg = f"Debug Log (last {len(logs.splitlines())} lines):\n\n{logs[:4000]}"
-            send_telegram_message(escape_markdown_v2(msg), force=True)
+            send_telegram_message(msg, force=True, parse_mode="")
             log("Sent debug log via /debuglog command.", level="INFO")
         else:
             send_telegram_message(
-                escape_markdown_v2("Debug log only available in DRY_RUN mode."),
-                force=True,
+                "Debug log only available in DRY_RUN mode.", force=True, parse_mode=""
             )
             log("Debug log request denied: not in DRY_RUN mode.", level="INFO")
 
