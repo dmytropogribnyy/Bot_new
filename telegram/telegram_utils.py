@@ -10,53 +10,58 @@ def escape_markdown_v2(text: str) -> str:
 
 
 def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
-    """Send a message to Telegram with optional parse mode."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[telegram_utils] Telegram not configured.")
+        # print("[telegram_utils] Telegram not configured.")
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    # Экранируем текст, только если используется MarkdownV2
+
     if parse_mode == "MarkdownV2":
         escaped_text = escape_markdown_v2(text)
     else:
-        escaped_text = text  # Оставляем без экранирования
-    # Логируем текст для отладки
-    print(f"[telegram_utils] Sending message: {escaped_text}")
+        escaped_text = text
+
+    # preview = escaped_text if isinstance(escaped_text, str) else str(escaped_text)
+
     # Обрезаем, если нужно
     if len(escaped_text) > 4096:
         escaped_text = escaped_text[:4090] + "..."
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": escaped_text,
+        "text": escaped_text if isinstance(escaped_text, str) else str(escaped_text),
         "disable_notification": not force,
     }
-    # Устанавливаем parse_mode только если он явно указан
+
     if parse_mode:
         payload["parse_mode"] = parse_mode
     else:
-        payload["parse_mode"] = ""  # Явно отключаем MarkdownV2
+        payload["parse_mode"] = ""
+
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print(f"[telegram_utils] Message sent successfully: {text[:60]}...")
+            # Убираем отладочный print:
+            # print(f"[telegram_utils] Message sent successfully: {preview[:60]}...")
+            pass
         else:
             print(f"[telegram_utils] Telegram response {response.status_code}: {response.text}")
             # Fallback to plain text
-            payload["parse_mode"] = ""  # Явно отключаем MarkdownV2
-            payload["text"] = text
+            payload["parse_mode"] = ""
+            payload["text"] = str(text)
             if len(payload["text"]) > 4096:
                 payload["text"] = payload["text"][:4090] + "..."
             requests.post(url, json=payload, timeout=10)
-            print(f"[telegram_utils] Sent as plain text (forced): {text[:60]}")
+            print(f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}")
     except Exception as e:
         print(f"[telegram_utils] Telegram send error: {e}")
         # Fallback to plain text
-        payload["parse_mode"] = ""  # Явно отключаем MarkdownV2
-        payload["text"] = text
+        payload["parse_mode"] = ""
+        payload["text"] = str(text)
         if len(payload["text"]) > 4096:
             payload["text"] = payload["text"][:4090] + "..."
         requests.post(url, json=payload, timeout=10)
-        print(f"[telegram_utils] Sent as plain text (forced): {text[:60]}")
+        print(f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}")
 
 
 def send_telegram_file(file_path: str, caption: str = ""):

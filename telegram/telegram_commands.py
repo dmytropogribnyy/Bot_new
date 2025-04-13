@@ -12,12 +12,12 @@ from config import (
     exchange,
     trade_stats,
 )
-from core.aggressiveness_controller import get_aggressiveness_score  # Добавляем импорт
+from core.aggressiveness_controller import get_aggressiveness_score
 from core.trade_engine import trade_manager
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from utils_core import (
     get_cached_balance,
     get_cached_positions,
@@ -78,14 +78,13 @@ def handle_telegram_command(message, state):
             "🛑 /stop - Stop after all positions close\n"
             "📊 /summary - Show performance summary"
         ).strip()
-
-    send_telegram_message(message, force=True, parse_mode="")
-    if LOG_LEVEL == "DEBUG":
-        log("Sent help message.", level="DEBUG")
+        send_telegram_message(message, force=True, parse_mode="")
+        if LOG_LEVEL == "DEBUG":
+            log("Sent help message.", level="DEBUG")
 
     elif text == "/summary":
         summary = generate_summary()
-        send_telegram_message(escape_markdown_v2(summary), force=True)
+        send_telegram_message(summary, force=True, parse_mode="MarkdownV2")
         if LOG_LEVEL == "DEBUG":
             log("Sent summary via /summary command.", level="DEBUG")
 
@@ -97,19 +96,19 @@ def handle_telegram_command(message, state):
     elif text == "/pause":
         state["pause"] = True
         save_state(state)
-        send_telegram_message(escape_markdown_v2("Trading paused."), force=True)
+        send_telegram_message("Trading paused.", force=True, parse_mode="")
         log("Trading paused via /pause command.", level="INFO")
 
     elif text == "/resume":
         state["pause"] = False
         save_state(state)
-        send_telegram_message(escape_markdown_v2("Trading resumed."), force=True)
+        send_telegram_message("Trading resumed.", force=True, parse_mode="")
         log("Trading resumed via /resume command.", level="INFO")
 
     elif text == "/stop":
         state = load_state()
         if state.get("stopping"):
-            send_telegram_message("⚠️ Bot is already stopping...", force=True)
+            send_telegram_message("⚠️ Bot is already stopping...", force=True, parse_mode="")
             log("Stop command ignored: bot is already stopping.", level="WARNING")
             return
 
@@ -132,15 +131,14 @@ def handle_telegram_command(message, state):
         else:
             msg = "🛑 Stop command received.\nNo open trades. Bot will stop shortly."
 
-        send_telegram_message(escape_markdown_v2(msg), force=True)
+        send_telegram_message(msg, force=True, parse_mode="")
         log("Stop command received.", level="INFO")
 
     elif text == "/shutdown":
         state["shutdown"] = True
         save_state(state)
         send_telegram_message(
-            escape_markdown_v2("Shutdown initiated. Waiting for positions to close..."),
-            force=True,
+            "Shutdown initiated. Waiting for positions to close...", force=True, parse_mode=""
         )
         log("Shutdown command received.", level="INFO")
 
@@ -149,18 +147,14 @@ def handle_telegram_command(message, state):
         state["stopping"] = False
         save_state(state)
         send_telegram_message(
-            escape_markdown_v2("✅ Stop process cancelled.\nBot will continue running."),
-            force=True,
+            "✅ Stop process cancelled.\nBot will continue running.", force=True, parse_mode=""
         )
         log("Stop process cancelled via /cancel_stop command.", level="INFO")
 
-    # Handle /resume_after_ip to resume bot after IP change in REAL_RUN
-    # Reason: Allows user to continue bot operation after updating Binance IP whitelist
     elif text == "/resume_after_ip":
         if DRY_RUN:
             send_telegram_message(
-                escape_markdown_v2("ℹ️ /resume_after_ip is only for REAL_RUN mode."),
-                force=True,
+                "ℹ️ /resume_after_ip is only for REAL_RUN mode.", force=True, parse_mode=""
             )
             log("Resume after IP ignored: DRY_RUN mode active.", level="INFO")
         else:
@@ -169,22 +163,18 @@ def handle_telegram_command(message, state):
                 state["stopping"] = False
                 save_state(state)
                 send_telegram_message(
-                    escape_markdown_v2("✅ Bot resumed after IP change verification."),
-                    force=True,
+                    "✅ Bot resumed after IP change verification.", force=True, parse_mode=""
                 )
                 log("Bot resumed via /resume_after_ip command.", level="INFO")
             else:
                 send_telegram_message(
-                    escape_markdown_v2("ℹ️ Bot is not stopped due to IP change."),
-                    force=True,
+                    "ℹ️ Bot is not stopped due to IP change.", force=True, parse_mode=""
                 )
                 log("Resume command ignored: bot not stopping.", level="INFO")
 
     elif text == "/mode":
-        mode = (
-            "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
-        )  # Исправляем
-        send_telegram_message(escape_markdown_v2(f"Current mode: {mode}"), force=True)
+        mode = "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
+        send_telegram_message(f"Current mode: {mode}", force=True, parse_mode="")
         log(f"Mode command: Current mode is {mode}.", level="INFO")
 
     elif text == "/open":
@@ -211,18 +201,18 @@ def handle_telegram_command(message, state):
                     if open_positions
                     else "No open positions."
                 )
-            send_telegram_message(escape_markdown_v2(msg), force=True)
+            send_telegram_message(msg, force=True, parse_mode="")
             log("Fetched open positions via /open command.", level="INFO")
         except Exception as e:
             error_msg = f"Failed to fetch open positions: {str(e)}"
-            send_telegram_message(escape_markdown_v2(error_msg), force=True)
+            send_telegram_message(error_msg, force=True, parse_mode="")
             log(error_msg, level="ERROR")
 
     elif text == "/last":
         try:
             df = pd.read_csv(EXPORT_PATH)
             if df.empty:
-                send_telegram_message(escape_markdown_v2("No trades logged yet."), force=True)
+                send_telegram_message("No trades logged yet.", force=True, parse_mode="")
                 log("No trades logged yet for /last command.", level="INFO")
             else:
                 last = df.iloc[-1]
@@ -233,31 +223,26 @@ def handle_telegram_command(message, state):
                     f"PnL: {last['PnL (%)']}% ({last['Result']})\n"
                     f"Held: {last['Held (min)']} min"
                 )
-                send_telegram_message(escape_markdown_v2(msg), force=True)
+                send_telegram_message(msg, force=True, parse_mode="")
                 log("Fetched last trade via /last command.", level="INFO")
         except Exception as e:
             error_msg = f"Failed to read last trade: {str(e)}"
-            send_telegram_message(escape_markdown_v2(error_msg), force=True)
+            send_telegram_message(error_msg, force=True, parse_mode="")
             log(error_msg, level="ERROR")
 
     elif text == "/balance":
         try:
             balance = get_cached_balance()
-            send_telegram_message(
-                escape_markdown_v2(f"Balance: {round(balance, 2)} USDC"), force=True
-            )
-            log(
-                f"Fetched balance: {round(balance, 2)} USDC via /balance command.",
-                level="INFO",
-            )
+            send_telegram_message(f"Balance: {round(balance, 2)} USDC", force=True, parse_mode="")
+            log(f"Fetched balance: {round(balance, 2)} USDC via /balance command.", level="INFO")
         except Exception as e:
             error_msg = f"Failed to fetch balance: {str(e)}"
-            send_telegram_message(escape_markdown_v2(error_msg), force=True)
+            send_telegram_message(error_msg, force=True, parse_mode="")
             log(error_msg, level="ERROR")
 
     elif text == "/panic":
         state["last_command"] = "/panic"
-        send_telegram_message(escape_markdown_v2("Confirm PANIC close by replying YES"), force=True)
+        send_telegram_message("Confirm PANIC close by replying YES", force=True, parse_mode="")
         log("Panic command received, awaiting confirmation.", level="INFO")
 
     elif text.upper() == "YES" and state.get("last_command") == "/panic":
@@ -272,14 +257,14 @@ def handle_telegram_command(message, state):
                     closed.append(f"{p['symbol']} ({p['side']}, {qty})")
             if closed:
                 msg = "Panic Close Executed:\n" + "\n".join(closed)
-                send_telegram_message(escape_markdown_v2(msg), force=True)
+                send_telegram_message(msg, force=True, parse_mode="")
                 log("Panic close executed successfully.", level="INFO")
             else:
-                send_telegram_message(escape_markdown_v2("No open positions to close."), force=True)
+                send_telegram_message("No open positions to close.", force=True, parse_mode="")
                 log("No open positions to close during panic.", level="INFO")
         except Exception as e:
             error_msg = f"Panic failed: {str(e)}"
-            send_telegram_message(escape_markdown_v2(error_msg), force=True)
+            send_telegram_message(error_msg, force=True, parse_mode="")
             log(error_msg, level="ERROR")
         finally:
             state["last_command"] = None
@@ -290,20 +275,15 @@ def handle_telegram_command(message, state):
             current_time = now()
             last_sig = get_last_signal_time()
             idle = f"{(current_time - last_sig).seconds // 60} min ago" if last_sig else "N/A"
-
             balance = get_cached_balance()
-            mode = (
-                "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
-            )  # Исправляем
+            mode = "AGGRESSIVE" if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else "SAFE"
             paused = "Paused" if state.get("pause") else "Running"
             stopping = "Stopping after trades" if state.get("stopping") else ""
-
             open_syms = [
                 p["symbol"] for p in get_cached_positions() if float(p.get("contracts", 0)) > 0
             ]
-
             msg = (
-                f"Bot Status\n"
+                "<b>Bot Status</b>\n"
                 f"- Balance: {round(balance, 2)} USDC\n"
                 f"- Mode: {mode}\n"
                 f"- API Errors: {trade_stats.get('api_errors', 0)}\n"
@@ -311,28 +291,22 @@ def handle_telegram_command(message, state):
                 f"- Status: {paused} {stopping}\n"
                 f"- Open: {', '.join(open_syms) if open_syms else 'None'}"
             )
-            send_telegram_message(escape_markdown_v2(msg), force=True)
+            send_telegram_message(msg, force=True, parse_mode="HTML")
             log("Fetched bot status via /status command.", level="INFO")
         except Exception as e:
             error_msg = f"Status error: {str(e)}"
-            send_telegram_message(escape_markdown_v2(error_msg), force=True)
+            send_telegram_message(error_msg, force=True, parse_mode="")
             log(error_msg, level="ERROR")
 
 
 def handle_stop():
-    """
-    Handle stopping the bot by setting the 'stopping' flag in the state.
-    This is called by the IP monitor when an IP change is detected.
-    """
     state = load_state()
     if state.get("stopping"):
-        send_telegram_message("⚠️ Bot is already stopping...", force=True)
+        send_telegram_message("⚠️ Bot is already stopping...", force=True, parse_mode="")
         log("Stop request ignored: bot is already stopping.", level="WARNING")
         return
-
     state["stopping"] = True
     save_state(state)
-
     open_trades = state.get("open_trades", [])
     if open_trades:
         max_timeout = max(t.get("timeout_timestamp", 0) for t in open_trades)
@@ -340,7 +314,6 @@ def handle_stop():
         minutes_left = max(0, int((max_timeout - now_ts) / 60))
         if minutes_left < 0:
             minutes_left = 0
-
         msg = (
             f"🛑 Stop initiated due to IP change.\n"
             f"Waiting for {len(open_trades)} open trades to close.\n"
@@ -348,6 +321,5 @@ def handle_stop():
         )
     else:
         msg = "🛑 Stop initiated due to IP change.\nNo open trades. Bot will stop shortly."
-
-    send_telegram_message(escape_markdown_v2(msg), force=True)
+    send_telegram_message(msg, force=True, parse_mode="")
     log("Stop initiated due to IP change.", level="INFO")
