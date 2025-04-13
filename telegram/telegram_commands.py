@@ -53,33 +53,35 @@ def handle_telegram_command(message, state):
 
     elif text == "/help":
         message = (
-            "🤖 *Available Commands:*\n\n"
-            "📖 /help - Show this message\n"
-            "📊 /summary - Show performance summary\n"
-            "📜 /log - Export today's log to Telegram\n"
-            "⚙️ /mode - Show current mode (SAFE/AGGRESSIVE)\n"
-            "⏸️ /pause - Pause new trades\n"
-            "▶️ /resume - Resume trading\n"
-            "🛑 /stop - Stop after all positions close\n"
-            "🚪 /shutdown - Exit bot after positions close\n"
-            "📈 /open - Show open positions\n"
-            "📉 /last - Show last closed trade\n"
+            "🤖 Available Commands:\n\n"
             "💰 /balance - Show current USDC balance\n"
-            "🚨 /panic - Force close all trades (confirmation)\n"
-            "🔍 /status - Show bot status\n"
-            "🧾 /debuglog - Show last 50 logs\n"
-            "🔗 /pairstoday - Show active symbols today\n"
-            "🔄 /router_reboot - Plan router reboot (30 min IP monitor)\n"
             "❌ /cancel_reboot - Cancel router reboot mode\n"
             "⛔ /cancel_stop - Cancel stop process if pending\n"
-            "🌐 /ipstatus - Show current/previous IP + router mode\n"
-            "📡 /forceipcheck - Force immediate IP check\n"
             "🔒 /close_dry - Close a DRY position (DRY_RUN only, e.g., /close_dry BTC/USDC)\n"
+            "🧾 /debuglog - Show last 50 logs\n"
+            "📡 /forceipcheck - Force immediate IP check\n"
+            "📊 /heatmap - Generate score heatmap for the last 7 days\n"
+            "📖 /help - Show this message\n"
+            "🌐 /ipstatus - Show current/previous IP + router mode\n"
+            "📉 /last - Show last closed trade\n"
+            "📜 /log - Export today's log to Telegram\n"
+            "⚙️ /mode - Show current mode (SAFE/AGGRESSIVE)\n"
+            "📈 /open - Show open positions\n"
+            "🔗 /pairstoday - Show active symbols today\n"
+            "🚨 /panic - Force close all trades (confirmation)\n"
+            "⏸️ /pause - Pause new trades\n"
+            "▶️ /resume - Resume trading\n"
             "▶️ /resume_after_ip - Resume bot after IP change (REAL_RUN only)\n"
-        )
-        send_telegram_message(escape_markdown_v2(message), force=True)
-        if LOG_LEVEL == "DEBUG":
-            log("Sent help message.", level="DEBUG")
+            "🔄 /router_reboot - Plan router reboot (30 min IP monitor)\n"
+            "🚪 /shutdown - Exit bot after positions close\n"
+            "🔍 /status - Show bot status\n"
+            "🛑 /stop - Stop after all positions close\n"
+            "📊 /summary - Show performance summary"
+        ).strip()
+
+    send_telegram_message(message, force=True, parse_mode="")
+    if LOG_LEVEL == "DEBUG":
+        log("Sent help message.", level="DEBUG")
 
     elif text == "/summary":
         summary = generate_summary()

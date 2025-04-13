@@ -103,4 +103,57 @@ send_telegram_message(escape_markdown_v2("*Started*"), parse_mode="MarkdownV2")
 
 ---
 
+🔍 Telegram Utility Functions Reference
+
+1. escape*markdown_v2(text: str) -> str
+   Purpose:
+   Эта функция экранирует специальные символы для безопасного использования с Telegram MarkdownV2 (например, символы \*, *, [, ], (, ), ~ и т.д.).
+
+Usage:
+
+Используйте эту функцию только при отправке сообщений с parse_mode="MarkdownV2".
+
+Для plain text сообщений (например, в DRY_RUN, логах, командах как /help) функция не применяется, чтобы избежать двойного экранирования.
+from telegram.telegram_utils import escape_markdown_v2
+
+formatted*text = escape_markdown_v2("\_Important* message: Please check the log.")
+send_telegram_message(formatted_text, force=True, parse_mode="MarkdownV2")
+
+2. send_telegram_message(text: str, force=False, parse_mode="MarkdownV2") -> None
+   Purpose:
+   Отправляет сообщение в Telegram с учетом выбранного режима форматирования.
+
+Если установлен parse_mode="MarkdownV2", сообщение автоматически передается через функцию escape_markdown_v2(text) для экранирования специальных символов.
+
+Если используется parse_mode="" (или None), сообщение отправляется как plain text без изменений.
+
+Usage:
+
+Для сообщений, где важна разметка (отчеты, статусные сообщения с форматированием) – используйте parse_mode="MarkdownV2" и предварительно экранируйте текст с помощью escape_markdown_v2().
+
+Для команд типа /help, логов, DRY_RUN-сообщений и алертов – указывайте parse_mode="", чтобы избежать ошибок форматирования.
+
+Examples:
+
+Plain Text (без Markdown):
+
+# Сообщение для /help, отправляется как обычный текст без форматирования.
+
+send_telegram_message("🤖 Available Commands:\n\n📖 /help - Show this message\n📊 /summary - Show performance summary", force=True, parse_mode="")
+
+С Markdown форматированием:
+
+from telegram.telegram_utils import escape_markdown_v2
+
+message = "🤖 _Available Commands:_\n\n📖 /help - Show this message\n📊 /summary - Show performance summary"
+formatted_message = escape_markdown_v2(message)
+send_telegram_message(formatted_message, force=True, parse_mode="MarkdownV2")
+
+Общие рекомендации:
+Не использовать escape_markdown_v2() при отправке plain text сообщений (например, команды /help в режиме DRY_RUN), чтобы избежать двойного экранирования.
+
+Проверяйте конечное отображение сообщений в Telegram и логи консоли, чтобы убедиться, что форматирование соответствует ожиданиям.
+
+Используйте данный справочник для единообразия при работе с Telegram сообщениями в вашем проекте.
+
 > This guide ensures clean, safe, and professional message output for all BinanceBot environments (v1.6.3).
