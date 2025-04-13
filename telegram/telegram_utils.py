@@ -1,6 +1,7 @@
 import requests
 
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+from utils_logging import log
 
 
 def escape_markdown_v2(text: str) -> str:
@@ -11,7 +12,7 @@ def escape_markdown_v2(text: str) -> str:
 
 def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        # print("[telegram_utils] Telegram not configured.")
+        log("[telegram_utils] Telegram not configured.", level="WARNING")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -21,9 +22,6 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
     else:
         escaped_text = text
 
-    # preview = escaped_text if isinstance(escaped_text, str) else str(escaped_text)
-
-    # Обрезаем, если нужно
     if len(escaped_text) > 4096:
         escaped_text = escaped_text[:4090] + "..."
 
@@ -41,27 +39,33 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            # Убираем отладочный print:
-            # print(f"[telegram_utils] Message sent successfully: {preview[:60]}...")
-            pass
+            log(
+                f"[telegram_utils] Message sent successfully: {escaped_text[:60]}...", level="DEBUG"
+            )
         else:
-            print(f"[telegram_utils] Telegram response {response.status_code}: {response.text}")
+            log(
+                f"[telegram_utils] Telegram response {response.status_code}: {response.text}",
+                level="ERROR",
+            )
             # Fallback to plain text
             payload["parse_mode"] = ""
             payload["text"] = str(text)
             if len(payload["text"]) > 4096:
                 payload["text"] = payload["text"][:4090] + "..."
             requests.post(url, json=payload, timeout=10)
-            print(f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}")
+            log(
+                f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}",
+                level="INFO",
+            )
     except Exception as e:
-        print(f"[telegram_utils] Telegram send error: {e}")
+        log(f"[telegram_utils] Telegram send error: {e}", level="ERROR")
         # Fallback to plain text
         payload["parse_mode"] = ""
         payload["text"] = str(text)
         if len(payload["text"]) > 4096:
             payload["text"] = payload["text"][:4090] + "..."
         requests.post(url, json=payload, timeout=10)
-        print(f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}")
+        log(f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}", level="INFO")
 
 
 def send_telegram_file(file_path: str, caption: str = ""):

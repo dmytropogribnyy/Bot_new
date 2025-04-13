@@ -21,7 +21,7 @@ EXPORT_PATH = "data/tp_performance.csv"
 TP_LOG_FILE = "data/tp_performance.csv"
 
 # --- Logging ---
-LOG_LEVEL = "DEBUG"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
+LOG_LEVEL = "INFO"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
 LOG_SCORE_EVERYWHERE = False  # NEW: Allow score logging in REAL_RUN if True
 
 # --- Symbols & Leverage (fallback) ---

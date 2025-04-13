@@ -5,12 +5,10 @@ from datetime import datetime
 from threading import Lock
 
 from config import exchange
-from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
 STATE_FILE = "data/bot_state.json"
 DEFAULT_STATE = {
-    "pause": False,
     "stopping": False,
     "shutdown": False,
     "allowed_user_id": 383821734,
@@ -122,9 +120,11 @@ def load_state():
     with state_lock:
         try:
             if not os.path.exists(STATE_FILE):
+                log(f"State file {STATE_FILE} not found, using default state.", level="INFO")
                 return DEFAULT_STATE.copy()
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
+                log(f"Loaded state from {STATE_FILE}: {state}", level="DEBUG")
                 for key, value in DEFAULT_STATE.items():
                     if key not in state:
                         state[key] = value
@@ -135,6 +135,8 @@ def load_state():
                 important=True,
                 level="ERROR",
             )
+            from telegram.telegram_utils import send_telegram_message
+
             send_telegram_message(
                 f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.",
                 force=True,
@@ -146,6 +148,8 @@ def load_state():
                 important=True,
                 level="ERROR",
             )
+            from telegram.telegram_utils import send_telegram_message
+
             send_telegram_message(
                 f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.",
                 force=True,
@@ -158,9 +162,24 @@ def save_state(state, retries=3, delay=1):
     while attempt < retries:
         with state_lock:
             try:
+                log(
+                    f"Attempting to save state (attempt {attempt + 1}/{retries}): {state}",
+                    level="DEBUG",
+                )
                 os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-                with open(STATE_FILE, "w", encoding="utf-8") as f:
+                temp_file = STATE_FILE + ".tmp"
+                with open(temp_file, "w", encoding="utf-8") as f:
                     json.dump(state, f, indent=4)
+                os.replace(temp_file, STATE_FILE)
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    saved_state = json.load(f)
+                log(f"Successfully saved state to {STATE_FILE}: {saved_state}", level="DEBUG")
+                if saved_state != state:
+                    log(
+                        f"State mismatch after save: expected {state}, got {saved_state}",
+                        level="ERROR",
+                    )
+                    raise ValueError("State mismatch after save")
                 return
             except Exception as e:
                 attempt += 1
@@ -170,12 +189,15 @@ def save_state(state, retries=3, delay=1):
                     level="ERROR",
                 )
                 if attempt == retries:
+                    from telegram.telegram_utils import send_telegram_message
+
                     send_telegram_message(
                         f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}",
                         force=True,
                     )
                 else:
                     time.sleep(delay)
+    log(f"Failed to save state after {retries} retries.", level="ERROR")
 
 
 def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):

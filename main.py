@@ -64,25 +64,28 @@ def start_trading_loop():
     try:
         while True:
             state = load_state()
-
-            if state.get("pause") or state.get("stopping"):
-                log("[Refactor] Paused or stopping...", level="INFO")
-                time.sleep(10)
+            if state.get("stopping"):
+                log("[Refactor] Stopping...", level="INFO")
+                time.sleep(30)
                 continue
 
-            # Проверяем текущую группу
+            # Проверка пар
             current_group = symbol_groups[current_group_index]
             log(
                 f"Checking group {current_group_index + 1}/{len(symbol_groups)}: {current_group}",
                 level="DEBUG",
             )
+            # Дополнительная проверка перед вызовом run_trading_cycle
+            state = load_state()
+            if state.get("stopping"):
+                log("[Refactor] Stopping detected before trading cycle...", level="INFO")
+                time.sleep(10)
+                continue
             run_trading_cycle(current_group)
-
             # Переходим к следующей группе
             current_group_index = (current_group_index + 1) % len(symbol_groups)
-
             save_state(state)
-            time.sleep(10)
+            time.sleep(10)  # Возвращаем задержку в конец цикла
     except KeyboardInterrupt:
         log("[Refactor] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
         send_telegram_message(

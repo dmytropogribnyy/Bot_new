@@ -18,7 +18,7 @@ from core.trade_engine import (
     get_position_size,
     trade_manager,
 )
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, load_state
 from utils_logging import log
 
@@ -65,22 +65,20 @@ def run_trading_cycle(symbols):
     global last_balance, last_check_log_time, last_balance_log_time
     state = load_state()
 
-    if state.get("pause") or state.get("stopping"):
-        if state.get("stopping"):
-            open_trades = sum(get_position_size(sym) > 0 for sym in symbols)
-            if open_trades == 0:
-                log("All positions closed — stopping bot.", level="INFO")
-                send_telegram_message(
-                    escape_markdown_v2("✅ All positions closed. Bot stopped."), force=True
-                )
-                if state.get("shutdown"):
-                    log("Shutdown flag detected — exiting fully.", level="INFO")
-                    os._exit(0)
-                return
-            else:
-                log(f"Waiting for {open_trades} open positions...", level="INFO")
-        time.sleep(10)
-        return
+    if state.get("stopping"):
+        open_trades = sum(get_position_size(sym) > 0 for sym in symbols)
+        log(f"Open trades count: {open_trades}", level="DEBUG")
+        if open_trades == 0:
+            log("All positions closed — stopping bot.", level="INFO")
+            send_telegram_message(
+                "✅ All positions closed. Bot stopped.", force=True, parse_mode=""
+            )
+            if state.get("shutdown"):
+                log("Shutdown flag detected — exiting fully.", level="INFO")
+                os._exit(0)
+        else:
+            log(f"Waiting for {open_trades} open positions...", level="INFO")
+        return  # Явный выход из функции, чтобы не продолжать цикл
 
     balance = get_cached_balance()
     last_balance = check_balance_change(balance, last_balance)
@@ -132,7 +130,7 @@ def run_trading_cycle(symbols):
                         f"• `{symbol}` — old score: *{current_score}*, new: *{new_score}*\n"
                         f"• Action: closing old position and reopening"
                     )
-                    send_telegram_message(escape_markdown_v2(switch_msg), force=True)
+                    send_telegram_message(switch_msg, force=True, parse_mode="MarkdownV2")
                     if DRY_RUN:
                         close_dry_trade(symbol)
                     else:
