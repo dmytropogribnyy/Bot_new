@@ -119,21 +119,29 @@ def handle_telegram_command(message, state):
                 state["stopping"] = True
                 save_state(state)
 
-            open_trades = state.get("open_trades", [])
+            if DRY_RUN:
+                from core.trade_engine import trade_manager
+
+                open_trades = list(trade_manager._trades.values())
+            else:
+                open_trades = state.get("open_trades", [])
+
             if open_trades:
                 now_ts = time.time()
-                max_timeout = max(t.get("timeout_timestamp", 0) for t in open_trades)
+                max_timeout = max(t.get("timeout_timestamp", now_ts) for t in open_trades)
                 minutes_left = max(0, int((max_timeout - now_ts) / 60))
 
+                symbols = [t.get("symbol", "?") for t in open_trades]
                 msg = (
                     f"🛑 Stop command received.\n"
                     f"Waiting for {len(open_trades)} open trades to close.\n"
+                    f"Pairs: {', '.join(symbols)}\n"
                     f"Estimated *max* time remaining: {minutes_left} min"
                 )
             else:
                 msg = "🛑 Stop command received.\nNo open trades. Bot will stop shortly."
 
-            send_telegram_message(msg, force=True, parse_mode="")
+            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
             log("Stop command received.", level="INFO")
 
         elif text == "/shutdown":
@@ -375,29 +383,34 @@ def handle_telegram_command(message, state):
 def handle_stop():
     state = load_state()
     if state.get("stopping"):
-        send_telegram_message("⚠️ Bot is already stopping...", force=True, parse_mode="")
+        send_telegram_message("⚠️ Bot is already stopping...", force=True)
         log("Stop request ignored: bot is already stopping.", level="WARNING")
         return
 
     state["stopping"] = True
     save_state(state)
 
-    try:
-        open_positions = [
-            p["symbol"] for p in get_cached_positions() if float(p.get("contracts", 0)) > 0
-        ]
-    except Exception as e:
-        open_positions = []
-        log(f"Error fetching cached positions in handle_stop: {str(e)}", level="ERROR")
+    if DRY_RUN:
+        from core.trade_engine import trade_manager
 
-    if open_positions:
+        open_trades = list(trade_manager._trades.values())
+    else:
+        open_trades = state.get("open_trades", [])
+
+    if open_trades:
+        now_ts = time.time()
+        max_timeout = max(t.get("timeout_timestamp", now_ts) for t in open_trades)
+        minutes_left = max(0, int((max_timeout - now_ts) / 60))
+
+        symbols = [t.get("symbol", "?") for t in open_trades]
         msg = (
             f"🛑 Stop initiated due to IP change.\n"
-            f"Waiting for {len(open_positions)} open trades to close.\n"
-            f"Open: {', '.join(open_positions)}"
+            f"Waiting for {len(symbols)} open trades to close.\n"
+            f"Pairs: {', '.join(symbols)}\n"
+            f"Estimated *max* time remaining: {minutes_left} min"
         )
     else:
         msg = "🛑 Stop initiated due to IP change.\nNo open trades. Bot will stop shortly."
 
-    send_telegram_message(msg, force=True, parse_mode="")
+    send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
     log("Stop initiated due to IP change.", level="INFO")

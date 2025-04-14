@@ -36,16 +36,16 @@ def load_symbols():
 
 
 def start_trading_loop():
+    # ✅ Всегда сбрасываем флаги при старте ран
     state = load_state()
-    if not state.get("shutdown") and not state.get("stopping"):
-        state["stopping"] = False
-        state["shutdown"] = False
-        save_state(state)
+    state["stopping"] = False
+    state["shutdown"] = False
+    save_state(state)
 
     mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
-    # 🎯 Стратегическое смещение
+    # 🎯 Отображаем стратегическое смещение на основе score
     score = round(get_aggressiveness_score(), 2)
     if score >= 0.75:
         bias = "🔥 HIGH"
@@ -72,7 +72,7 @@ def start_trading_loop():
         while True:
             state = load_state()
 
-            # 🔌 Shutdown
+            # 🛑 Shutdown
             if state.get("shutdown"):
                 open_trades = state.get("open_trades", [])
                 if not open_trades:
@@ -86,19 +86,26 @@ def start_trading_loop():
                     )
                     break
 
-            # 🛑 Stop
+            # 🟡 Stop
             if state.get("stopping"):
                 open_trades = state.get("open_trades", [])
+
+                if DRY_RUN:
+                    from core.trade_engine import trade_manager
+
+                    open_trades = list(trade_manager._trades.values())
+
                 if not open_trades:
                     msg = "[Main] Bot is stopping. No open trades. "
                     msg += (
                         "Awaiting shutdown..." if state.get("shutdown") else "Will stop shortly..."
                     )
-                    log(msg, level="INFO")
-                    break
-                symbols = [t.get("symbol", "?") for t in open_trades]
-                log(f"[Main] Bot is stopping. Waiting for trades to close: {symbols}", level="INFO")
-                time.sleep(10)
+                else:
+                    symbols = [t["symbol"] for t in open_trades]
+                    msg = f"[Main] Bot is stopping. Waiting for trades to close: {symbols}"
+
+                log(msg, level="INFO")
+                time.sleep(30)
                 continue
 
             current_group = symbol_groups[current_group_index]
@@ -106,7 +113,7 @@ def start_trading_loop():
             state = load_state()
             if state.get("stopping"):
                 log("[Main] Stopping detected before trading cycle...", level="INFO")
-                time.sleep(5)
+                time.sleep(10)
                 continue
 
             run_trading_cycle(current_group)
