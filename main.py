@@ -83,6 +83,11 @@ def start_trading_loop():
                     send_telegram_message(
                         "✅ Shutdown complete. No open trades. Exiting...", force=True
                     )
+
+                    state["stopping"] = False
+                    state["shutdown"] = False
+                    save_state(state)
+
                     break
 
             # 🟡 Stop
