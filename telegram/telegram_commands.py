@@ -13,7 +13,6 @@ from config import (
     trade_stats,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
-from core.trade_engine import trade_manager
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
