@@ -144,6 +144,9 @@ def handle_telegram_command(message, state):
             log("Stop command received.", level="INFO")
 
         elif text == "/shutdown":
+            import config
+
+            config.RUNNING = False  # 🔁 Триггер graceful shutdown
             state["shutdown"] = True
             state["stopping"] = True  # Гарантируем, что новые сделки не откроются
             save_state(state)
