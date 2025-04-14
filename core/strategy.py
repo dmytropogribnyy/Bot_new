@@ -14,6 +14,7 @@ from config import (
     exchange,
 )
 from core.score_evaluator import calculate_score, get_adaptive_min_score
+from core.score_logger import log_score_history
 from core.trade_engine import get_position_size, trade_manager
 from core.volatility_controller import get_volatility_filters
 from telegram.telegram_utils import send_telegram_message
@@ -121,10 +122,9 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     with last_trade_times_lock:
         last_time = last_trade_times.get(symbol)
-        cooldown = 30 * 60  # 30 минут в секундах
+        cooldown = 30 * 60  # 30 минут
         elapsed = utc_now.timestamp() - last_time.timestamp() if last_time else float("inf")
-
-        if elapsed < 1800:  # Базовый cooldown
+        if elapsed < cooldown:
             if DRY_RUN:
                 log(f"{symbol} ⏳ Ignored due to cooldown")
             return None
@@ -151,8 +151,6 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     if DRY_RUN:
         min_required *= 0.3
-
-    if DRY_RUN:
         log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")
 
     if has_long_position or has_short_position or available_margin < 10:
@@ -168,41 +166,37 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         closed_elapsed = now - last_closed_time if last_closed_time else float("inf")
         last_score = trade_manager.get_last_score(symbol)
 
-        # Re-entry после ручного закрытия или в течение cooldown
         if (elapsed < cooldown or closed_elapsed < cooldown) and position_size == 0:
             if score <= 4:
                 log(f"Skipping {symbol}: cooldown active, score {score} <= 4", level="DEBUG")
                 return None
-            log(f"Re-entry signal for {symbol}: score {score} > 4 within cooldown", level="INFO")
             direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
             log(
                 f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
                 level="DEBUG",
             )
             last_trade_times[symbol] = utc_now
-            if DRY_RUN:
-                log(f"{symbol} 🧪 [DRY_RUN] Re-entry Signal → {direction}, score: {score}/5")
+            if not DRY_RUN:
+                log_score_history(symbol, score)
+                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score}/5)")
+            else:
                 msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
-            else:
-                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score}/5)")
             return ("buy" if direction == "BUY" else "sell", score, True)
 
-        # Re-entry при улучшении score
         if last_score and score - last_score >= 1.5 and position_size == 0:
-            log(f"Re-entry allowed for {symbol}: score {score} vs last {last_score}", level="INFO")
-            last_trade_times[symbol] = utc_now
             direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
             log(
                 f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
                 level="DEBUG",
             )
-            if DRY_RUN:
-                log(f"{symbol} 🧪 [DRY_RUN] Re-entry Signal → {direction}, score: {score}/5")
+            last_trade_times[symbol] = utc_now
+            if not DRY_RUN:
+                log_score_history(symbol, score)
+                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score}/5)")
+            else:
                 msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
-            else:
-                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score}/5)")
             return ("buy" if direction == "BUY" else "sell", score, True)
 
     # Обычный вход
@@ -219,10 +213,11 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
         level="DEBUG",
     )
-    if DRY_RUN:
-        log(f"{symbol} 🧪 [DRY_RUN] Signal → {direction}, score: {score}/5")
+    if not DRY_RUN:
+        log_score_history(symbol, score)
+        log(f"{symbol} ✅ {direction} signal triggered (score: {score}/5)")
+    else:
         msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
         send_telegram_message(msg, force=True, parse_mode="")
-    else:
-        log(f"{symbol} ✅ {direction} signal triggered (score: {score}/5)")
+
     return ("buy" if direction == "BUY" else "sell", score, False)

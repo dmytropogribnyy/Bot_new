@@ -6,7 +6,6 @@ from threading import Lock
 import pandas as pd
 
 from config import (
-    AGGRESSIVENESS_THRESHOLD,
     DRY_RUN,
     EXPORT_PATH,
     LOG_LEVEL,
@@ -91,9 +90,14 @@ def handle_telegram_command(message, state):
                 log("Sent summary via /summary command.", level="DEBUG")
 
         elif text == "/heatmap":
-            generate_score_heatmap(days=7)
-            if LOG_LEVEL == "DEBUG":
-                log("Generated score heatmap via /heatmap command.", level="DEBUG")
+            if DRY_RUN:
+                send_telegram_message(
+                    "Heatmap unavailable in DRY_RUN mode.", force=True, parse_mode=""
+                )
+                log("Heatmap request denied: DRY_RUN mode active.", level="INFO")
+            else:
+                generate_score_heatmap(days=7)
+                log("Generated score heatmap via /heatmap command.", level="INFO")
 
         elif text == "/stop":
             state = load_state()
@@ -143,16 +147,30 @@ def handle_telegram_command(message, state):
 
         elif text == "/cancel_stop":
             state = load_state()
-
             if not state.get("stopping"):
-                send_telegram_message("ℹ️ Stop flag is not active. Nothing to cancel.", force=True)
+                send_telegram_message(
+                    "ℹ️ Stop flag is not active. Nothing to cancel.", force=True, parse_mode=""
+                )
+                log("Cancel stop ignored: stop flag was not active.", level="WARNING")
                 return
 
             state["stopping"] = False
             save_state(state)
 
+            # Вывод открытых сделок
+            try:
+                positions = get_cached_positions()
+                open_syms = [p["symbol"] for p in positions if float(p.get("contracts", 0)) > 0]
+                trade_info = (
+                    f"\nOpen trades: {', '.join(open_syms)}" if open_syms else "\nNo open trades."
+                )
+            except Exception as e:
+                trade_info = f"\n⚠️ Could not fetch open trades: {str(e)}"
+
             send_telegram_message(
-                "✅ Stop process cancelled.\nBot will continue running.", force=True, parse_mode=""
+                f"✅ Stop process cancelled.\nBot will continue running.{trade_info}",
+                force=True,
+                parse_mode="",
             )
             log("Stop process cancelled via /cancel_stop command.", level="INFO")
 
@@ -197,9 +215,16 @@ def handle_telegram_command(message, state):
         elif text == "/open":
             try:
                 if DRY_RUN:
+                    open_trades = {
+                        sym: t
+                        for sym, t in trade_manager._trades.items()
+                        if not t.get("tp1_hit")
+                        and not t.get("tp2_hit")
+                        and not t.get("soft_exit_hit")
+                    }
                     open_positions = [
-                        f"{trade['symbol']} - {trade['side'].upper()} {trade['qty']} @ {trade['entry']}"
-                        for trade in trade_manager._trades.values()
+                        f"{t['symbol']} - {t['side'].upper()} {round(t['qty'], 3)} @ {round(t['entry'], 4)}"
+                        for t in open_trades.values()
                     ]
                     msg = (
                         "Open DRY Positions:\n" + "\n".join(open_positions)
@@ -209,7 +234,7 @@ def handle_telegram_command(message, state):
                 else:
                     positions = get_cached_positions()
                     open_positions = [
-                        f"{p['symbol']} - {p['side'].upper()} {p['contracts']} @ {p['entryPrice']}"
+                        f"{p['symbol']} - {p['side'].upper()} {round(float(p['contracts']), 3)} @ {round(float(p['entryPrice']), 4)}"
                         for p in positions
                         if float(p.get("contracts", 0)) > 0
                     ]
@@ -218,8 +243,10 @@ def handle_telegram_command(message, state):
                         if open_positions
                         else "No open positions."
                     )
+
                 send_telegram_message(msg, force=True, parse_mode="")
                 log("Fetched open positions via /open command.", level="INFO")
+
             except Exception as e:
                 error_msg = f"Failed to fetch open positions: {str(e)}"
                 send_telegram_message(error_msg, force=True, parse_mode="")
@@ -234,11 +261,12 @@ def handle_telegram_command(message, state):
                 else:
                     last = df.iloc[-1]
                     msg = (
+                        f"{'[DRY_RUN MODE]\\n' if DRY_RUN else ''}"
                         f"Last Trade:\n"
                         f"{last['Symbol']} - {last['Side']}\n"
-                        f"Entry: {last['Entry Price']}, Exit: {last['Exit Price']}\n"
-                        f"PnL: {last['PnL (%)']}% ({last['Result']})\n"
-                        f"Held: {last['Held (min)']} min"
+                        f"Entry: {round(last['Entry Price'], 4)}, Exit: {round(last['Exit Price'], 4)}\n"
+                        f"PnL: {round(last['PnL (%)'], 2)}% ({last['Result']})\n"
+                        f"Held: {round(last['Held (min)'], 1)} min"
                     )
                     send_telegram_message(msg, force=True, parse_mode="")
                     log("Fetched last trade via /last command.", level="INFO")
@@ -250,12 +278,9 @@ def handle_telegram_command(message, state):
         elif text == "/balance":
             try:
                 balance = get_cached_balance()
-                send_telegram_message(
-                    f"Balance: {round(balance, 2)} USDC", force=True, parse_mode=""
-                )
-                log(
-                    f"Fetched balance: {round(balance, 2)} USDC via /balance command.", level="INFO"
-                )
+                balance = round(float(balance), 2)
+                send_telegram_message(f"💰 Balance: {balance} USDC", force=True, parse_mode="")
+                log(f"Fetched balance: {balance} USDC via /balance command.", level="INFO")
             except Exception as e:
                 error_msg = f"Failed to fetch balance: {str(e)}"
                 send_telegram_message(error_msg, force=True, parse_mode="")
@@ -263,8 +288,11 @@ def handle_telegram_command(message, state):
 
         elif text == "/panic":
             state["last_command"] = "/panic"
-            send_telegram_message("Confirm PANIC close by replying YES", force=True, parse_mode="")
-            log("Panic command received, awaiting confirmation.", level="INFO")
+            save_state(state)
+            send_telegram_message(
+                "⚠️ Confirm *PANIC CLOSE* by replying `YES`", force=True, parse_mode="MarkdownV2"
+            )
+            log("Panic command received, awaiting confirmation.", level="WARNING")
 
         elif text.upper() == "YES" and state.get("last_command") == "/panic":
             try:
@@ -275,10 +303,10 @@ def handle_telegram_command(message, state):
                     if qty > 0:
                         side = "sell" if p["side"] == "long" else "buy"
                         exchange.create_market_order(p["symbol"], side, qty)
-                        closed.append(f"{p['symbol']} ({p['side']}, {qty})")
+                        closed.append(f"{p['symbol']} ({p['side'].upper()}, {round(qty, 3)})")
                 if closed:
-                    msg = "Panic Close Executed:\n" + "\n".join(closed)
-                    send_telegram_message(msg, force=True, parse_mode="")
+                    msg = "🚨 *Panic Close Executed*:\n" + "\n".join(closed)
+                    send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
                     log("Panic close executed successfully.", level="INFO")
                 else:
                     send_telegram_message("No open positions to close.", force=True, parse_mode="")
@@ -296,27 +324,48 @@ def handle_telegram_command(message, state):
                 current_time = now()
                 last_sig = get_last_signal_time()
                 idle = f"{(current_time - last_sig).seconds // 60} min ago" if last_sig else "N/A"
-                balance = get_cached_balance()
-                mode = (
-                    "AGGRESSIVE"
-                    if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD
-                    else "SAFE"
-                )
-                stopping = "Stopping after trades" if state.get("stopping") else "Running"
+                balance = round(float(get_cached_balance()), 2)
+                score = round(get_aggressiveness_score(), 2)
+
+                if score >= 3.5:
+                    mode = "🔥 HIGH"
+                elif score >= 2.5:
+                    mode = "⚡ MODERATE"
+                else:
+                    mode = "🧊 LOW"
+
+                if state.get("shutdown"):
+                    status = "🔌 Shutdown in progress"
+                elif state.get("stopping"):
+                    open_syms = [
+                        p["symbol"]
+                        for p in get_cached_positions()
+                        if float(p.get("contracts", 0)) > 0
+                    ]
+                    if open_syms:
+                        status = f"🛑 Stopping after trades ({len(open_syms)} open)"
+                    else:
+                        status = "🛑 Stopping — no open trades"
+                else:
+                    status = "✅ Running"
+
                 open_syms = [
                     p["symbol"] for p in get_cached_positions() if float(p.get("contracts", 0)) > 0
                 ]
+
                 msg = (
                     "<b>Bot Status</b>\n"
-                    f"- Balance: {round(balance, 2)} USDC\n"
-                    f"- Mode: {mode}\n"
+                    f"- Balance: {balance} USDC\n"
+                    f"- Aggressiveness: {mode} ({score})\n"
                     f"- API Errors: {trade_stats.get('api_errors', 0)}\n"
                     f"- Last Signal: {idle}\n"
-                    f"- Status: {stopping}\n"
-                    f"- Open: {', '.join(open_syms) if open_syms else 'None'}"
+                    f"- Status: {status}\n"
+                    f"- Open Positions: {', '.join(open_syms) if open_syms else 'None'}"
                 )
+
                 send_telegram_message(msg, force=True, parse_mode="HTML")
                 log("Fetched bot status via /status command.", level="INFO")
+
             except Exception as e:
                 error_msg = f"Status error: {str(e)}"
                 send_telegram_message(error_msg, force=True, parse_mode="")
@@ -329,21 +378,26 @@ def handle_stop():
         send_telegram_message("⚠️ Bot is already stopping...", force=True, parse_mode="")
         log("Stop request ignored: bot is already stopping.", level="WARNING")
         return
+
     state["stopping"] = True
     save_state(state)
-    open_trades = state.get("open_trades", [])
-    if open_trades:
-        max_timeout = max(t.get("timeout_timestamp", 0) for t in open_trades)
-        now_ts = time.time()
-        minutes_left = max(0, int((max_timeout - now_ts) / 60))
-        if minutes_left < 0:
-            minutes_left = 0
+
+    try:
+        open_positions = [
+            p["symbol"] for p in get_cached_positions() if float(p.get("contracts", 0)) > 0
+        ]
+    except Exception as e:
+        open_positions = []
+        log(f"Error fetching cached positions in handle_stop: {str(e)}", level="ERROR")
+
+    if open_positions:
         msg = (
             f"🛑 Stop initiated due to IP change.\n"
-            f"Waiting for {len(open_trades)} open trades to close.\n"
-            f"Estimated time remaining: {minutes_left} min"
+            f"Waiting for {len(open_positions)} open trades to close.\n"
+            f"Open: {', '.join(open_positions)}"
         )
     else:
         msg = "🛑 Stop initiated due to IP change.\nNo open trades. Bot will stop shortly."
+
     send_telegram_message(msg, force=True, parse_mode="")
     log("Stop initiated due to IP change.", level="INFO")

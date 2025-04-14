@@ -37,14 +37,15 @@ def load_symbols():
 
 def start_trading_loop():
     state = load_state()
-    state["stopping"] = False
-    state["shutdown"] = False
-    save_state(state)
+    if not state.get("shutdown") and not state.get("stopping"):
+        state["stopping"] = False
+        state["shutdown"] = False
+        save_state(state)
 
     mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
-    # 🎯 Отображаем стратегическое смещение на основе score
+    # 🎯 Стратегическое смещение
     score = round(get_aggressiveness_score(), 2)
     if score >= 0.75:
         bias = "🔥 HIGH"
@@ -71,6 +72,7 @@ def start_trading_loop():
         while True:
             state = load_state()
 
+            # 🔌 Shutdown
             if state.get("shutdown"):
                 open_trades = state.get("open_trades", [])
                 if not open_trades:
@@ -84,21 +86,33 @@ def start_trading_loop():
                     )
                     break
 
+            # 🛑 Stop
             if state.get("stopping"):
-                log("[Main] Bot is stopping. Waiting for trades to close...", level="INFO")
-                time.sleep(30)
+                open_trades = state.get("open_trades", [])
+                if not open_trades:
+                    msg = "[Main] Bot is stopping. No open trades. "
+                    msg += (
+                        "Awaiting shutdown..." if state.get("shutdown") else "Will stop shortly..."
+                    )
+                    log(msg, level="INFO")
+                    break
+                symbols = [t.get("symbol", "?") for t in open_trades]
+                log(f"[Main] Bot is stopping. Waiting for trades to close: {symbols}", level="INFO")
+                time.sleep(10)
                 continue
 
             current_group = symbol_groups[current_group_index]
+
             state = load_state()
             if state.get("stopping"):
                 log("[Main] Stopping detected before trading cycle...", level="INFO")
-                time.sleep(10)
+                time.sleep(5)
                 continue
 
             run_trading_cycle(current_group)
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
+
     except KeyboardInterrupt:
         log("[Main] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
         send_telegram_message(
