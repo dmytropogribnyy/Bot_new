@@ -151,7 +151,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     if DRY_RUN:
         min_required *= 0.3
-        log(f"{symbol} 🔎 Final Score: {score}/5 (Required: {min_required})")
+        log(f"{symbol} 🔎 Final Score: {score:.2f} / (Required: {min_required:.4f})")
 
     if has_long_position or has_short_position or available_margin < 10:
         score -= 0.5
@@ -168,7 +168,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
         if (elapsed < cooldown or closed_elapsed < cooldown) and position_size == 0:
             if score <= 4:
-                log(f"Skipping {symbol}: cooldown active, score {score} <= 4", level="DEBUG")
+                log(f"Skipping {symbol}: cooldown active, score {score:.2f} <= 4", level="DEBUG")
                 return None
             direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
             log(
@@ -178,9 +178,9 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             last_trade_times[symbol] = utc_now
             if not DRY_RUN:
                 log_score_history(symbol, score)
-                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score}/5)")
+                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score:.2f}/5)")
             else:
-                msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+                msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{score:.2f}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
             return ("buy" if direction == "BUY" else "sell", score, True)
 
@@ -193,17 +193,20 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             last_trade_times[symbol] = utc_now
             if not DRY_RUN:
                 log_score_history(symbol, score)
-                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score}/5)")
+                log(f"{symbol} ✅ Re-entry {direction} signal triggered (score: {score:.2f}/5)")
             else:
-                msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+                msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{score:.2f}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
             return ("buy" if direction == "BUY" else "sell", score, True)
 
-    # Обычный вход
-    if score < min_required:
-        if DRY_RUN:
-            log(f"{symbol} ❌ No entry: insufficient score")
-        return None
+        # Обычный вход
+        if score < min_required:
+            if DRY_RUN:
+                log(
+                    f"{symbol} ❌ No entry: insufficient score\n"
+                    f"Final Score: {score:.2f} / (Required: {min_required:.4f})"
+                )
+            return None
 
     with last_trade_times_lock:
         last_trade_times[symbol] = utc_now
@@ -215,9 +218,9 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     )
     if not DRY_RUN:
         log_score_history(symbol, score)
-        log(f"{symbol} ✅ {direction} signal triggered (score: {score}/5)")
+        log(f"{symbol} ✅ {direction} signal triggered (score: {score:.2f}/5)")
     else:
-        msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+        msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{score:.2f}-of-5"
         send_telegram_message(msg, force=True, parse_mode="")
 
     return ("buy" if direction == "BUY" else "sell", score, False)
