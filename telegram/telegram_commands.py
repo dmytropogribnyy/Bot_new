@@ -182,25 +182,36 @@ def handle_telegram_command(message, state):
             log("Stop process cancelled via /cancel_stop command.", level="INFO")
 
         elif text == "/resume_after_ip":
+            state = load_state()
+
             if DRY_RUN:
-                send_telegram_message(
-                    "ℹ️ /resume_after_ip is only for REAL_RUN mode.", force=True, parse_mode=""
-                )
-                log("Resume after IP ignored: DRY_RUN mode active.", level="INFO")
-            else:
-                state = load_state()
                 if state.get("stopping"):
                     state["stopping"] = False
                     save_state(state)
                     send_telegram_message(
-                        "✅ Bot resumed after IP change verification.", force=True, parse_mode=""
+                        "✅ DRY_RUN: Stop canceled after IP change. Resuming simulation...",
+                        force=True,
                     )
-                    log("Bot resumed via /resume_after_ip command.", level="INFO")
+                    log(
+                        "Resume after IP accepted in DRY_RUN mode: flag 'stopping' removed.",
+                        level="INFO",
+                    )
                 else:
-                    send_telegram_message(
-                        "ℹ️ Bot is not stopped due to IP change.", force=True, parse_mode=""
-                    )
-                    log("Resume command ignored: bot not stopping.", level="INFO")
+                    send_telegram_message("DRY_RUN: Bot is already running.", force=True)
+                    log("Resume ignored: no stopping flag set in DRY_RUN mode.", level="INFO")
+                return
+
+            if not state.get("stopping"):
+                send_telegram_message("ℹ️ Bot is already running. No need to resume.", force=True)
+                log("Resume ignored: bot not in stopping state.", level="INFO")
+                return
+
+            state["stopping"] = False
+            save_state(state)
+            send_telegram_message(
+                "✅ Resumed after IP change. Bot will continue trading.", force=True
+            )
+            log("Bot resumed after IP change via /resume_after_ip command.", level="INFO")
 
         elif text == "/mode":
             score = round(get_aggressiveness_score(), 2)

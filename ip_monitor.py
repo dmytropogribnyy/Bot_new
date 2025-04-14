@@ -63,28 +63,31 @@ def check_ip_change(stop_callback):
     if current_ip and current_ip != last_ip:
         write_last_ip(current_ip)
         now = datetime.now().strftime("%d %b %Y, %H:%M")
+
         if router_reboot_mode["enabled"]:
             msg = (
-                f"⚠️ *IP Address Changed!*\n"
-                f"🕒 `{now} (Bratislava)`\n"
-                f"🌐 Old IP: `{last_ip}`\n"
-                f"🌐 New IP: `{current_ip}`\n"
-                f"✅ No action needed (reboot mode active)."
+                "⚠️ IP Address Changed\n"
+                f"🕒 Time: {now} (Bratislava)\n"
+                f"🌐 Old IP: {last_ip}\n"
+                f"🌐 New IP: {current_ip}\n"
+                "✅ No action needed (reboot mode active)."
             )
         else:
             msg = (
-                f"⚠️ *IP Address Changed!*\n"
-                f"🕒 `{now} (Bratislava)`\n"
-                f"🌐 Old IP: `{last_ip}`\n"
-                f"🌐 New IP: `{current_ip}`\n"
-                f"🚫 Bot will stop after closing orders.\n"
-                f"ℹ️ Update Binance API IP whitelist with `{current_ip}`, then use `/resume_after_ip`."
+                "⚠️ IP Address Changed\n"
+                f"🕒 Time: {now} (Bratislava)\n"
+                f"🌐 Old IP: {last_ip}\n"
+                f"🌐 New IP: {current_ip}\n"
+                "🚫 Bot will stop after closing orders.\n"
+                f"ℹ️ Update Binance API IP whitelist with {current_ip}, then use /resume_after_ip."
             )
             if stop_callback:
                 log("IP changed, calling stop callback.", level="WARNING")
                 stop_callback()
-        send_telegram_message(escape_markdown_v2(msg), force=True)
+
+        send_telegram_message(msg, force=True, parse_mode="")  # ✅ Markdown отключён
         return True, current_ip, last_ip, now
+
     return False, current_ip, last_ip, None
 
 
@@ -127,6 +130,7 @@ def get_ip_status_message():
     last_ip = read_last_ip() or "Unknown"
     last_check = last_ip_check_time.strftime("%d %b %Y, %H:%M") if last_ip_check_time else "N/A"
     reboot_status = "🟢 ENABLED" if router_reboot_mode["enabled"] else "Disabled"
+
     if router_reboot_mode["enabled"] and router_reboot_mode["expires_at"]:
         remaining_minutes = max(
             0,
@@ -136,11 +140,12 @@ def get_ip_status_message():
         expires_info = f"{remaining_minutes} min left, until {expires_time} Bratislava"
     else:
         expires_info = "N/A"
+
     msg = (
-        f"🛰 *IP Monitoring Status*\n"
-        f"🌐 Current IP: `{current_ip}`\n"
-        f"📡 Previous IP: `{last_ip}`\n"
-        f"📅 Last check: `{last_check} (Bratislava)`\n"
+        "🛰 IP Monitoring Status\n"
+        f"🌐 Current IP: {current_ip}\n"
+        f"📡 Previous IP: {last_ip}\n"
+        f"📅 Last check: {last_check} (Bratislava)\n"
         f"⚙️ Router Reboot Mode: {reboot_status} ({expires_info})"
     )
     return msg
@@ -152,6 +157,7 @@ def force_ip_check_now(stop_callback):
 
     last_check = last_ip_check_time.strftime("%d %b %Y, %H:%M") if last_ip_check_time else "N/A"
     reboot_status = "🟢 ENABLED" if router_reboot_mode["enabled"] else "Disabled"
+
     if router_reboot_mode["enabled"] and router_reboot_mode["expires_at"]:
         remaining_minutes = max(
             0,
@@ -169,20 +175,20 @@ def force_ip_check_now(stop_callback):
         else:
             result_msg += (
                 "\n🚫 Bot will stop after closing orders.\n"
-                f"ℹ️ Update Binance API IP whitelist with `{current_ip or 'Unknown'}`, then use `/resume_after_ip`."
+                f"ℹ️ Update Binance API IP whitelist with {current_ip or 'Unknown'}, then use /resume_after_ip."
             )
     else:
         result_msg = "✅ No changes detected."
 
     msg = (
-        f"🛰 *Forced IP Check Result*\n"
-        f"🌐 Current IP: `{current_ip or 'Unknown'}`\n"
-        f"📡 Previous IP: `{last_ip or 'Unknown'}`\n"
-        f"🕒 Time: `{change_time or last_check} (Bratislava)`\n"
+        "🛰 Forced IP Check Result\n"
+        f"🌐 Current IP: {current_ip or 'Unknown'}\n"
+        f"📡 Previous IP: {last_ip or 'Unknown'}\n"
+        f"🕒 Time: {change_time or last_check} (Bratislava)\n"
         f"⚙️ Router Reboot Mode: {reboot_status} ({expires_info})\n"
         f"{result_msg}"
     )
-    send_telegram_message(escape_markdown_v2(msg), force=True)
+    send_telegram_message(msg, force=True, parse_mode="")
 
 
 def start_ip_monitor(stop_callback, interval_seconds=IP_MONITOR_INTERVAL_SECONDS):
