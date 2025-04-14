@@ -29,7 +29,7 @@ from config import (
 from core.aggressiveness_controller import get_aggressiveness_score
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
-from utils_core import get_cached_positions, safe_call_retry
+from utils_core import get_cached_positions, load_state, safe_call_retry
 from utils_logging import log, now
 
 
@@ -146,6 +146,11 @@ def get_market_regime(symbol):
 
 def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     # Обновлённая логика с двумя счётчиками
+    state = load_state()
+    if state.get("stopping"):
+        log("Cannot enter trade: bot is stopping.", level="WARNING")
+        return
+
     global open_positions_count, dry_run_positions_count
     with open_positions_lock:
         if DRY_RUN:

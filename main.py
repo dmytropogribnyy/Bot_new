@@ -3,7 +3,6 @@ import time
 from datetime import datetime
 
 from config import (
-    AGGRESSIVENESS_THRESHOLD,
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     VERBOSE,
@@ -37,18 +36,26 @@ def load_symbols():
 
 
 def start_trading_loop():
-    state = {**load_state(), "stopping": False, "shutdown": False}
+    state = load_state()
+    state["stopping"] = False
+    state["shutdown"] = False
     save_state(state)
 
     mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
-    aggressive_mode = get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD
-    mode_text = "AGGRESSIVE" if aggressive_mode else "SAFE"
+    # 🎯 Отображаем стратегическое смещение на основе score
+    score = round(get_aggressiveness_score(), 2)
+    if score >= 0.75:
+        bias = "🔥 HIGH"
+    elif score >= 0.5:
+        bias = "⚡ MODERATE"
+    else:
+        bias = "🧊 LOW"
 
     message = (
         f"Bot started in {mode} mode\n"
-        f"Mode: {mode_text}\n"
+        f"Strategy Bias: {bias} ({score})\n"
         f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     )
     send_telegram_message(message, force=True, parse_mode="")
@@ -56,7 +63,6 @@ def start_trading_loop():
     symbols = load_symbols()
     log(f"[Refactor] Loaded symbols: {symbols}", important=True, level="INFO")
 
-    # Разбиваем пары на группы по 5
     group_size = 5
     symbol_groups = [symbols[i : i + group_size] for i in range(0, len(symbols), group_size)]
     current_group_index = 0
@@ -64,30 +70,37 @@ def start_trading_loop():
     try:
         while True:
             state = load_state()
+
+            if state.get("shutdown"):
+                open_trades = state.get("open_trades", [])
+                if not open_trades:
+                    log(
+                        "[Main] Shutdown complete. No open trades. Exiting...",
+                        level="INFO",
+                        important=True,
+                    )
+                    send_telegram_message(
+                        "✅ Shutdown complete. No open trades. Exiting...", force=True
+                    )
+                    break
+
             if state.get("stopping"):
-                log("[Refactor] Stopping...", level="INFO")
+                log("[Main] Bot is stopping. Waiting for trades to close...", level="INFO")
                 time.sleep(30)
                 continue
 
-            # Проверка пар
             current_group = symbol_groups[current_group_index]
-            log(
-                f"Checking group {current_group_index + 1}/{len(symbol_groups)}: {current_group}",
-                level="DEBUG",
-            )
-            # Дополнительная проверка перед вызовом run_trading_cycle
             state = load_state()
             if state.get("stopping"):
-                log("[Refactor] Stopping detected before trading cycle...", level="INFO")
+                log("[Main] Stopping detected before trading cycle...", level="INFO")
                 time.sleep(10)
                 continue
+
             run_trading_cycle(current_group)
-            # Переходим к следующей группе
             current_group_index = (current_group_index + 1) % len(symbol_groups)
-            save_state(state)
-            time.sleep(10)  # Возвращаем задержку в конец цикла
+            time.sleep(10)
     except KeyboardInterrupt:
-        log("[Refactor] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
+        log("[Main] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
         send_telegram_message(
             "🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode=""
         )

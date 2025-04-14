@@ -98,47 +98,59 @@ def handle_telegram_command(message, state):
         elif text == "/stop":
             state = load_state()
             log(f"State before /stop: {state}", level="DEBUG")
+
             if state.get("stopping"):
                 send_telegram_message("⚠️ Bot is already stopping...", force=True, parse_mode="")
                 log("Stop command ignored: bot is already stopping.", level="WARNING")
                 return
+
             state["stopping"] = True
             save_state(state)
+
             state = load_state()
             log(f"State after /stop: {state}", level="DEBUG")
+
             if not state.get("stopping"):
                 log("Failed to set stopping flag — retrying...", level="ERROR")
                 state["stopping"] = True
                 save_state(state)
+
             open_trades = state.get("open_trades", [])
             if open_trades:
-                max_timeout = max(t.get("timeout_timestamp", 0) for t in open_trades)
                 now_ts = time.time()
+                max_timeout = max(t.get("timeout_timestamp", 0) for t in open_trades)
                 minutes_left = max(0, int((max_timeout - now_ts) / 60))
-                if minutes_left < 0:
-                    minutes_left = 0
+
                 msg = (
                     f"🛑 Stop command received.\n"
                     f"Waiting for {len(open_trades)} open trades to close.\n"
-                    f"Estimated time remaining: {minutes_left} min"
+                    f"Estimated *max* time remaining: {minutes_left} min"
                 )
             else:
                 msg = "🛑 Stop command received.\nNo open trades. Bot will stop shortly."
+
             send_telegram_message(msg, force=True, parse_mode="")
             log("Stop command received.", level="INFO")
 
         elif text == "/shutdown":
             state["shutdown"] = True
+            state["stopping"] = True  # Гарантируем, что новые сделки не откроются
             save_state(state)
             send_telegram_message(
                 "Shutdown initiated. Waiting for positions to close...", force=True, parse_mode=""
             )
-            log("Shutdown command received.", level="INFO")
+            log("Shutdown command received. Stopping flag also set to True.", level="INFO")
 
         elif text == "/cancel_stop":
             state = load_state()
+
+            if not state.get("stopping"):
+                send_telegram_message("ℹ️ Stop flag is not active. Nothing to cancel.", force=True)
+                return
+
             state["stopping"] = False
             save_state(state)
+
             send_telegram_message(
                 "✅ Stop process cancelled.\nBot will continue running.", force=True, parse_mode=""
             )
