@@ -112,6 +112,9 @@ VERBOSE = DRY_RUN
 USE_DYNAMIC_IN_DRY_RUN = True
 ADAPTIVE_SCORE_ENABLED = True
 
+# --- Runtime Control ---
+RUNNING = True  # Глобальный флаг для Graceful Shutdown
+
 # --- Runtime Trade Stats ---
 trade_stats_lock = Lock()
 trade_stats = {
