@@ -2,11 +2,7 @@ import threading
 import time
 from datetime import datetime
 
-from config import (
-    DRY_RUN,
-    IP_MONITOR_INTERVAL_SECONDS,
-    VERBOSE,
-)
+from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, VERBOSE
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
 from htf_optimizer import analyze_htf_winrate
@@ -36,6 +32,9 @@ def load_symbols():
 
 
 def start_trading_loop():
+    import config  # noqa: F401
+    from config import RUNNING
+
     # ✅ Всегда сбрасываем флаги при старте ран
     state = load_state()
     state["stopping"] = False
@@ -69,7 +68,7 @@ def start_trading_loop():
     current_group_index = 0
 
     try:
-        while True:
+        while RUNNING:
             state = load_state()
 
             # 🛑 Shutdown
@@ -119,6 +118,14 @@ def start_trading_loop():
             run_trading_cycle(current_group)
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
+
+        # 🛑 Graceful shutdown завершён
+        log(
+            "[Main] RUNNING = False detected. Graceful shutdown triggered.",
+            important=True,
+            level="INFO",
+        )
+        send_telegram_message("🛑 Bot stopped via graceful shutdown.", force=True, parse_mode="")
 
     except KeyboardInterrupt:
         log("[Main] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
