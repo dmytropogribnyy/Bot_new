@@ -6,6 +6,7 @@ import pandas as pd
 import ta
 
 from config import (
+    AUTO_TP_SL_ENABLED,  # Добавляем импорт
     DRY_RUN,
     FILTER_THRESHOLDS,
     LEVERAGE_MAP,
@@ -17,11 +18,11 @@ from config import (
     exchange,
     get_min_net_profit,
 )
-from core.order_utils import calculate_order_quantity  # Новый импорт
+from core.order_utils import calculate_order_quantity
 from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.score_logger import log_score_history
-from core.tp_utils import calculate_tp_levels  # Новый импорт
-from core.trade_engine import get_position_size, trade_manager
+from core.tp_utils import calculate_tp_levels
+from core.trade_engine import get_market_regime, get_position_size, trade_manager
 from core.volatility_controller import get_volatility_filters
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
@@ -178,14 +179,20 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     notional = qty * entry_price
     if notional > max_notional:
         log(
-            f"{symbol} ⛔️ Rejected: Notional {notional:.2f} exceeds max {max_notional:.2f} with leverage {leverage}x",
+            f"{symbol} ⛔️ Rejected: Notional {notional:.2f} exceeds max {max_notional:.2f} with leverage {leverage}x (balance: {balance:.2f})",
             level="DEBUG",
         )
         return None
 
     # Расчет чистой прибыли на TP1
-    regime = None  # Будет определено в trade_engine.py
+    regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None  # Уточняем расчет режима
     tp1_price, _, _, qty_tp1_share, _ = calculate_tp_levels(entry_price, direction, regime, score)
+
+    # Проверка на нулевое значение qty_tp1_share
+    if qty_tp1_share == 0:
+        log(f"{symbol} ⛔️ Rejected: qty_tp1_share is 0", level="DEBUG")
+        return None
+
     qty_tp1 = qty * qty_tp1_share
     gross_profit_tp1 = qty_tp1 * abs(tp1_price - entry_price)
     commission = 2 * (qty * entry_price * TAKER_FEE_RATE)

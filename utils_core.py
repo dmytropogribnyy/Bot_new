@@ -240,6 +240,7 @@ def set_leverage_for_symbols():
             delay=1,
             label=f"set_leverage {symbol}",
         )
+    log("Leverage set for all symbols", level="INFO")
 
 
 if __name__ == "__main__":
