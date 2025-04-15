@@ -1,9 +1,9 @@
-from config import DRY_RUN, MIN_NOTIONAL, SL_PERCENT  # Добавляем DRY_RUN
+# symbol_processor.py
+from config import DRY_RUN, MIN_NOTIONAL, SL_PERCENT
+from core.order_utils import calculate_order_quantity  # Новый импорт
 from core.strategy import fetch_data, should_enter_trade
 from core.trade_engine import (
-    calculate_position_size,
-    calculate_risk_amount,
-    dry_run_positions_count,  # Добавляем новый счётчик
+    dry_run_positions_count,
     get_position_size,
     open_positions_count,
     open_positions_lock,
@@ -44,8 +44,9 @@ def process_symbol(symbol, balance, last_trade_times, lock):
         entry = df["close"].iloc[-1]
         stop = entry * (1 - SL_PERCENT) if direction == "buy" else entry * (1 + SL_PERCENT)
         risk_percent = get_adaptive_risk_percent(balance)
-        risk = calculate_risk_amount(balance, risk_percent)
-        qty = calculate_position_size(entry, stop, risk)
+        qty = calculate_order_quantity(
+            entry, stop, balance, risk_percent
+        )  # Используем новую функцию
 
         if qty * entry < MIN_NOTIONAL:
             log(f"⚠️ Notional too low for {symbol} — skipping", level="WARNING")
