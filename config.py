@@ -71,6 +71,36 @@ MIN_NOTIONAL = 5
 MAX_HOLD_MINUTES = 90
 RISK_DRAWDOWN_THRESHOLD = 5.0
 
+# Фиксированные параметры для теста
+RISK_PERCENT = 0.01  # 1% риска на сделку для теста (0,44 USD для депозита 44 USD)
+MAX_POSITIONS = 1  # Максимум 1 сделка для теста
+
+
+# Функции для автоматизации (будут использоваться после теста)
+def get_adaptive_risk_percent(balance):
+    """Calculate adaptive risk percentage based on balance."""
+    if balance < 100:
+        return 0.01  # 1% для теста
+    elif balance < 300:
+        return 0.02  # 2%
+    elif balance < 1000:
+        return 0.03  # 3%
+    else:
+        return 0.05  # 5%
+
+
+def get_max_positions(balance):
+    """Calculate maximum number of positions based on balance."""
+    if balance < 100:
+        return 1  # 1 сделка для теста
+    elif balance < 300:
+        return 2  # 2 сделки
+    elif balance < 1000:
+        return 3  # 3 сделки
+    else:
+        return 5  # 5 сделок
+
+
 # --- Entry Filter Thresholds (fallback / default) ---
 ATR_THRESHOLD = 0.0015
 ADX_THRESHOLD = 7
