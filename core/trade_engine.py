@@ -1,3 +1,4 @@
+# trade_engine.py
 import threading
 import time
 
@@ -13,20 +14,18 @@ from config import (
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
-    FLAT_ADJUSTMENT,
     MIN_NOTIONAL,
-    SL_PERCENT,
+    SL_PERCENT,  # Добавляем импорт
     SOFT_EXIT_ENABLED,
     SOFT_EXIT_SHARE,
     SOFT_EXIT_THRESHOLD,
-    TP1_PERCENT,
-    TP1_SHARE,
-    TP2_PERCENT,
-    TP2_SHARE,
-    TREND_ADJUSTMENT,
+    TAKER_FEE_RATE,
+    TP1_PERCENT,  # Добавляем импорт
+    TP2_PERCENT,  # Добавляем импорт
     exchange,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
+from core.tp_utils import calculate_tp_levels  # Переносим сюда
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
 from utils_core import get_cached_positions, load_state, safe_call_retry
@@ -75,9 +74,8 @@ trade_manager = TradeInfoManager()
 monitored_stops = {}
 monitored_stops_lock = threading.Lock()
 
-# Обновлённые глобальные объявления
 open_positions_count = 0
-dry_run_positions_count = 0  # NEW: Отдельный счётчик для DRY_RUN
+dry_run_positions_count = 0
 open_positions_lock = threading.Lock()
 
 
@@ -145,7 +143,6 @@ def get_market_regime(symbol):
 
 
 def enter_trade(symbol, side, qty, score=5, is_reentry=False):
-    # Обновлённая логика с двумя счётчиками
     state = load_state()
     if state.get("stopping"):
         log("Cannot enter trade: bot is stopping.", level="WARNING")
@@ -201,47 +198,23 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 open_positions_count -= 1
         return
 
-    # Base TP/SL values
-    tp1_percent = TP1_PERCENT
-    tp2_percent = TP2_PERCENT
-    sl_percent = SL_PERCENT
-
-    # Adjust TP/SL based on regime
-    if AUTO_TP_SL_ENABLED:
-        regime = get_market_regime(symbol)
-        if regime == "flat":
-            tp1_percent *= FLAT_ADJUSTMENT
-            tp2_percent *= FLAT_ADJUSTMENT if tp2_percent else None
-            sl_percent *= FLAT_ADJUSTMENT
-            log(f"Adjusted TP/SL for {symbol}: flat regime (x{FLAT_ADJUSTMENT})", level="INFO")
-        elif regime == "trend":
-            tp2_percent *= TREND_ADJUSTMENT if tp2_percent else None
-            sl_percent *= TREND_ADJUSTMENT
-            log(
-                f"Adjusted TP/SL for {symbol}: trend regime (x{TREND_ADJUSTMENT} for TP2/SL)",
-                level="INFO",
-            )
-
-    if score == 3:
-        tp1_percent *= 0.8
-        tp2_percent = None
-        sl_percent *= 0.8
-        log("🎯 TP/SL adjusted for score 3")
-
-    qty_tp1 = round(qty * TP1_SHARE, 3)
-    qty_tp2 = round(qty * TP2_SHARE, 3) if tp2_percent else 0
-
-    tp1_price = (
-        entry_price * (1 + tp1_percent) if side == "buy" else entry_price * (1 - tp1_percent)
+    # Расчет TP/SL с использованием новой функции
+    regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
+    tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(
+        entry_price, side, regime, score
     )
-    tp2_price = (
-        entry_price * (1 + tp2_percent)
-        if side == "buy"
-        else None
-        if not tp2_percent
-        else entry_price * (1 - tp2_percent)
+
+    qty_tp1 = round(qty * qty_tp1_share, 3)
+    qty_tp2 = round(qty * qty_tp2_share, 3)
+
+    # Логирование чистой прибыли на TP1
+    gross_profit_tp1 = qty_tp1 * abs(tp1_price - entry_price)
+    commission = 2 * (qty * entry_price * TAKER_FEE_RATE)
+    net_profit_tp1 = gross_profit_tp1 - commission
+    log(
+        f"{symbol} Net profit on TP1: {net_profit_tp1:.2f} USD, Commission: {commission:.2f} USD",
+        level="DEBUG",
     )
-    sl_price = entry_price * (1 - sl_percent) if side == "buy" else entry_price * (1 + sl_percent)
 
     if DRY_RUN:
         log(
@@ -288,9 +261,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             side_upper=side.upper(),
             entry_price=round(entry_price, 4),
             qty=qty,
-            tp1_percent=round(tp1_percent * 100, 1),
-            tp2_percent=round(tp2_percent * 100, 1) if tp2_price else "",
-            sl_percent=round(sl_percent * 100, 1),
+            tp1_percent=round(TP1_PERCENT * 100, 1),
+            tp2_percent=round(TP2_PERCENT * 100, 1) if tp2_price else "",
+            sl_percent=round(SL_PERCENT * 100, 1),
         )
         send_telegram_message(msg, force=True)
 
@@ -299,9 +272,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         "side": side,
         "entry": round(entry_price, 4),
         "qty": qty,
-        "tp1": round(tp1_percent * 100, 1),
-        "tp2": round(tp2_percent * 100, 1) if tp2_price else None,
-        "sl": round(sl_percent * 100, 1),
+        "tp1": round(TP1_PERCENT * 100, 1),
+        "tp2": round(TP2_PERCENT * 100, 1) if tp2_price else None,
+        "sl": round(SL_PERCENT * 100, 1),
         "start_time": start_time,
         "tp1_hit": False,
         "tp2_hit": False,
@@ -321,13 +294,13 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         if ENABLE_BREAKEVEN:
             threading.Thread(
                 target=run_break_even,
-                args=(symbol, side, entry_price, tp1_percent),
+                args=(symbol, side, entry_price, TP1_PERCENT),
                 daemon=True,
             ).start()
         if SOFT_EXIT_ENABLED:
             threading.Thread(
                 target=run_soft_exit,
-                args=(symbol, side, entry_price, tp1_percent, qty),
+                args=(symbol, side, entry_price, TP1_PERCENT, qty),
                 daemon=True,
             ).start()
 

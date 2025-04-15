@@ -8,18 +8,24 @@ import ta
 from config import (
     DRY_RUN,
     FILTER_THRESHOLDS,
+    LEVERAGE_MAP,
+    SL_PERCENT,
+    TAKER_FEE_RATE,
     VOLATILITY_ATR_THRESHOLD,
     VOLATILITY_RANGE_THRESHOLD,
     VOLATILITY_SKIP_ENABLED,
     exchange,
+    get_min_net_profit,
 )
+from core.order_utils import calculate_order_quantity  # Новый импорт
 from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.score_logger import log_score_history
+from core.tp_utils import calculate_tp_levels  # Новый импорт
 from core.trade_engine import get_position_size, trade_manager
 from core.volatility_controller import get_volatility_filters
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
-from utils_core import get_cached_balance, safe_call_retry
+from utils_core import get_adaptive_risk_percent, get_cached_balance, safe_call_retry
 from utils_logging import log
 
 last_trade_times = {}
@@ -155,6 +161,48 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     if has_long_position or has_short_position or available_margin < 10:
         score -= 0.5
+
+    direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+
+    # Проверка чистой прибыли
+    entry_price = df["close"].iloc[-1]
+    stop_price = (
+        entry_price * (1 - SL_PERCENT) if direction == "BUY" else entry_price * (1 + SL_PERCENT)
+    )
+    risk_percent = get_adaptive_risk_percent(balance)
+    qty = calculate_order_quantity(entry_price, stop_price, balance, risk_percent)
+
+    # Проверка номинальной стоимости с учетом плеча
+    leverage = LEVERAGE_MAP.get(symbol, 5)
+    max_notional = balance * leverage
+    notional = qty * entry_price
+    if notional > max_notional:
+        log(
+            f"{symbol} ⛔️ Rejected: Notional {notional:.2f} exceeds max {max_notional:.2f} with leverage {leverage}x",
+            level="DEBUG",
+        )
+        return None
+
+    # Расчет чистой прибыли на TP1
+    regime = None  # Будет определено в trade_engine.py
+    tp1_price, _, _, qty_tp1_share, _ = calculate_tp_levels(entry_price, direction, regime, score)
+    qty_tp1 = qty * qty_tp1_share
+    gross_profit_tp1 = qty_tp1 * abs(tp1_price - entry_price)
+    commission = 2 * (qty * entry_price * TAKER_FEE_RATE)
+    net_profit_tp1 = gross_profit_tp1 - commission
+
+    # Проверка минимального порога прибыли
+    min_target_pnl = get_min_net_profit(balance)
+    log(
+        f"[{symbol}] Qty={qty:.4f}, Entry={entry_price:.4f}, TP1={tp1_price:.4f}, ExpPnl=${net_profit_tp1:.3f}, Min=${min_target_pnl:.3f}",
+        level="DEBUG",
+    )
+    if net_profit_tp1 < min_target_pnl:
+        log(
+            f"⚠️ Skipping {symbol} — expected PnL ${net_profit_tp1:.2f} < min ${min_target_pnl:.2f}",
+            level="DEBUG",
+        )
+        return None
 
     # Smart Re-entry Logic
     with last_trade_times_lock:
