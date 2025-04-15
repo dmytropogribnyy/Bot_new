@@ -198,5 +198,18 @@ TREND_ADJUSTMENT = 1.3
 ADX_TREND_THRESHOLD = 20
 ADX_FLAT_THRESHOLD = 15
 
+# config.py (добавить в конец файла)
+
+TAKER_FEE_RATE = 0.0001  # 0.01% для тейкера
+MIN_NET_PROFIT = {50: 0.3, 100: 0.5, 500: 1.0, "max": 2.0}
+
+
+def get_min_net_profit(balance):
+    for threshold in sorted(k for k in MIN_NET_PROFIT if k != "max"):
+        if balance <= threshold:
+            return MIN_NET_PROFIT[threshold]
+    return MIN_NET_PROFIT["max"]
+
+
 # --- Config File ---
 CONFIG_FILE = "config.py"
