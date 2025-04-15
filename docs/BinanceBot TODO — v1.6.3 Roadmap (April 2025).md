@@ -10,6 +10,10 @@
 - Symbol rotation every 60 min with score-based sorting
 - Telegram: all commands, logs, IP monitor, reports
 - DRY_RUN isolation from real logs/files
+- ✅ Commission-aware entry filter (TP1 net profit check)
+- ✅ Modular order/TP logic via `order_utils.py` and `tp_utils.py`
+- ✅ Auto leverage setup via API using LEVERAGE_MAP
+- ✅ Margin check before entry (notional <= balance × leverage)
 
 ## ⭐ Priority 1 — Core Enhancements (Next)
 
@@ -75,9 +79,9 @@
 
 12. **WebSocket Integration**
 
-- Replace polling with Binance Futures WebSocket API.
-- Add fallback to REST.
-- Effort: Medium
+    - Replace polling with Binance Futures WebSocket API.
+    - Add fallback to REST.
+    - Effort: Medium
 
 ## ⭐ Priority 2 — Analytics & Scaling
 
@@ -100,6 +104,7 @@
     - Effort: Medium
 
 16. **Dynamic Aggressiveness Adjuster**
+
     - Modify threshold based on streaks/PnL curve.
     - Effort: Medium
 
@@ -116,9 +121,10 @@
     - Plug-and-play strategies via `strategy_base.py`.
 
 19. **KuCoin/Bybit Port Adapters**
+
     - Modularize exchange adapter interface.
 
 ---
 
-**Updated:** April 14, 2025
-**Status:** Synced with current architecture and testing cycle.
+**Updated:** April 15, 2025
+**Status:** Synced with v1.6.4 features and testing.

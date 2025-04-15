@@ -1,45 +1,49 @@
-# Practical Guide: Binance USDC Futures Bot — Strategy + Code (v1.6.3)
+# Practical Guide: Binance USDC Futures Bot — Strategy + Code (v1.6.4)
 
-## 🎯 Goal
+## 🌟 Goal
 
 Automated USDC Futures scalping bot for Binance with:
 
 - Multi-timeframe signal logic
 - Risk-based trade sizing (5%)
 - TP1 / TP2 / SL adaptive execution
+- Commission-aware profit filter
 - Target: $50/day with capital scaling from $44 to $1500
 
 ---
 
-## 📐 Strategy Logic Summary
+## 🔢 Strategy Logic Summary
 
 ### Timeframes:
 
 - **1h** → Trend filter: EMA50 > EMA200
 - **15m** → Signal generation: MACD, RSI, ATR
-- **5m** → Entry confirmation: Stochastic RSI
+- **5m** → Entry confirmation: Stochastic RSI + Volume/BB filters
 
 ### Entry Conditions:
 
-- ✅ Trend confirmed (1h)
-- ✅ MACD > Signal & RSI < 50 (buy), inverse for sell (15m)
-- ✅ Stoch RSI < 20 or > 80 (5m)
+- Trend confirmed (1h) ✅ _(if HTF enabled)_
+- MACD > Signal & RSI < 50 (buy), inverse for sell (15m)
+- Stoch RSI < 20 or > 80 (5m)
+- Score >= dynamic threshold
+- Min profit after fees ✔ (TP1 - commission >= MIN_NET_PROFIT)
+- Notional <= balance \* leverage
 
-### Exit Conditions:
+### Exit Structure:
 
-- **TP1** at +0.7%, **TP2** at +1.3%
-- **SL** at -1.0% or ATR \* 1.5
-- ✅ Break-even, Soft Exit, Trailing Stop (threads)
+- TP1 / TP2 adaptive via `tp_utils.py`
+- SL from ATR or fixed percent (via regime detection)
+- Soft Exit, Break-even, Trailing Stop
+- Max Hold: 90 min (+30 if near TP1)
 
 ---
 
-## 🧩 Step-by-Step Implementation (Code-driven)
+## 🧩 Step-by-Step Code Summary
 
 ### 1. Fetch & Filter Symbols
 
 ```python
-if avg_volume < 10000:
-    log(f"{symbol} rejected: low liquidity")
+if avg_volume < 10000 or score < threshold:
     return None
 ```
 
@@ -50,10 +54,11 @@ df['EMA50'] = EMA(df['close'], 50)
 df['MACD'], df['MACD_signal'] = MACD(df['close'])
 df['RSI'] = RSI(df['close'])
 df['ATR'] = ATR(df)
-df['Stoch_RSI_K'] = StochRSI(df['close']) * 100
+df['BB_width'] = BB_Width(df['close'])
+df['Stoch_K'] = StochRSI(df['close']) * 100
 ```
 
-### 3. Get Trend (1h)
+### 3. Trend Confirmation (1h)
 
 ```python
 if df_1h['EMA50'].iloc[-1] > df_1h['EMA200'].iloc[-1]:
@@ -63,35 +68,49 @@ if df_1h['EMA50'].iloc[-1] > df_1h['EMA200'].iloc[-1]:
 ### 4. Generate Signal (15m)
 
 ```python
-if trend == 'bullish' and MACD > MACD_signal and RSI < 50:
+if trend == 'bullish' and MACD > Signal and RSI < 50:
     signal = 'buy'
 ```
 
 ### 5. Confirm Entry (5m)
 
 ```python
-if signal == 'buy' and Stoch_RSI_K < 20:
+if signal == 'buy' and Stoch_K < 20:
     confirmed = True
 ```
 
-### 6. Calculate Risk / SL / TP
+### 6. Risk Sizing + Order Qty
 
 ```python
-risk_amount = balance * 0.05
-qty = risk_amount / abs(entry_price - sl)
-sl = entry - ATR * 1.5
-tp1 = entry + ATR * 2
+from order_utils import calculate_order_quantity
+qty = calculate_order_quantity(entry, stop, balance, risk_percent)
 ```
 
-### 7. Execute Entry
+### 7. TP / SL Calculation
 
 ```python
-safe_call_retry(create_limit_order, ..., qty*0.7, tp1)
-safe_call_retry(create_limit_order, ..., qty*0.3, tp2)
-safe_call_retry(create_stop_order, ..., qty, sl_price)
+from tp_utils import calculate_tp_levels
+tp1, tp2, sl, share1, share2 = calculate_tp_levels(entry, side, regime)
 ```
 
-### 8. Launch Exit Threads
+### 8. Check Net Profit
+
+```python
+commission = 2 * qty * entry_price * TAKER_FEE_RATE
+min_net = get_min_net_profit(balance)
+if (tp1 - entry_price) * share1 * qty - commission < min_net:
+    return None
+```
+
+### 9. Execute Orders
+
+```python
+create_limit_order(..., qty*0.7, tp1)
+create_limit_order(..., qty*0.3, tp2)
+create_stop_order(..., qty, sl)
+```
+
+### 10. Run Exit Threads
 
 ```python
 Thread(target=run_soft_exit, args=(...)).start()
@@ -99,74 +118,31 @@ Thread(target=run_break_even, args=(...)).start()
 Thread(target=run_trailing_stop, args=(...)).start()
 ```
 
-### 9. Main Loop
+---
 
-```python
-for symbol in active_symbols:
-    df_1h, df_15m, df_5m = fetch(...)
-    if signal and confirm:
-        enter_trade(...)
-```
+## 🔧 Config Highlights
+
+| Param          | Value   | Description                  |
+| -------------- | ------- | ---------------------------- |
+| RISK_PERCENT   | 0.05    | 5% per trade                 |
+| TP1_PERCENT    | 0.007   | default (regime-scaled)      |
+| TP2_PERCENT    | 0.013   | default (regime-scaled)      |
+| SL_PERCENT     | 0.01    | or ATR-based                 |
+| MIN_NET_PROFIT | 0.3-2.0 | per config, adaptive by size |
+| MAX_POSITIONS  | 5-10    | by balance                   |
+| LEVERAGE       | 5–10x   | per-symbol, auto-applied     |
 
 ---
 
-## 🧪 Backtesting (Basic)
+## 🔍 Features Summary
 
-```python
-class MultiTimeframeStrategy(bt.Strategy):
-    def next(self):
-        if EMA50 > EMA200:
-            self.buy()
-```
-
----
-
-## 🛡️ Error Handling
-
-```python
-@retry(wait=wait_exponential(...))
-def fetch_data_retry(...):
-    return exchange.fetch_ohlcv(...)
-```
+- ✅ Commission-aware entry filtering
+- ✅ Adaptive SL/TP logic (market regime aware)
+- ✅ Automatic leverage set via API
+- ✅ Modular architecture: `order_utils.py`, `tp_utils.py`
+- ✅ DRY_RUN safe execution for testing
+- ✅ Full Telegram control + stats
 
 ---
 
-## ⚙️ Performance Optimizations
-
-- Use `ccxt.async_support`
-- Cache positions, balance (TTL = 30s)
-- Group fetches in batches
-
----
-
-## 🔐 Security Tips
-
-```python
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-```
-
----
-
-## 📊 Monitoring & Scaling
-
-- Daily/Weekly stats via `stats.py` and Telegram
-- Scale to $500 → $1000 → $1500 based on winrate
-- Use ML/HTF Optimizers for automated param tuning
-
----
-
-## ✅ Summary Table
-
-| Param         | Value | Description            |
-| ------------- | ----- | ---------------------- |
-| RISK_PERCENT  | 0.05  | 5% per trade           |
-| TP1_PERCENT   | 0.007 | 0.7% target            |
-| TP2_PERCENT   | 0.013 | 1.3% target            |
-| SL_PERCENT    | 0.01  | 1.0% stop loss         |
-| MAX_POSITIONS | 1-5   | Based on balance       |
-| MIN_NOTIONAL  | 2     | Binance min trade size |
-
----
-
-> Built for reliability, speed, and adaptive risk control. All logic DRY_RUN safe and modular.
+> Version: `v1.6.4` • Updated: April 15, 2025

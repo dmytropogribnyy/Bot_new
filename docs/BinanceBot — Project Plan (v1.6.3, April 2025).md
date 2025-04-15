@@ -1,4 +1,4 @@
-# BinanceBot — Project Plan (v1.6.3, April 2025)
+# BinanceBot — Project Plan (v1.6.4, April 2025)
 
 ## ✨ Mission
 
@@ -62,6 +62,9 @@ Build an adaptive, semi-autonomous trading bot for **Binance USDC-M Futures**, o
   - Daily / Weekly / Monthly / Quarterly / Yearly reports
   - IP monitor and reboot-safe protection
 - Symbol Rotation every 60 min + cyclic group monitoring
+- Auto leverage set per symbol on startup
+- Clean net profit calculation (PnL after fee)
+- Filtering trades below adaptive clean profit thresholds
 
 ## 🧪 Config Highlights (`config.py`)
 
@@ -69,6 +72,7 @@ Build an adaptive, semi-autonomous trading bot for **Binance USDC-M Futures**, o
 - Threshold profiles: `default`, `default_light`, and per-symbol
 - TP/SL ratios, volatility limits, HTF toggles, ML switches
 - DRY_RUN/REAL_RUN behavior split
+- Dynamic MIN_NET_PROFIT thresholds based on balance
 
 ## 📊 Phased Roadmap
 
@@ -80,13 +84,16 @@ Build an adaptive, semi-autonomous trading bot for **Binance USDC-M Futures**, o
 - HTF/ML/TP optimizer integration
 - Aggressiveness detection + SAFE mode
 
-### Phase 1.6 — In Progress / Finalizing
+### Phase 1.6 — Completed ✅
 
 - ✅ Symbol rotation by group + score
 - ✅ DRY_RUN-safe architecture
 - ✅ TP Logger, Optimizers (HTF, TP, ML)
 - ✅ Adaptive filters and per-symbol TP
 - ✅ Telegram upgrades + IP Monitor
+- ✅ Clean profit validation + fee logic
+- ✅ Auto leverage via LEVERAGE_MAP
+- ✅ Modular order/TP logic (order_utils, tp_utils)
 
 ### Phase 1.7+ — Next
 
@@ -106,13 +113,14 @@ Build an adaptive, semi-autonomous trading bot for **Binance USDC-M Futures**, o
 - Backtest runner for CSV + live simulation
 - Simple UI or Web Panel for reports
 
-## ✅ Status (April 10, 2025)
+## ✅ Status (April 15, 2025)
 
-- ✅ Stable release: `BinanceBot v1.6.3`
-- ✅ All core features completed, test coverage via DRY_RUN
+- ✅ Stable release: `BinanceBot v1.6.4`
+- ✅ All core features completed, DRY_RUN verified
 - ✅ Modular architecture, config-based control, Telegram synced
-- ✅ Adaptive scoring, TP/SL, volatility filters, ML/HTF
+- ✅ Clean profit filters, auto leverage, TP/SL optimizers
+- ✅ Score heatmap, logs, and adaptive control logic
 
 ---
 
-> Next stop: Phase 1.7 — WebSocket, performance boost, re-entry AI
+> Next stop: Phase 1.7 — WebSocket, live feed engine, re-entry upgrades

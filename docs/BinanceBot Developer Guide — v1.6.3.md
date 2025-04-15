@@ -1,4 +1,4 @@
-# BinanceBot Developer Guide — v1.6.3
+# BinanceBot Developer Guide — v1.6.4
 
 ## 📁 Structure
 
@@ -6,6 +6,10 @@
 project/
   config.py
   main.py
+  binance_api.py
+  ip_monitor.py
+  pair_selector.py
+  start_bot.bat
   core/
     strategy.py
     trade_engine.py
@@ -16,6 +20,10 @@ project/
     tp_optimizer_ml.py
     aggressiveness_controller.py
     entry_logger.py
+    score_logger.py
+    order_utils.py
+    tp_utils.py
+    websocket_listener.py  # planned for v1.7
   telegram/
     telegram_utils.py
     telegram_commands.py
@@ -24,9 +32,6 @@ project/
   utils/
     utils_core.py
     utils_logging.py
-  pair_selector.py
-  binance_api.py
-  ip_monitor.py
   data/
     tp_performance.csv
     backups/
@@ -46,11 +51,13 @@ project/
 - Executes entries and exits (TP1/TP2/SL/Breakeven)
 - Validates signal, score, symbol status
 - Handles smart switching logic
+- Logs clean PnL after commission (since v1.6.4)
 
 ### `strategy.py`
 
 - Builds indicators (EMA, MACD, RSI, BB, ADX, ATR)
 - Applies filters (score, volatility, HTF trend)
+- Computes TP/SL levels and validates clean profit threshold
 
 ### `score_evaluator.py`
 
@@ -74,6 +81,7 @@ project/
 
 - Defined in `config.py` via ccxt
 - Passed implicitly via imports
+- Leverage set via `set_leverage_for_symbols()` on startup (since v1.6.4)
 
 ## 🎓 Intelligence
 
@@ -86,7 +94,7 @@ project/
 ### `tp_optimizer_ml.py`
 
 - Uses historical trades to propose new TP1/TP2 per symbol
-- Updates `config.py` with safe bounds (via rewrite)
+- Updates `config.py` or `config_dynamic.json`
 
 ### `htf_optimizer.py`
 
@@ -104,6 +112,7 @@ project/
 - `tp_performance.csv`: main file for optimizer analysis
 - `entry_logger.py`: logs every signal (even ignored ones)
 - `bot_state.json`: persists flags (pause, stop, shutdown)
+- `score_logger.py`: logs score components (for heatmap/tuning)
 
 ## 📈 Reports
 
@@ -126,6 +135,7 @@ project/
 - DRY_RUN = True → all writes/logs skipped
 - Only console output allowed
 - Used for testing and evaluation
+- Fully isolated: tracked in trade_manager and state
 
 ## 🚀 Next: WebSocket (v1.7+)
 
