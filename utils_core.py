@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from threading import Lock
 
-from config import exchange
+from config import LEVERAGE_MAP, SYMBOLS_ACTIVE, exchange
 from utils_logging import log
 
 STATE_FILE = "data/bot_state.json"
@@ -224,6 +224,22 @@ def get_adaptive_risk_percent(balance):
         return 0.05
     else:
         return 0.07
+
+
+# utils_core.py (добавить в конец файла)
+
+
+def set_leverage_for_symbols():
+    for symbol in SYMBOLS_ACTIVE:
+        leverage = LEVERAGE_MAP.get(symbol, 5)  # По умолчанию 5x
+        safe_call_retry(
+            exchange.set_leverage,
+            leverage,
+            symbol,
+            tries=3,
+            delay=1,
+            label=f"set_leverage {symbol}",
+        )
 
 
 if __name__ == "__main__":
