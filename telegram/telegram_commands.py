@@ -236,6 +236,9 @@ def handle_telegram_command(message, state):
         elif text == "/open":
             try:
                 if DRY_RUN:
+                    # Local import here:
+                    from core.trade_engine import trade_manager
+
                     open_trades = {
                         sym: t
                         for sym, t in trade_manager._trades.items()
