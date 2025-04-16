@@ -216,19 +216,6 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
                 return None
 
 
-def get_adaptive_risk_percent(balance):
-    """Calculate adaptive risk percentage based on balance."""
-    if balance < 100:
-        return 0.03
-    elif balance < 300:
-        return 0.05
-    else:
-        return 0.07
-
-
-# utils_core.py (добавить в конец файла)
-
-
 def set_leverage_for_symbols():
     for symbol in SYMBOLS_ACTIVE:
         leverage = LEVERAGE_MAP.get(symbol, 5)  # По умолчанию 5x

@@ -210,6 +210,9 @@ def start_report_loops():
 
 if __name__ == "__main__":
     state = load_state()
+    from tp_logger import ensure_log_exists
+
+    ensure_log_exists()
     threading.Thread(
         target=lambda: process_telegram_commands(state, handle_telegram_command),
         daemon=True,

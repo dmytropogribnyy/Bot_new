@@ -31,8 +31,14 @@ def get_filter_relax_factor():
 def get_volatility_filters(symbol, base_filters):
     relax = get_filter_relax_factor()
 
-    atr_thres = max(base_filters["atr"] * relax, 0.0005)
-    adx_thres = max(base_filters["adx"] * relax, 3)
-    bb_thres = max(base_filters["bb"] * relax, 0.004)
+    # atr_thres = max(base_filters["atr"] * relax, 0.0005)
+    # adx_thres = max(base_filters["adx"] * relax, 3)
+    # bb_thres = max(base_filters["bb"] * relax, 0.004)
+
+    # Временно снижено для soft real run — усиленная проходимость сигналов
+
+    atr_thres = max(base_filters["atr"] * relax, 0.0002)
+    adx_thres = max(base_filters["adx"] * relax, 1)
+    bb_thres = max(base_filters["bb"] * relax, 0.0015)
 
     return {"atr": atr_thres, "adx": adx_thres, "bb": bb_thres, "relax_factor": relax}

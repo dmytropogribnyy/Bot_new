@@ -10,6 +10,7 @@ from core.aggressiveness_controller import get_aggressiveness_score
 from core.balance_watcher import check_balance_change
 from core.entry_logger import log_entry
 from core.notifier import notify_dry_trade, notify_error
+from core.risk_utils import get_adaptive_risk_percent, get_max_positions
 from core.symbol_processor import process_symbol
 from core.trade_engine import (
     close_dry_trade,
@@ -67,6 +68,12 @@ def run_trading_cycle(symbols):
 
     # Установка плеча при запуске цикла
     set_leverage_for_symbols()
+
+    # ⬇️ Адаптивный риск и позиции
+    balance = get_cached_balance()
+
+    get_adaptive_risk_percent(balance)
+    get_max_positions(balance)
 
     if state.get("stopping"):
         open_trades = sum(get_position_size(sym) > 0 for sym in symbols)

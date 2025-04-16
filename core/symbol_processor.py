@@ -1,6 +1,6 @@
-# symbol_processor.py
-from config import DRY_RUN, MIN_NOTIONAL, SL_PERCENT
-from core.order_utils import calculate_order_quantity  # Новый импорт
+from config import DRY_RUN, MAX_POSITIONS, MIN_NOTIONAL, SL_PERCENT
+from core.order_utils import calculate_order_quantity
+from core.risk_utils import get_adaptive_risk_percent
 from core.strategy import fetch_data, should_enter_trade
 from core.trade_engine import (
     dry_run_positions_count,
@@ -8,14 +8,15 @@ from core.trade_engine import (
     open_positions_count,
     open_positions_lock,
 )
-from utils_core import get_adaptive_risk_percent, get_cached_balance
+
+# Исправлено: utils.core -> utils_core, удалён get_adaptive_risk_percent
 from utils_logging import log
 
 
 def process_symbol(symbol, balance, last_trade_times, lock):
     try:
-        # Проверяем общее количество открытых позиций
-        max_open_positions = 10 if get_cached_balance() < 100 else 20
+        # Используем фиксированное значение для теста
+        max_open_positions = MAX_POSITIONS
         with open_positions_lock:
             active_count = dry_run_positions_count if DRY_RUN else open_positions_count
             if active_count >= max_open_positions:
@@ -44,9 +45,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
         entry = df["close"].iloc[-1]
         stop = entry * (1 - SL_PERCENT) if direction == "buy" else entry * (1 + SL_PERCENT)
         risk_percent = get_adaptive_risk_percent(balance)
-        qty = calculate_order_quantity(
-            entry, stop, balance, risk_percent
-        )  # Используем новую функцию
+        qty = calculate_order_quantity(entry, stop, balance, risk_percent)
 
         if qty * entry < MIN_NOTIONAL:
             log(f"⚠️ Notional too low for {symbol} — skipping", level="WARNING")
