@@ -41,7 +41,8 @@ def get_smart_switch_stats():
             return 0.5
 
         df = pd.read_csv("data/tp_performance.csv", parse_dates=["Date"])
-        recent = df[df["ResultType"] == "smart_switch"].tail(10)
+        # recent = df[df["ResultType"] == "smart_switch"].tail(10)
+        recent = df[df["Result"] == "smart_switch"].tail(10)
         winrate = len(recent[recent["PnL (%)"] > 0]) / len(recent) if not recent.empty else 0
         return round(winrate, 2)
     except Exception as e:

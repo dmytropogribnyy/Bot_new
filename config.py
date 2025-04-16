@@ -1,4 +1,8 @@
+# config.py
+
+# --- Imports ---
 import os
+from pathlib import Path
 from threading import Lock
 
 import ccxt
@@ -7,7 +11,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 # --- API & Auth ---
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
@@ -15,11 +18,36 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ALLOWED_USER_ID = 383821734
 
+# --- Exchange ---
+exchange = ccxt.binance(
+    {
+        "apiKey": API_KEY,
+        "secret": API_SECRET,
+        "enableRateLimit": True,
+        "options": {
+            "defaultType": "future",
+            "adjustForTimeDifference": True,
+        },
+        "urls": {
+            "api": {
+                "public": "https://fapi.binance.com/fapi/v1",
+                "private": "https://fapi.binance.com/fapi/v1",
+            }
+        },
+    }
+)
+
 # --- Timezone & Paths ---
 TIMEZONE = pytz.timezone("Europe/Bratislava")
-LOG_FILE_PATH = "telegram_log.txt"
-EXPORT_PATH = "data/tp_performance.csv"
-TP_LOG_FILE = "data/tp_performance.csv"
+LOG_FILE_PATH = str(Path("bots", "BinanceBot", "telegram_log.txt"))
+EXPORT_PATH = str(Path("c:/Bots/BinanceBot/data/tp_performance.csv"))
+TP_LOG_FILE = str(Path("c:/Bots/BinanceBot/data/tp_performance.csv"))
+
+# Проверка существования файла
+if not Path(TP_LOG_FILE).exists():
+    raise FileNotFoundError(f"TP_LOG_FILE not found at: {TP_LOG_FILE}")
+else:
+    print(f"TP_LOG_FILE found at: {TP_LOG_FILE}")
 
 # --- Logging ---
 LOG_LEVEL = "DEBUG"  # Уровень логирования: "INFO", "DEBUG", "ERROR"
@@ -27,13 +55,11 @@ LOG_SCORE_EVERYWHERE = False  # NEW: Allow score logging in REAL_RUN if True
 
 # --- Mode & Debug ---
 DRY_RUN = False
-# VERBOSE = DRY_RUN
 VERBOSE = True
 USE_DYNAMIC_IN_DRY_RUN = True
 ADAPTIVE_SCORE_ENABLED = True
 
-
-# --- Symbols & Leverage (fallback) ---
+# --- Symbols & Leverage ---
 SYMBOLS_ACTIVE = [
     "DOGE/USDC",
     "BTC/USDC",
@@ -46,7 +72,6 @@ SYMBOLS_ACTIVE = [
     "LINK/USDC",
     "ARB/USDC",
 ]
-
 
 FIXED_PAIRS = ["BTC/USDC", "ETH/USDC", "XRP/USDC", "ADA/USDC", "SOL/USDC"]
 MAX_DYNAMIC_PAIRS = 30
@@ -66,22 +91,22 @@ LEVERAGE_MAP = {
 }
 
 # --- TP / SL Strategy ---
+TP1_SHARE = 1.0
+TP2_SHARE = 0.0
+TP1_PERCENT = 0.005  # 0.5%
+TP2_PERCENT = 0.01  # 1%
+SL_PERCENT = 0.007  # мягкий
+SOFT_EXIT_THRESHOLD = 0.8  # быстрее сработает частичный выход
+
+# Для возвращения к нормальному флоу после теста
 # TP1_PERCENT = 0.007
 # TP1_PERCENT = 0.02  # Временно увеличено для теста
 # TP2_PERCENT = 0.013
 # TP1_SHARE = 0.7
 # TP2_SHARE = 0.3
 # SL_PERCENT = 0.01
-
-TP1_SHARE = 1.0
-TP2_SHARE = 0.0
 # TP_SL_MULTIPLIER = 1.2
-
-TP1_PERCENT = 0.005  # 0.5%
-TP2_PERCENT = 0.01  # 1%
-SL_PERCENT = 0.007  # мягкий
-SOFT_EXIT_THRESHOLD = 0.8  # быстрее сработает частичный выход
-
+# SOFT_EXIT_THRESHOLD = 0.9  # 90% от TP1
 
 # --- Risk Management ---
 AGGRESSIVENESS_THRESHOLD = 0.6  # Порог для определения AGGRESSIVE режима
@@ -92,11 +117,10 @@ MAX_HOLD_MINUTES = 90
 RISK_DRAWDOWN_THRESHOLD = 5.0
 
 # Фиксированные параметры для теста
-# RISK_PERCENT = 0.01  # 1% риска на сделку для теста (0,44 USD для депозита 44 USD)
-# MAX_POSITIONS = 1  # Максимум 1 сделка для теста
+MAX_POSITIONS = 1
+RISK_PERCENT = 0.01
 
-
-# Функции для автоматизации (будут использоваться после теста)
+# Функции для автоматизации (будут использоваться после теста для нормального флоу)
 # def get_adaptive_risk_percent(balance):
 #     """Calculate adaptive risk percentage based on balance."""
 #     if balance < 100:
@@ -107,7 +131,6 @@ RISK_DRAWDOWN_THRESHOLD = 5.0
 #         return 0.03  # 3%
 #     else:
 #         return 0.05  # 5%
-
 
 # def get_max_positions(balance):
 #     """Calculate maximum number of positions based on balance."""
@@ -120,31 +143,55 @@ RISK_DRAWDOWN_THRESHOLD = 5.0
 #     else:
 #         return 5  # 5 сделок
 
-
-# RISK_PERCENT = get_adaptive_risk_percent(balance)
-# MAX_POSITIONS = get_max_positions(balance)
-
-RISK_PERCENT = None
-MAX_POSITIONS = None
-
-
-# --- Entry Filter Thresholds (fallback / default) ---
+# --- Entry Filter Thresholds ---
 ATR_THRESHOLD = 0.0015
 ADX_THRESHOLD = 7
 BB_WIDTH_THRESHOLD = 0.008
 
+FILTER_THRESHOLDS = {
+    "default": {"atr": 0.00002, "adx": 0.1, "bb": 0.0002},
+    "default_light": {"atr": 0.00001, "adx": 0.05, "bb": 0.0001},
+    "BTC/USDC": {"atr": 0.00002, "adx": 0.1, "bb": 0.0002},
+    "DOGE/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "ETH/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "BNB/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "ADA/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "XRP/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "SOL/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "SUI/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "LINK/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+    "ARB/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
+}
+
+# Для возвращения к нормальному флоу после теста
+# FILTER_THRESHOLDS = {
+#     "default": {"atr": 0.0015, "adx": 7, "bb": 0.008},  # Для депозита ≥ 100 USDC
+#     "default_light": {"atr": 0.001, "adx": 5, "bb": 0.006},  # Для депозита < 100 USDC
+#     "BTC/USDC": {"atr": 0.002, "adx": 10, "bb": 0.01},
+#     "DOGE/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "ETH/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "BNB/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "ADA/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "XRP/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "SOL/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "SUI/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "LINK/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+#     "ARB/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
+# }
+
 # --- Volatility Filter ---
+VOLATILITY_SKIP_ENABLED = False  # Отключено для теста
+VOLATILITY_ATR_THRESHOLD = 0.00005  # Уменьшено для теста
+VOLATILITY_RANGE_THRESHOLD = 0.0005  # Уменьшено для теста
+DRY_RUN_VOLATILITY_ATR_THRESHOLD = 0.0025
+DRY_RUN_VOLATILITY_RANGE_THRESHOLD = 0.0075
+
+# Для возвращения к нормальному флоу после теста
 # VOLATILITY_SKIP_ENABLED = True
 # VOLATILITY_ATR_THRESHOLD = 0.0012
 # VOLATILITY_RANGE_THRESHOLD = 0.015
 # DRY_RUN_VOLATILITY_ATR_THRESHOLD = 0.0025
 # DRY_RUN_VOLATILITY_RANGE_THRESHOLD = 0.0075
-
-VOLATILITY_SKIP_ENABLED = False  # Отключено для теста
-VOLATILITY_ATR_THRESHOLD = 0.00005  # Уменьшено ещё больше для теста
-VOLATILITY_RANGE_THRESHOLD = 0.0005  # Уменьшено ещё больше для теста
-DRY_RUN_VOLATILITY_ATR_THRESHOLD = 0.0025
-DRY_RUN_VOLATILITY_RANGE_THRESHOLD = 0.0075
 
 # --- Daily Loss Protection ---
 DAILY_PROTECTION_ENABLED = True
@@ -156,9 +203,17 @@ ENABLE_TRAILING = True
 TRAILING_PERCENT = 0.02
 ENABLE_BREAKEVEN = True
 BREAKEVEN_TRIGGER = 0.5
+SOFT_EXIT_ENABLED = True
+SOFT_EXIT_SHARE = 0.5  # Закрываем 50% позиции
+
+# Auto TP/SL Adjustments
+AUTO_TP_SL_ENABLED = True
+FLAT_ADJUSTMENT = 0.7
+TREND_ADJUSTMENT = 1.3
+ADX_TREND_THRESHOLD = 20
+ADX_FLAT_THRESHOLD = 15
 
 # --- Signal Strength Control ---
-# MIN_TRADE_SCORE = 2
 MIN_TRADE_SCORE = 0
 SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
@@ -189,57 +244,6 @@ trade_stats = {
     "api_errors": 0,
 }
 
-# --- Exchange ---
-exchange = ccxt.binance(
-    {
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "future",
-            "adjustForTimeDifference": True,
-        },
-        "urls": {
-            "api": {
-                "public": "https://fapi.binance.com/fapi/v1",
-                "private": "https://fapi.binance.com/fapi/v1",
-            }
-        },
-    }
-)
-
-# --- Auto-learned Entry Filter Thresholds ---
-# FILTER_THRESHOLDS = {
-#     "default": {"atr": 0.0015, "adx": 7, "bb": 0.008},  # Для депозита ≥ 100 USDC
-#     "default_light": {"atr": 0.001, "adx": 5, "bb": 0.006},  # Для депозита < 100 USDC
-#     "BTC/USDC": {"atr": 0.002, "adx": 10, "bb": 0.01},
-#     "DOGE/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "ETH/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "BNB/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "ADA/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "XRP/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "SOL/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "SUI/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "LINK/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-#     "ARB/USDC": {"atr": 0.0015, "adx": 7, "bb": 0.008},
-# }
-
-FILTER_THRESHOLDS = {
-    "default": {"atr": 0.00002, "adx": 0.1, "bb": 0.0002},
-    "default_light": {"atr": 0.00001, "adx": 0.05, "bb": 0.0001},
-    "BTC/USDC": {"atr": 0.00002, "adx": 0.1, "bb": 0.0002},
-    "DOGE/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "ETH/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "BNB/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "ADA/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "XRP/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "SOL/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "SUI/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "LINK/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-    "ARB/USDC": {"atr": 0.000015, "adx": 0.08, "bb": 0.00015},
-}
-
-
 # --- IP Monitoring ---
 ROUTER_REBOOT_MODE_TIMEOUT_MINUTES = 30
 IP_MONITOR_INTERVAL_SECONDS = 180
@@ -256,26 +260,8 @@ TP_ML_MIN_TRADES_FULL = 20
 TP_ML_THRESHOLD = 0.05  # 5% преимущество
 TP_ML_SWITCH_THRESHOLD = 0.05
 
-# --- Strategy Toggles ---
-ENABLE_TRAILING = True
-TRAILING_PERCENT = 0.02
-ENABLE_BREAKEVEN = True
-BREAKEVEN_TRIGGER = 0.5
-SOFT_EXIT_ENABLED = True  # Включаем Soft Exit
-# SOFT_EXIT_THRESHOLD = 0.9  # 90% от TP1  временно закомментировал для first real run
-SOFT_EXIT_SHARE = 0.5  # Закрываем 50% позиции
-
-# Auto TP/SL Adjustments
-AUTO_TP_SL_ENABLED = True
-FLAT_ADJUSTMENT = 0.7
-TREND_ADJUSTMENT = 1.3
-ADX_TREND_THRESHOLD = 20
-ADX_FLAT_THRESHOLD = 15
-
-# config.py (добавить в конец файла)
-
+# --- Fees & Profit ---
 TAKER_FEE_RATE = 0.0001  # 0.01% для тейкера
-# MIN_NET_PROFIT = {50: 0.3, 100: 0.5, 500: 1.0, "max": 2.0}
 MIN_NET_PROFIT = {50: 0.13, 100: 0.3, 500: 1.0, "max": 2.0}  # Смягчено для теста
 
 
