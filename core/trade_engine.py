@@ -22,9 +22,9 @@ from config import (
     TAKER_FEE_RATE,
     TP1_PERCENT,  # Добавляем импорт
     TP2_PERCENT,  # Добавляем импорт
-    exchange,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
+from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
 from core.tp_utils import calculate_tp_levels  # Переносим сюда
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result

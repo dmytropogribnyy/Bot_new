@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from threading import Lock
 
-import ccxt
 import pytz
 from dotenv import load_dotenv
 
@@ -18,28 +17,29 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ALLOWED_USER_ID = 383821734
 
-# --- Exchange ---
-exchange = ccxt.binance(
-    {
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "future",
-            "adjustForTimeDifference": True,
-        },
-        "urls": {
-            "api": {
-                "public": "https://fapi.binance.com/fapi/v1",
-                "private": "https://fapi.binance.com/fapi/v1",
-            }
-        },
-    }
-)
+# --- Exchange --- Уже определено в файле exchange_init.py
+# exchange = ccxt.binance(
+#     {
+#         "apiKey": API_KEY,
+#         "secret": API_SECRET,
+#         "enableRateLimit": True,
+#         "options": {
+#             "defaultType": "future",
+#             "adjustForTimeDifference": True,
+#         },
+#         "urls": {
+#             "api": {
+#                 "public": "https://fapi.binance.com/fapi/v1",
+#                 "private": "https://fapi.binance.com/fapi/v1",
+#             }
+#         },
+#     }
+# )
 
 # --- Timezone & Paths ---
 TIMEZONE = pytz.timezone("Europe/Bratislava")
-LOG_FILE_PATH = str(Path("bots", "BinanceBot", "telegram_log.txt"))
+# config.py
+LOG_FILE_PATH = str(Path("c:/Bots/BinanceBot/telegram_log.txt"))
 EXPORT_PATH = str(Path("c:/Bots/BinanceBot/data/tp_performance.csv"))
 TP_LOG_FILE = str(Path("c:/Bots/BinanceBot/data/tp_performance.csv"))
 

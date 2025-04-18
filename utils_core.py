@@ -4,7 +4,8 @@ import time
 from datetime import datetime
 from threading import Lock
 
-from config import LEVERAGE_MAP, SYMBOLS_ACTIVE, exchange
+from config import LEVERAGE_MAP, SYMBOLS_ACTIVE
+from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
 from utils_logging import log
 
 STATE_FILE = "data/bot_state.json"

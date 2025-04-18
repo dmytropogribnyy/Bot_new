@@ -9,10 +9,10 @@ from config import (
     DRY_RUN,
     EXPORT_PATH,
     LOG_LEVEL,
-    exchange,
     trade_stats,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
+from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands

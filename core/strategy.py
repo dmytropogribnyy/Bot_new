@@ -16,9 +16,9 @@ from config import (
     VOLATILITY_ATR_THRESHOLD,
     VOLATILITY_RANGE_THRESHOLD,
     VOLATILITY_SKIP_ENABLED,
-    exchange,
     get_min_net_profit,
 )
+from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
 from core.order_utils import calculate_order_quantity
 from core.risk_utils import get_adaptive_risk_percent
 from core.score_evaluator import calculate_score, get_adaptive_min_score

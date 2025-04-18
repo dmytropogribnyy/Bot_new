@@ -8,8 +8,8 @@ import pandas as pd
 from config import (
     DRY_RUN,
     FIXED_PAIRS,
-    exchange,
 )
+from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, safe_call_retry  # Добавлен импорт safe_call_retry
 from utils_logging import log
