@@ -46,7 +46,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 log(f"⚠️ Skipping {symbol} — fetch_data returned None", level="WARNING")
                 return None
 
-            result = should_enter_trade(symbol, df, None, last_trade_times, lock)
+            result = should_enter_trade(symbol, df, exchange, last_trade_times, lock)
             if result is None:
                 log(f"❌ No signal for {symbol}", level="DEBUG")
                 return None

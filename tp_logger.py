@@ -157,11 +157,21 @@ def get_trade_stats():
     if not os.path.exists(EXPORT_PATH):
         return 0, 0.0
     try:
+        # Read CSV, skip rows with invalid date formats
         df = pd.read_csv(EXPORT_PATH)
+        # Filter rows where 'Date' matches the expected format
+        df = df[df["Date"].str.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", na=False)]
+        if df.empty:
+            log("[INFO] No valid trade records found in tp_performance.csv", level="INFO")
+            return 0, 0.0
+        # Parse dates, coercing errors to NaT and dropping invalid rows
+        df["Date"] = pd.to_datetime(df["Date"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+        df = df.dropna(subset=["Date"])
+        # Filter valid trade results
         df = df[df["Result"].isin(["TP1", "TP2", "SL"])]
         total = len(df)
         win = len(df[df["Result"].isin(["TP1", "TP2"])])
         return total, (win / total) if total else 0.0
     except Exception as e:
-        log(f"[ERROR] Failed to read trade stats: {e}")
+        log(f"[ERROR] Failed to read trade stats: {e}", level="INFO")
         return 0, 0.0

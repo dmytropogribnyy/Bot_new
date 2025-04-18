@@ -125,10 +125,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     utc_now = datetime.utcnow()
     balance = get_cached_balance()
     position_size = get_position_size(symbol)
-    has_long_position = position_size > 0
-    has_short_position = position_size < 0
 
-    # Calculate available margin
+    # Calculate available margin (already done in symbol_processor.py, but kept for scoring logic)
     balance_info = exchange.fetch_balance()
     margin_info = balance_info["info"]
     total_margin_balance = float(margin_info.get("totalMarginBalance", 0))
@@ -184,9 +182,6 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     if DRY_RUN:
         min_required *= 0.3
         log(f"{symbol} 🔎 Final Score: {score:.2f} / (Required: {min_required:.4f})")
-
-    if has_long_position or has_short_position or available_margin < 10:
-        score -= 0.5
 
     if score < min_required:
         if DRY_RUN:
