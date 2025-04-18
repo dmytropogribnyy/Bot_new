@@ -27,7 +27,20 @@ def process_symbol(symbol, balance, last_trade_times, lock):
 
             # Check available margin
             balance_info = exchange.fetch_balance()
-            available_margin = float(balance_info["info"]["availableMargin"])
+            margin_info = balance_info["info"]
+            total_margin_balance = float(margin_info.get("totalMarginBalance", 0))
+            position_initial_margin = float(margin_info.get("totalPositionInitialMargin", 0))
+            open_order_initial_margin = float(margin_info.get("totalOpenOrderInitialMargin", 0))
+            available_margin = (
+                total_margin_balance - position_initial_margin - open_order_initial_margin
+            )
+            if available_margin <= 0:
+                log(
+                    f"⚠️ Skipping {symbol} — no available margin (total: {total_margin_balance:.2f}, positions: {position_initial_margin:.2f}, orders: {open_order_initial_margin:.2f})",
+                    level="ERROR",
+                )
+                return None
+
             df = fetch_data(symbol)
             if df is None:
                 log(f"⚠️ Skipping {symbol} — fetch_data returned None", level="WARNING")
