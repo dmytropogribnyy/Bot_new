@@ -106,9 +106,9 @@ def get_market_regime(symbol):
             exchange.fetch_ohlcv, symbol, timeframe="15m", limit=50, label=f"fetch_ohlcv {symbol}"
         )
         log(f"{symbol} 🔍 Fetched {len(ohlcv)} candles for timeframe 15m", level="DEBUG")
-        if len(ohlcv) < 14:
+        if not ohlcv or len(ohlcv) < 28:  # 14 periods for ADX + buffer
             log(
-                f"{symbol} ⚠️ Insufficient data: only {len(ohlcv)} candles available, need at least 14 for ADX",
+                f"{symbol} ⚠️ Insufficient data: only {len(ohlcv) if ohlcv else 0} candles available, need at least 28 for ADX",
                 level="WARNING",
             )
             return "neutral"
@@ -117,7 +117,14 @@ def get_market_regime(symbol):
         lows = [c[3] for c in ohlcv]
         closes = [c[4] for c in ohlcv]
         df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
-        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
+        adx_series = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
+        if len(adx_series) < 1 or adx_series.isna().all():
+            log(
+                f"{symbol} ⚠️ ADX calculation failed: insufficient data after processing",
+                level="WARNING",
+            )
+            return "neutral"
+        adx = adx_series.iloc[-1]
 
         log(f"{symbol} 🔍 Market regime: ADX = {adx:.2f}", level="DEBUG")
         if adx > ADX_TREND_THRESHOLD:
@@ -371,30 +378,36 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
     try:
         timeframe = "15m"
-        limit = 15
+        limit = 50  # Increase limit to ensure enough data for ADX (14 periods + buffer)
         ohlcv = safe_call_retry(
             exchange.fetch_ohlcv, symbol, timeframe, limit=limit, label=f"fetch_ohlcv {symbol}"
         )
-        if not ohlcv or len(ohlcv) < 14:
+        if not ohlcv or len(ohlcv) < 28:  # 14 periods for ADX + buffer for calculation
             log(
-                f"[ERROR] Insufficient data for trailing stop for {symbol}: {len(ohlcv)} candles",
-                level="ERROR",
+                f"[WARNING] Insufficient data for trailing stop for {symbol}: {len(ohlcv)} candles, need at least 28",
+                level="WARNING",
             )
-            trailing_distance = entry_price * 0.02
+            trailing_distance = entry_price * 0.02  # Fallback to default
         else:
             highs = [c[2] for c in ohlcv]
             lows = [c[3] for c in ohlcv]
             closes = [c[4] for c in ohlcv]
-            atr = max([h - low for h, low in zip(highs, lows)])
             df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
-            adx = (
-                ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
-            )
-            multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
-            if adx > 25:
-                multiplier *= 0.7
-            trailing_distance = atr * multiplier
-            log(f"{symbol} 📐 ADX: {adx:.1f}, Trailing distance: {trailing_distance:.5f}")
+            atr = max([h - low for h, low in zip(highs, lows)])
+            adx_series = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
+            if len(adx_series) < 1 or adx_series.isna().all():
+                log(
+                    f"[WARNING] ADX calculation failed for {symbol}: insufficient data after processing",
+                    level="WARNING",
+                )
+                trailing_distance = entry_price * 0.02  # Fallback to default
+            else:
+                adx = adx_series.iloc[-1]
+                multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
+                if adx > 25:
+                    multiplier *= 0.7
+                trailing_distance = atr * multiplier
+                log(f"{symbol} 📐 ADX: {adx:.1f}, Trailing distance: {trailing_distance:.5f}")
     except Exception as e:
         log(f"[ERROR] Trailing init fallback: {e}", level="ERROR")
         trailing_distance = entry_price * 0.02
