@@ -5,7 +5,7 @@ from datetime import datetime
 from threading import Lock
 
 from config import LEVERAGE_MAP, SYMBOLS_ACTIVE
-from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
+from core.exchange_init import exchange
 from utils_logging import log
 
 STATE_FILE = "data/bot_state.json"
@@ -72,9 +72,15 @@ def get_cached_balance():
             or api_cache["balance"]["value"] is None
         ):
             try:
-                log("Fetching balance from exchange...", level="DEBUG")
-                api_cache["balance"]["value"] = exchange.fetch_balance()["total"]["USDC"]
-                log(f"Fetched balance: {api_cache['balance']['value']}", level="DEBUG")
+                log("[DEBUG] Fetching balance from exchange...")
+                balance_info = exchange.fetch_balance()
+                log(f"[DEBUG] Full balance response: {balance_info}", level="DEBUG")
+                total_margin_balance = float(balance_info["info"].get("totalMarginBalance", 0))
+                log(
+                    f"[DEBUG] Fetched balance (totalMarginBalance): {total_margin_balance}",
+                    level="DEBUG",
+                )
+                api_cache["balance"]["value"] = total_margin_balance
                 api_cache["balance"]["timestamp"] = now
                 log(
                     f"Updated balance cache: {api_cache['balance']['value']} USDC",
@@ -219,7 +225,7 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
 
 def set_leverage_for_symbols():
     for symbol in SYMBOLS_ACTIVE:
-        leverage = LEVERAGE_MAP.get(symbol, 5)  # По умолчанию 5x
+        leverage = LEVERAGE_MAP.get(symbol, 5)
         safe_call_retry(
             exchange.set_leverage,
             leverage,
