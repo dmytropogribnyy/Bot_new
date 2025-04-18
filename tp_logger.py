@@ -19,16 +19,17 @@ def ensure_log_exists():
                     "Side",
                     "Entry Price",
                     "Exit Price",
+                    "Qty",
                     "TP1 Hit",
                     "TP2 Hit",
                     "SL Hit",
                     "PnL (%)",
                     "Result",
                     "Held (min)",
-                    "atr",
-                    "adx",
-                    "bb_width",
-                    "price",
+                    "HTF Confirmed",
+                    "ATR",
+                    "ADX",
+                    "BB Width",
                 ]
             )
 
@@ -49,9 +50,14 @@ def log_trade_result(
     adx,
     bb_width,
 ):
+    # Log to console even in DRY_RUN for debugging
+    log(
+        f"[{'DRY_RUN' if DRY_RUN else 'REAL_RUN'}] Logging trade for {symbol}, PnL: {round(pnl_percent, 2)}%",
+        level="INFO",
+    )
+
     if DRY_RUN:
-        log(f"[DRY_RUN] Skipping TP log for {symbol}, PnL: {round(pnl_percent, 2)}%", level="INFO")
-        return
+        return  # Skip file write in DRY_RUN, but log to console
 
     date_str = now_with_timezone().strftime("%Y-%m-%d %H:%M:%S")
     row = [
@@ -65,6 +71,7 @@ def log_trade_result(
         tp2_hit,
         sl_hit,
         round(pnl_percent, 2),
+        "TP1" if tp1_hit else "TP2" if tp2_hit else "SL" if sl_hit else "MANUAL",
         duration_minutes,
         htf_confirmed,
         round(atr, 6),
@@ -73,69 +80,50 @@ def log_trade_result(
     ]
 
     try:
-        # Save main TP log
-        file_exists = os.path.isfile(TP_LOG_FILE)
-        with open(TP_LOG_FILE, mode="a", newline="") as file:
-            writer = csv.writer(file)
-            if not file_exists:
-                writer.writerow(
-                    [
-                        "Date",
-                        "Symbol",
-                        "Direction",
-                        "Entry Price",
-                        "Exit Price",
-                        "Qty",
-                        "TP1 Hit",
-                        "TP2 Hit",
-                        "SL Hit",
-                        "PnL (%)",
-                        "Duration (min)",
-                        "HTF Confirmed",
-                        "ATR",
-                        "ADX",
-                        "BB Width",
-                    ]
-                )
-            writer.writerow(row)
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(TP_LOG_FILE), exist_ok=True)
 
-        # Save summary/export log
-        file_exists = os.path.isfile(EXPORT_PATH)
-        with open(EXPORT_PATH, mode="a", newline="") as file:
-            writer = csv.writer(file)
-            if not file_exists:
-                writer.writerow(
-                    [
-                        "Date",
-                        "Symbol",
-                        "Direction",
-                        "Entry Price",
-                        "Exit Price",
-                        "Qty",
-                        "TP1 Hit",
-                        "TP2 Hit",
-                        "SL Hit",
-                        "PnL (%)",
-                        "Duration (min)",
-                        "HTF Confirmed",
-                        "ATR",
-                        "ADX",
-                        "BB Width",
-                    ]
-                )
-            writer.writerow(row)
+        # Write to TP_LOG_FILE and EXPORT_PATH
+        for path in [TP_LOG_FILE, EXPORT_PATH]:
+            file_exists = os.path.isfile(path)
+            with open(path, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                if not file_exists:
+                    writer.writerow(
+                        [
+                            "Date",
+                            "Symbol",
+                            "Side",
+                            "Entry Price",
+                            "Exit Price",
+                            "Qty",
+                            "TP1 Hit",
+                            "TP2 Hit",
+                            "SL Hit",
+                            "PnL (%)",
+                            "Result",
+                            "Held (min)",
+                            "HTF Confirmed",
+                            "ATR",
+                            "ADX",
+                            "BB Width",
+                        ]
+                    )
+                writer.writerow(row)
 
         log(
-            f"[REAL_RUN] Logged TP result for {symbol}, PnL: {round(pnl_percent, 2)}%", level="INFO"
+            f"[REAL_RUN] Logged TP result for {symbol}, PnL: {round(pnl_percent, 2)}% to {TP_LOG_FILE}",
+            level="INFO",
         )
 
     except Exception as e:
         log(f"[TP Logger] Failed to log trade for {symbol}: {e}", level="ERROR")
+        from telegram.telegram_utils import send_telegram_message
+
+        send_telegram_message(f"❌ Failed to log trade for {symbol}: {str(e)}", force=True)
 
 
 def get_last_trade():
-    import pandas as pd
-
     if not os.path.exists(EXPORT_PATH):
         return None
     try:
@@ -149,8 +137,6 @@ def get_last_trade():
 
 
 def get_human_summary_line():
-    import pandas as pd
-
     if not os.path.exists(EXPORT_PATH):
         return "No trade data."
     try:

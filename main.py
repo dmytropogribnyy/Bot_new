@@ -1,10 +1,13 @@
+# main.py (continued)
 import threading
 import time
 from datetime import datetime
 
-from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, VERBOSE
+from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, MAX_POSITIONS, VERBOSE
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
+from core.exchange_init import exchange
+from core.trade_engine import close_real_trade
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
 from pair_selector import select_active_symbols, start_symbol_rotation
@@ -23,7 +26,7 @@ from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
-from utils_core import load_state, save_state
+from utils_core import initialize_cache, load_state, save_state
 from utils_logging import log
 
 
@@ -32,10 +35,27 @@ def load_symbols():
 
 
 def start_trading_loop():
-    import config  # noqa: F401
     from config import RUNNING
 
-    # ✅ Всегда сбрасываем флаги при старте ран
+    # Initialize cache
+    initialize_cache()
+
+    # Check and close excess positions at startup
+    positions = exchange.fetch_positions()
+    active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
+    if active_positions > MAX_POSITIONS:
+        log(
+            f"[Startup] Found {active_positions} positions, but MAX_POSITIONS is {MAX_POSITIONS}. Closing excess positions...",
+            level="INFO",
+        )
+        for pos in positions:
+            if float(pos.get("contracts", 0)) != 0:
+                symbol = pos["symbol"]
+                close_real_trade(symbol)
+                active_positions -= 1
+                if active_positions <= MAX_POSITIONS:
+                    break
+
     state = load_state()
     state["stopping"] = False
     state["shutdown"] = False
@@ -44,7 +64,6 @@ def start_trading_loop():
     mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
-    # 🎯 Отображаем стратегическое смещение на основе score
     score = round(get_aggressiveness_score(), 2)
     if score >= 0.75:
         bias = "🔥 HIGH"
@@ -71,7 +90,6 @@ def start_trading_loop():
         while RUNNING:
             state = load_state()
 
-            # 🛑 Shutdown
             if state.get("shutdown"):
                 open_trades = state.get("open_trades", [])
                 if not open_trades:
@@ -83,17 +101,13 @@ def start_trading_loop():
                     send_telegram_message(
                         "✅ Shutdown complete. No open trades. Exiting...", force=True
                     )
-
                     state["stopping"] = False
                     state["shutdown"] = False
                     save_state(state)
-
                     break
 
-            # 🟡 Stop
             if state.get("stopping"):
                 open_trades = state.get("open_trades", [])
-
                 if DRY_RUN:
                     from core.trade_engine import trade_manager
 
@@ -113,7 +127,6 @@ def start_trading_loop():
                 continue
 
             current_group = symbol_groups[current_group_index]
-
             state = load_state()
             if state.get("stopping"):
                 log("[Main] Stopping detected before trading cycle...", level="INFO")
@@ -124,7 +137,6 @@ def start_trading_loop():
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
 
-        # 🛑 Graceful shutdown завершён
         log(
             "[Main] RUNNING = False detected. Graceful shutdown triggered.",
             important=True,
@@ -229,6 +241,4 @@ if __name__ == "__main__":
         target=start_report_loops,
         daemon=True,
     ).start()
-
     start_trading_loop()
-    # checkpoint
