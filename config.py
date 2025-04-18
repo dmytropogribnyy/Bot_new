@@ -61,21 +61,34 @@ ADAPTIVE_SCORE_ENABLED = True
 
 # --- Symbols & Leverage ---
 SYMBOLS_ACTIVE = [
-    "DOGE/USDC",
     "BTC/USDC",
     "ETH/USDC",
-    "BNB/USDC",
-    "ADA/USDC",
     "XRP/USDC",
+    "ADA/USDC",
     "SOL/USDC",
-    "SUI/USDC",
+    "BNB/USDC",
     "LINK/USDC",
     "ARB/USDC",
+    "DOGE/USDC",
+    "SUI/USDC",
 ]
 
-FIXED_PAIRS = ["BTC/USDC", "ETH/USDC", "XRP/USDC", "ADA/USDC", "SOL/USDC"]
-MAX_DYNAMIC_PAIRS = 30
-MIN_DYNAMIC_PAIRS = 15
+FIXED_PAIRS = [
+    "BTC/USDC",
+    "ETH/USDC",
+    "XRP/USDC",
+    "ADA/USDC",
+    "SOL/USDC",
+    "BNB/USDC",
+    "LINK/USDC",
+    "ARB/USDC",
+    "DOGE/USDC",
+    "SUI/USDC",
+]
+# MAX_DYNAMIC_PAIRS = 30
+# MIN_DYNAMIC_PAIRS = 15
+MAX_DYNAMIC_PAIRS = 0
+MIN_DYNAMIC_PAIRS = 0
 
 LEVERAGE_MAP = {
     "DOGE/USDC": 10,

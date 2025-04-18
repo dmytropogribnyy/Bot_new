@@ -8,6 +8,8 @@ import pandas as pd
 from config import (
     DRY_RUN,
     FIXED_PAIRS,
+    MAX_DYNAMIC_PAIRS,
+    MIN_DYNAMIC_PAIRS,
 )
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
@@ -109,14 +111,19 @@ def calculate_volatility(df):
 
 
 def select_active_symbols():
-    balance = get_cached_balance()
+    # Use config values for dynamic pair counts
+    min_dynamic = MIN_DYNAMIC_PAIRS
+    max_dynamic = MAX_DYNAMIC_PAIRS
 
-    if balance < 100:
-        min_dynamic = 5
-        max_dynamic = 5
-    else:
-        min_dynamic = 10
-        max_dynamic = 25
+    # Adjust dynamic pair counts based on balance if dynamic selection is enabled
+    if max_dynamic > 0:  # Only apply balance logic if dynamic pairs are allowed
+        balance = get_cached_balance()
+        if balance < 100:
+            min_dynamic = min(min_dynamic, 5)  # Cap at 5 for small balances
+            max_dynamic = min(max_dynamic, 5)
+        else:
+            min_dynamic = min(min_dynamic, 10)
+            max_dynamic = min(max_dynamic, 25)
 
     all_symbols = fetch_all_symbols()
     symbol_data = {}
