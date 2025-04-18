@@ -116,9 +116,12 @@ MIN_NOTIONAL = 5
 MAX_HOLD_MINUTES = 90
 RISK_DRAWDOWN_THRESHOLD = 5.0
 
+MAX_OPEN_ORDERS = 10  # Limit TP/SL orders per symbol
+
 # Фиксированные параметры для теста
-MAX_POSITIONS = 1
-RISK_PERCENT = 0.01
+MAX_POSITIONS = 3
+# RISK_PERCENT = 0.01 #usual value
+RISK_PERCENT = 0.005  # temp value for fix
 
 # Функции для автоматизации (будут использоваться после теста для нормального флоу)
 # def get_adaptive_risk_percent(balance):

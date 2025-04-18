@@ -14,21 +14,22 @@ from config import (
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
+    MAX_OPEN_ORDERS,
     MIN_NOTIONAL,
-    SL_PERCENT,  # Добавляем импорт
+    SL_PERCENT,
     SOFT_EXIT_ENABLED,
     SOFT_EXIT_SHARE,
     SOFT_EXIT_THRESHOLD,
     TAKER_FEE_RATE,
-    TP1_PERCENT,  # Добавляем импорт
-    TP2_PERCENT,  # Добавляем импорт
+    TP1_PERCENT,
+    TP2_PERCENT,
+    exchange,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
-from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
-from core.tp_utils import calculate_tp_levels  # Переносим сюда
+from core.tp_utils import calculate_tp_levels
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
-from utils_core import get_cached_positions, load_state, safe_call_retry
+from utils_core import get_cached_positions, initialize_cache, load_state, safe_call_retry
 from utils_logging import log, now
 
 
@@ -198,7 +199,20 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 open_positions_count -= 1
         return
 
-    # Расчет TP/SL с использованием новой функции
+    # Check MAX_OPEN_ORDERS
+    open_orders = exchange.fetch_open_orders(symbol)
+    if len(open_orders) >= MAX_OPEN_ORDERS:
+        log(
+            f"[TP/SL] Skipping TP/SL for {symbol} — max open orders ({MAX_OPEN_ORDERS}) reached",
+            level="DEBUG",
+        )
+        with open_positions_lock:
+            if DRY_RUN:
+                dry_run_positions_count -= 1
+            else:
+                open_positions_count -= 1
+        return
+
     regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
     tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(
         entry_price, side, regime, score
@@ -207,7 +221,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     qty_tp1 = round(qty * qty_tp1_share, 3)
     qty_tp2 = round(qty * qty_tp2_share, 3)
 
-    # Логирование чистой прибыли на TP1
     gross_profit_tp1 = qty_tp1 * abs(tp1_price - entry_price)
     commission = 2 * (qty * entry_price * TAKER_FEE_RATE)
     net_profit_tp1 = gross_profit_tp1 - commission
@@ -304,6 +317,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 daemon=True,
             ).start()
 
+    # Update position cache
+    initialize_cache()
+
 
 def track_stop_loss(symbol, side, entry_price, qty, opened_at):
     with monitored_stops_lock:
@@ -329,7 +345,11 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
                 "last"
             ]
             if (side == "buy" and price >= trigger) or (side == "sell" and price <= trigger):
-                stop_price = round(entry_price, 4)
+                stop_price = float(round(entry_price, 4))
+                log(
+                    f"[DEBUG] Creating break-even for {symbol} with stop_price: {stop_price}",
+                    level="DEBUG",
+                )
                 safe_call_retry(
                     exchange.create_order,
                     symbol,
@@ -344,28 +364,39 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
                 break
             time.sleep(check_interval)
         except Exception as e:
-            print(f"[ERROR] Break-even error for {symbol}: {e}")
+            log(f"[ERROR] Break-even error for {symbol}: {e}", level="ERROR")
             break
 
 
 def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
     try:
+        timeframe = "15m"
+        limit = 15
         ohlcv = safe_call_retry(
-            exchange.fetch_ohlcv, symbol, timeframe="15m", limit=15, label=f"fetch_ohlcv {symbol}"
+            exchange.fetch_ohlcv, symbol, timeframe, limit=limit, label=f"fetch_ohlcv {symbol}"
         )
-        highs = [c[2] for c in ohlcv]
-        lows = [c[3] for c in ohlcv]
-        closes = [c[4] for c in ohlcv]
-        atr = max([h - low for h, low in zip(highs, lows)])
-        df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
-        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
-        multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
-        if adx > 25:
-            multiplier *= 0.7
-        trailing_distance = atr * multiplier
-        log(f"{symbol} 📐 ADX: {adx:.1f}, Trailing distance: {trailing_distance:.5f}")
+        if not ohlcv or len(ohlcv) < 14:
+            log(
+                f"[ERROR] Insufficient data for trailing stop for {symbol}: {len(ohlcv)} candles",
+                level="ERROR",
+            )
+            trailing_distance = entry_price * 0.02
+        else:
+            highs = [c[2] for c in ohlcv]
+            lows = [c[3] for c in ohlcv]
+            closes = [c[4] for c in ohlcv]
+            atr = max([h - low for h, low in zip(highs, lows)])
+            df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
+            adx = (
+                ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx().iloc[-1]
+            )
+            multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
+            if adx > 25:
+                multiplier *= 0.7
+            trailing_distance = atr * multiplier
+            log(f"{symbol} 📐 ADX: {adx:.1f}, Trailing distance: {trailing_distance:.5f}")
     except Exception as e:
-        log(f"[ERROR] Trailing init fallback: {e}")
+        log(f"[ERROR] Trailing init fallback: {e}", level="ERROR")
         trailing_distance = entry_price * 0.02
 
     highest = entry_price
@@ -410,7 +441,7 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
                     break
             time.sleep(check_interval)
         except Exception as e:
-            print(f"[ERROR] Adaptive trailing error for {symbol}: {e}")
+            log(f"[ERROR] Adaptive trailing error for {symbol}: {e}", level="ERROR")
             break
 
 
@@ -457,7 +488,6 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
 
 
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
-    # Обновлённая логика с двумя счётчиками
     global open_positions_count, dry_run_positions_count
     with open_positions_lock:
         if DRY_RUN:
@@ -477,16 +507,19 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
 
     log_trade_result(
         symbol=symbol,
-        side=side,
+        direction=side.upper(),
         entry_price=entry_price,
         exit_price=exit_price,
+        qty=trade["qty"],
         tp1_hit=trade.get("tp1_hit", False),
         tp2_hit=trade.get("tp2_hit", False),
         sl_hit=(result_type == "sl"),
         pnl_percent=round(pnl, 2),
-        result="WIN" if pnl > 0 else "LOSS",
         duration_minutes=duration,
-        htf_trend=trade.get("htf_trend", False),
+        htf_confirmed=False,
+        atr=0.0,
+        adx=0.0,
+        bb_width=0.0,
     )
 
     msg = (
@@ -522,23 +555,74 @@ def close_real_trade(symbol):
         side = trade["side"]
         entry_price = trade["entry"]
         qty = trade["qty"]
-        exit_price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
-            "last"
-        ]
+        ticker = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")
+        exit_price = ticker["last"]
 
-        if side == "buy":
-            safe_call_retry(
-                exchange.create_market_sell_order, symbol, qty, label=f"close_sell {symbol}"
-            )
-        else:
-            safe_call_retry(
-                exchange.create_market_buy_order, symbol, qty, label=f"close_buy {symbol}"
-            )
+        if not DRY_RUN:
+            if side == "buy":
+                safe_call_retry(
+                    exchange.create_market_sell_order, symbol, qty, label=f"close_sell {symbol}"
+                )
+            else:
+                safe_call_retry(
+                    exchange.create_market_buy_order, symbol, qty, label=f"close_buy {symbol}"
+                )
 
-        record_trade_result(symbol, side, entry_price, exit_price, "smart_switch")
+        # Calculate PnL and duration
+        pnl_percent = (
+            ((exit_price - entry_price) / entry_price * 100)
+            if side == "buy"
+            else ((entry_price - exit_price) / entry_price * 100)
+        )
+        duration = int((time.time() - trade["start_time"].timestamp()) / 60)
+
+        # Log trade result
+        log_trade_result(
+            symbol=symbol,
+            direction=side.upper(),
+            entry_price=entry_price,
+            exit_price=exit_price,
+            qty=qty,
+            tp1_hit=trade.get("tp1_hit", False),
+            tp2_hit=trade.get("tp2_hit", False),
+            sl_hit=False,
+            pnl_percent=pnl_percent,
+            duration_minutes=duration,
+            htf_confirmed=False,
+            atr=0.0,
+            adx=0.0,
+            bb_width=0.0,
+        )
+
         log(f"[SmartSwitch] Closed {symbol} position at {exit_price}", level="INFO")
         trade_manager.set_last_closed_time(symbol, time.time())
+
+        # Cancel open orders
+        open_orders = exchange.fetch_open_orders(symbol)
+        for order in open_orders:
+            exchange.cancel_order(order["id"], symbol)
+            log(f"[Close Trade] Cancelled order {order['id']} for {symbol}", level="INFO")
+
+        # Update position cache
+        initialize_cache()
 
     except Exception as e:
         log(f"[SmartSwitch] Error closing real trade {symbol}: {e}", level="ERROR")
         send_telegram_message(f"❌ Failed to close trade {symbol}: {str(e)}", force=True)
+
+
+def open_real_trade(symbol, direction, qty, entry_price):
+    try:
+        side = "buy" if direction.lower() == "buy" else "sell"
+        order = exchange.create_market_order(symbol, side, qty)
+        log(
+            f"[Open Trade] Opened {direction} position for {symbol}: qty={qty}, entry={entry_price}",
+            level="INFO",
+        )
+
+        # Update position cache
+        initialize_cache()
+        return order
+    except Exception as e:
+        log(f"[Open Trade] Failed for {symbol}: {e}", level="ERROR")
+        raise
