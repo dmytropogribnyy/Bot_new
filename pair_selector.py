@@ -9,9 +9,9 @@ from config import (
     DRY_RUN,
     FIXED_PAIRS,
 )
-from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
+from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, safe_call_retry  # Добавлен импорт safe_call_retry
+from utils_core import get_cached_balance, safe_call_retry
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
@@ -157,8 +157,8 @@ def select_active_symbols():
     return active_symbols
 
 
-def start_symbol_rotation():
-    while True:
+def start_symbol_rotation(stop_event):
+    while not stop_event.is_set():
         try:
             new_symbols = select_active_symbols()
             msg = (

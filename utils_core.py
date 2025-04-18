@@ -74,7 +74,6 @@ def get_cached_balance():
             try:
                 log("[DEBUG] Fetching balance from exchange...")
                 balance_info = exchange.fetch_balance()
-                log(f"[DEBUG] Full balance response: {balance_info}", level="DEBUG")
                 total_margin_balance = float(balance_info["info"].get("totalMarginBalance", 0))
                 log(
                     f"[DEBUG] Fetched balance (totalMarginBalance): {total_margin_balance}",

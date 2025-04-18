@@ -29,6 +29,9 @@ from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import initialize_cache, load_state, save_state
 from utils_logging import log
 
+# Add a global stop event to signal threads to stop
+stop_event = threading.Event()
+
 
 def load_symbols():
     return select_active_symbols()
@@ -87,7 +90,7 @@ def start_trading_loop():
     current_group_index = 0
 
     try:
-        while RUNNING:
+        while RUNNING and not stop_event.is_set():
             state = load_state()
 
             if state.get("shutdown"):
@@ -128,12 +131,12 @@ def start_trading_loop():
 
             current_group = symbol_groups[current_group_index]
             state = load_state()
-            if state.get("stopping"):
+            if state.get("stopping") or stop_event.is_set():
                 log("[Main] Stopping detected before trading cycle...", level="INFO")
                 time.sleep(10)
                 continue
 
-            run_trading_cycle(current_group)
+            run_trading_cycle(current_group, stop_event)  # Pass stop_event
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
 
@@ -149,11 +152,12 @@ def start_trading_loop():
         send_telegram_message(
             "🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode=""
         )
+        stop_event.set()  # Signal all threads to stop
 
 
 def start_report_loops():
     def daily_loop():
-        while True:
+        while not stop_event.is_set():
             t = datetime.now()
             if t.hour == 21 and t.minute == 0:
                 generate_daily_report()
@@ -161,7 +165,7 @@ def start_report_loops():
             time.sleep(10)
 
     def weekly_loop():
-        while True:
+        while not stop_event.is_set():
             t = datetime.now()
             if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
                 send_weekly_report()
@@ -169,7 +173,7 @@ def start_report_loops():
             time.sleep(10)
 
     def extended_reports_loop():
-        while True:
+        while not stop_event.is_set():
             t = datetime.now()
             if t.day == 1 and t.hour == 21 and t.minute == 0:
                 send_monthly_report()
@@ -182,7 +186,7 @@ def start_report_loops():
             time.sleep(10)
 
     def optimizer_loop():
-        while True:
+        while not stop_event.is_set():
             t = datetime.now()
             if t.day % 2 == 0 and t.hour == 21 and t.minute == 30:
                 if should_run_optimizer():
@@ -197,7 +201,7 @@ def start_report_loops():
             time.sleep(10)
 
     def heatmap_loop():
-        while True:
+        while not stop_event.is_set():
             t = datetime.now()
             if t.weekday() == 4 and t.hour == 20 and t.minute == 0:
                 generate_score_heatmap(days=7)
@@ -205,7 +209,7 @@ def start_report_loops():
             time.sleep(10)
 
     def htf_optimizer_loop():
-        while True:
+        while not stop_event.is_set():
             t = datetime.now()
             if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
                 analyze_htf_winrate()
@@ -234,7 +238,7 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
     threading.Thread(
-        target=start_symbol_rotation,
+        target=lambda: start_symbol_rotation(stop_event),  # Pass stop_event
         daemon=True,
     ).start()
     threading.Thread(

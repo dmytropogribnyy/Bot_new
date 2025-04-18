@@ -20,7 +20,7 @@ from core.trade_engine import (
     trade_manager,
 )
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, load_state, set_leverage_for_symbols  # Новый импорт
+from utils_core import get_cached_balance, load_state, set_leverage_for_symbols
 from utils_logging import log
 
 last_trade_times = {}
@@ -63,7 +63,7 @@ def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate):
     return max(1, min(base_limit, 5))
 
 
-def run_trading_cycle(symbols):
+def run_trading_cycle(symbols, stop_event):
     global last_balance, last_check_log_time, last_balance_log_time
     state = load_state()
 
@@ -104,6 +104,10 @@ def run_trading_cycle(symbols):
     smart_switch_count = 0
 
     for symbol in symbols:
+        if stop_event.is_set():
+            log(f"[Trading Cycle] Stop signal received, aborting cycle for {symbol}.", level="INFO")
+            break
+
         try:
             if current_time - last_check_log_time >= 300:
                 log(f"🔍 Checking {symbol}", level="INFO")
