@@ -129,7 +129,8 @@ MIN_NOTIONAL = 5
 MAX_HOLD_MINUTES = 90
 RISK_DRAWDOWN_THRESHOLD = 5.0
 
-MAX_OPEN_ORDERS = 10  # Limit TP/SL orders per symbol
+# MAX_OPEN_ORDERS = 10  # Limit TP/SL orders per symbol
+MAX_OPEN_ORDERS = 3  # Temp for testing
 
 # Фиксированные параметры для теста
 MAX_POSITIONS = 3
@@ -218,6 +219,7 @@ FULL_STOP_THRESHOLD = 0.05
 ENABLE_TRAILING = True
 TRAILING_PERCENT = 0.02
 ENABLE_BREAKEVEN = True
+# ENABLE_BREAKEVEN = False  # Отключено для теста
 BREAKEVEN_TRIGGER = 0.5
 SOFT_EXIT_ENABLED = True
 SOFT_EXIT_SHARE = 0.5  # Закрываем 50% позиции

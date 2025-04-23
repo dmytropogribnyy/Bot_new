@@ -1,9 +1,9 @@
-# main.py (continued)
+# main.py
 import threading
 import time
 from datetime import datetime
 
-from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, MAX_POSITIONS, VERBOSE
+from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, MAX_POSITIONS, RUNNING, VERBOSE
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
 from core.exchange_init import exchange
@@ -21,9 +21,9 @@ from stats import (
     send_yearly_report,
     should_run_optimizer,
 )
-from telegram.telegram_commands import handle_stop, handle_telegram_command
+from telegram.telegram_commands import _initiate_stop, handle_telegram_command  # Обновлённый импорт
 from telegram.telegram_handler import process_telegram_commands
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import send_telegram_message
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import initialize_cache, load_state, save_state
@@ -38,8 +38,6 @@ def load_symbols():
 
 
 def start_trading_loop():
-    from config import RUNNING
-
     # Initialize cache
     initialize_cache()
 
@@ -110,12 +108,9 @@ def start_trading_loop():
                     break
 
             if state.get("stopping"):
-                open_trades = state.get("open_trades", [])
-                if DRY_RUN:
-                    from core.trade_engine import trade_manager
+                from core.trade_engine import trade_manager
 
-                    open_trades = list(trade_manager._trades.values())
-
+                open_trades = list(trade_manager._trades.values())
                 if not open_trades:
                     msg = "[Main] Bot is stopping. No open trades. "
                     msg += (
@@ -124,9 +119,26 @@ def start_trading_loop():
                 else:
                     symbols = [t["symbol"] for t in open_trades]
                     msg = f"[Main] Bot is stopping. Waiting for trades to close: {symbols}"
-
                 log(msg, level="INFO")
                 time.sleep(30)
+                continue
+
+            # Проверка количества позиций перед циклом
+            try:
+                positions = exchange.fetch_positions()
+                active_positions = sum(
+                    1 for pos in positions if float(pos.get("contracts", 0)) != 0
+                )
+                if active_positions >= MAX_POSITIONS:
+                    log(
+                        f"[Main] Max open positions ({MAX_POSITIONS}) reached. Active: {active_positions}. Skipping cycle...",
+                        level="INFO",
+                    )
+                    time.sleep(30)
+                    continue
+            except Exception as e:
+                log(f"[Main] Failed to fetch positions: {e}", level="ERROR")
+                time.sleep(10)
                 continue
 
             current_group = symbol_groups[current_group_index]
@@ -136,7 +148,7 @@ def start_trading_loop():
                 time.sleep(10)
                 continue
 
-            run_trading_cycle(current_group, stop_event)  # Pass stop_event
+            run_trading_cycle(current_group, stop_event)
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
 
@@ -152,7 +164,7 @@ def start_trading_loop():
         send_telegram_message(
             "🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode=""
         )
-        stop_event.set()  # Signal all threads to stop
+        stop_event.set()
 
 
 def start_report_loops():
@@ -194,7 +206,7 @@ def start_report_loops():
                     analyze_and_optimize_tp()
                 else:
                     send_telegram_message(
-                        escape_markdown_v2("Not enough recent trades to optimize (min: 20)"),
+                        "Not enough recent trades to optimize (min: 20)",
                         force=True,
                     )
                 time.sleep(60)
@@ -234,11 +246,13 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
     threading.Thread(
-        target=lambda: start_ip_monitor(handle_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
+        target=lambda: start_ip_monitor(
+            _initiate_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
+        ),
         daemon=True,
     ).start()
     threading.Thread(
-        target=lambda: start_symbol_rotation(stop_event),  # Pass stop_event
+        target=lambda: start_symbol_rotation(stop_event),
         daemon=True,
     ).start()
     threading.Thread(
