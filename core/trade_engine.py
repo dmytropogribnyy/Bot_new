@@ -1,12 +1,12 @@
 # trade_engine.py
+import os
 import threading
 import time
+import traceback
+from threading import Lock
 
 import pandas as pd
 import ta
-import traceback
-
-from threading import Lock
 
 from config import (
     ADX_FLAT_THRESHOLD,
@@ -17,8 +17,11 @@ from config import (
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
+    MAX_MARGIN_PERCENT,  # Добавляем импорт
     MAX_OPEN_ORDERS,
-    MIN_NOTIONAL,
+    MAX_POSITIONS,
+    MIN_NOTIONAL_OPEN,  # Keep this
+    MIN_NOTIONAL_ORDER,  # Keep this
     SL_PERCENT,
     SOFT_EXIT_ENABLED,
     SOFT_EXIT_SHARE,
@@ -32,7 +35,13 @@ from core.exchange_init import exchange
 from core.tp_utils import calculate_tp_levels
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
-from utils_core import get_cached_positions, initialize_cache, load_state, safe_call_retry
+from utils_core import (
+    get_cached_balance,
+    get_cached_positions,
+    initialize_cache,
+    load_state,
+    safe_call_retry,
+)
 from utils_logging import log, now
 
 
@@ -163,8 +172,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         log("Cannot enter trade: bot is stopping.", level="WARNING")
         return
 
-    from config import MAX_POSITIONS
-
     if len(trade_manager._trades) >= MAX_POSITIONS:
         log(f"[Skip] Trade limit reached ({MAX_POSITIONS})", level="INFO")
         return
@@ -210,9 +217,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         leverage = LEVERAGE_MAP.get(symbol, 1)
         adjusted_qty = qty * leverage
 
-        # Ensure notional meets Binance minimums (20 USDC for position, 5 USDC for orders)
-        MIN_NOTIONAL_OPEN = 20  # Binance minimum for opening positions
-        MIN_NOTIONAL_ORDER = 5  # Binance minimum for limit orders
+        # Ensure notional meets Binance minimums (using constants from config)
         notional = adjusted_qty * entry_price
         while notional < MIN_NOTIONAL_OPEN:
             adjusted_qty *= 1.1  # Increase qty until notional is sufficient
@@ -225,6 +230,27 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         if notional < MIN_NOTIONAL_OPEN:
             log(
                 f"{symbol} ⚠️ Notional too small: {notional:.2f} < {MIN_NOTIONAL_OPEN}",
+                level="WARNING",
+            )
+            send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
+            return
+
+        # Check margin against MAX_MARGIN_PERCENT
+        balance = get_cached_balance()
+        max_margin = balance * MAX_MARGIN_PERCENT
+        required_margin = notional / leverage  # Margin = Notional / Leverage
+        if required_margin > max_margin:
+            adjusted_qty = (max_margin * leverage) / entry_price  # Adjust qty to fit margin limit
+            notional = adjusted_qty * entry_price
+            log(
+                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.3f} to meet max margin limit (required: {required_margin:.2f}, max: {max_margin:.2f})",
+                level="DEBUG",
+            )
+
+        # Final check after adjustments
+        if notional < MIN_NOTIONAL_OPEN:
+            log(
+                f"{symbol} ⚠️ Notional too small after adjustment: {notional:.2f} < {MIN_NOTIONAL_OPEN}",
                 level="WARNING",
             )
             send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
@@ -299,6 +325,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                     "sell" if side == "buy" else "buy",
                     qty_tp1,
                     tp1_price,
+                    params={"reduceOnly": True},
                     label=f"create_limit_order TP1 {symbol}",
                 )
             if tp2_price and qty_tp2 > 0:
@@ -308,6 +335,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                     "sell" if side == "buy" else "buy",
                     qty_tp2,
                     tp2_price,
+                    params={"reduceOnly": True},
                     label=f"create_limit_order TP2 {symbol}",
                 )
             safe_call_retry(
@@ -413,6 +441,15 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
             if not trade:
                 log(
                     f"[Break-Even] Trade for {symbol} no longer exists, stopping break-even thread",
+                    level="INFO",
+                )
+                break
+
+            # Check if position is still open
+            position = get_position_size(symbol)
+            if position <= 0:
+                log(
+                    f"[Break-Even] Position for {symbol} closed, stopping break-even thread",
                     level="INFO",
                 )
                 break
@@ -651,8 +688,8 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         level="DEBUG",
     )
 
-    # Check if the trade has already been logged
-    trade_key = f"{symbol}_{result_type}_{entry_price}_{exit_price}"
+    # Check if the trade has already been logged (with rounded exit_price)
+    trade_key = f"{symbol}_{result_type}_{entry_price}_{round(exit_price, 4)}"
     with logged_trades_lock:
         if trade_key in logged_trades:
             log(
@@ -672,6 +709,11 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     if not trade:
         log(f"⚠️ No trade info for {symbol} — cannot record result")
         return
+
+    # Preserve soft_exit_hit if set
+    final_result_type = result_type
+    if trade.get("soft_exit_hit", False) and result_type in ["manual", "stop"]:
+        final_result_type = "soft_exit"
 
     duration = int((time.time() - trade["start_time"].timestamp()) / 60)
     pnl = ((exit_price - entry_price) / entry_price) * 100
@@ -698,11 +740,11 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         atr=0.0,
         adx=0.0,
         bb_width=0.0,
-        result_type=result_type,
+        result_type=final_result_type,  # Use final_result_type
     )
 
     msg = (
-        f"📤 *Trade Closed* [{result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
+        f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
         f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
@@ -821,30 +863,56 @@ def open_real_trade(symbol, direction, qty, entry_price):
         raise
 
 
-def handle_panic():
+def handle_panic(stop_event):  # Добавьте stop_event как аргумент
     global open_positions_count, dry_run_positions_count
     with open_positions_lock:
         open_positions_count = 0
         dry_run_positions_count = 0
 
-    # Close all trades in trade_manager
+    max_retries = 3
+    retry_delay = 5  # seconds
+
     for symbol in list(trade_manager._trades.keys()):
         close_real_trade(symbol)
 
-    # Cancel all open orders on Binance
-    try:
-        positions = exchange.fetch_positions()
-        for pos in positions:
-            symbol = pos["symbol"]
-            open_orders = exchange.fetch_open_orders(symbol)
-            for order in open_orders:
-                exchange.cancel_order(order["id"], symbol)
-                log(f"[Panic] Cancelled order {order['id']} for {symbol}", level="INFO")
-    except Exception as e:
-        log(f"[Panic] Failed to cancel orders: {e}", level="ERROR")
-        send_telegram_message(f"❌ Failed to cancel orders during panic: {e}", force=True)
+    for attempt in range(max_retries):
+        try:
+            positions = exchange.fetch_positions()
+            if not positions:
+                log("[Panic] No positions found on exchange.", level="INFO")
+                break
+            active_positions = [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
+            if not active_positions:
+                log("[Panic] All positions closed.", level="INFO")
+                break
+            for pos in active_positions:
+                symbol = pos["symbol"]
+                open_orders = exchange.fetch_open_orders(symbol)
+                for order in open_orders:
+                    exchange.cancel_order(order["id"], symbol)
+                    log(f"[Panic] Cancelled order {order['id']} for {symbol}", level="INFO")
+                pos_after = exchange.fetch_positions([symbol])[0]
+                if float(pos_after.get("contracts", 0)) > 0:
+                    qty = float(pos_after["contracts"])
+                    side = "sell" if pos_after["side"] == "long" else "buy"
+                    exchange.create_market_order(symbol, side, qty)
+                    log(f"[Panic] Force-closed position for {symbol}: qty={qty}", level="INFO")
+        except Exception as e:
+            log(
+                f"[Panic] Failed to process positions (attempt {attempt + 1}/{max_retries}): {e}",
+                level="ERROR",
+            )
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                send_telegram_message(
+                    f"❌ Failed to close all positions during panic: {e}", force=True
+                )
 
     trade_manager._trades.clear()
     initialize_cache()
     log("Panic close executed: All trades closed, counters reset", level="INFO")
     send_telegram_message("🚨 *Panic Close Executed*:\nAll positions closed.", force=True)
+
+    stop_event.set()
+    os._exit(0)

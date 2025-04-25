@@ -1,4 +1,10 @@
-from config import LEVERAGE_MAP, MAX_POSITIONS, MIN_NOTIONAL, RISK_PERCENT, SL_PERCENT
+from config import (
+    LEVERAGE_MAP,
+    MAX_POSITIONS,
+    MIN_NOTIONAL_OPEN,  # Updated import
+    RISK_PERCENT,
+    SL_PERCENT,
+)
 from core.exchange_init import exchange
 from core.order_utils import calculate_order_quantity
 from core.strategy import fetch_data, should_enter_trade
@@ -67,12 +73,17 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 )
                 return None
 
-            if qty * entry < MIN_NOTIONAL:
-                log(f"⚠️ Notional too low for {symbol} — skipping", level="WARNING")
+            # Check notional requirement for opening a position
+            notional = qty * entry
+            if notional < MIN_NOTIONAL_OPEN:
+                log(
+                    f"⚠️ Notional too low for {symbol} — notional: {notional:.2f}, required: {MIN_NOTIONAL_OPEN:.2f}, skipping",
+                    level="WARNING",
+                )
                 return None
 
             log(
-                f"{symbol} 🔍 Calculated qty: {qty:.3f}, entry: {entry:.2f}, notional: {qty * entry:.2f}",
+                f"{symbol} 🔍 Calculated qty: {qty:.3f}, entry: {entry:.2f}, notional: {notional:.2f}",
                 level="DEBUG",
             )
 

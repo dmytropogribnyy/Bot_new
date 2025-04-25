@@ -144,9 +144,12 @@ SOFT_EXIT_THRESHOLD = 0.8  # быстрее сработает частичны�
 AGGRESSIVENESS_THRESHOLD = 0.6  # Порог для определения AGGRESSIVE режима
 AGGRESSIVE_THRESHOLD = 50
 SAFE_THRESHOLD = 10
-MIN_NOTIONAL = 5
+MIN_NOTIONAL_OPEN = 20  # Binance minimum for opening positions
+MIN_NOTIONAL_ORDER = 5  # Binance minimum for limit orders (e.g., TP orders)
 MAX_HOLD_MINUTES = 90
 RISK_DRAWDOWN_THRESHOLD = 5.0
+
+MAX_MARGIN_PERCENT = 0.02  # 2% депозита на одну сделку
 
 # MAX_OPEN_ORDERS = 10  # Limit TP/SL orders per symbol
 MAX_OPEN_ORDERS = 3  # Temp for testing
@@ -155,7 +158,7 @@ MAX_OPEN_ORDERS = 3  # Temp for testing
 # MAX_POSITIONS = 3
 MAX_POSITIONS = 1  # Temp for testing tp performance
 # RISK_PERCENT = 0.01 #usual value
-RISK_PERCENT = 0.0001  # temp value for fix
+RISK_PERCENT = 0.001  # temp value for fix
 
 # Функции для автоматизации (будут использоваться после теста для нормального флоу)
 # def get_adaptive_risk_percent(balance):

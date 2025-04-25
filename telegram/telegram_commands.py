@@ -6,6 +6,7 @@ import pandas as pd
 from config import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP, LOG_LEVEL, trade_stats
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
+from core.trade_engine import trade_manager  # Added import for trade_manager
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
@@ -54,8 +55,6 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
     while state.get("stopping"):
         if time.time() - start >= timeout_minutes * 60:
             if DRY_RUN:
-                from core.trade_engine import trade_manager
-
                 open_details = [
                     _format_pos_dry(t)
                     for t in trade_manager._trades.values()
@@ -104,8 +103,6 @@ def _initiate_stop(reason):
     save_state(state)
 
     if DRY_RUN:
-        from core.trade_engine import trade_manager
-
         open_details = [
             _format_pos_dry(t)
             for t in trade_manager._trades.values()
@@ -131,7 +128,7 @@ def _initiate_stop(reason):
         )
         Thread(target=_monitor_stop_timeout, args=(reason, state), daemon=True).start()
     else:
-        msg = f"🛑 {reason}.\nNo open positions. Bot will exit shortly."
+        msg = f"🛑 {reason}.\nNo open positions. Bot will stop shortly."
 
     send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
     log(f"[Stop] {reason}", level="INFO")
@@ -143,43 +140,75 @@ def handle_stop_command():
     state["stopping"] = True
     save_state(state)
 
-    from core.trade_engine import close_real_trade, trade_manager
+    if DRY_RUN:
+        open_details = [
+            _format_pos_dry(t)
+            for t in trade_manager._trades.values()
+            if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")
+        ]
+    else:
+        try:
+            positions = exchange.fetch_positions()
+            open_details = [
+                _format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0
+            ]
+        except Exception as e:
+            log(f"[Stop] Failed to fetch positions: {e}", level="ERROR")
+            send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
+            open_details = []
 
-    open_trades = list(trade_manager._trades.values())
-    if open_trades:
-        for trade in open_trades:
-            symbol = trade["symbol"]
-            close_real_trade(symbol)
-        send_telegram_message(
-            f"🛑 Stop command received.\nClosed positions: {[t['symbol'] for t in open_trades]}.",
-            force=True,
-            parse_mode="MarkdownV2",
+    if open_details:
+        msg = (
+            "🛑 *Stop command received*.\n"
+            "Closing the following positions:\n"
+            + "\n".join(open_details)
+            + "\nNo new trades will be opened."
         )
     else:
-        send_telegram_message(
-            "🛑 Stop command received.\nNo open positions. Bot will stop shortly.",
-            force=True,
-            parse_mode="MarkdownV2",
-        )
+        msg = "🛑 *Stop command received*.\nNo open positions. Bot will stop shortly."
+
+    send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
     log("[Stop] Stop command processed.", level="INFO")
 
 
 def handle_panic_command(message, state):
     text = message.get("text", "").strip().lower()
     if text == "/panic":
+        # Show positions that will be closed
+        if DRY_RUN:
+            open_details = [
+                _format_pos_dry(t)
+                for t in trade_manager._trades.values()
+                if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")
+            ]
+        else:
+            try:
+                positions = exchange.fetch_positions()
+                open_details = [
+                    _format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0
+                ]
+            except Exception as e:
+                log(f"[Panic] Failed to fetch positions: {e}", level="ERROR")
+                send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
+                open_details = []
+
         state["last_command"] = "/panic"
         save_state(state)
-        send_telegram_message(
-            "⚠️ Confirm *PANIC CLOSE* by replying `YES`...", force=True, parse_mode="MarkdownV2"
+        msg = (
+            "⚠️ Confirm *PANIC CLOSE* by replying `YES`...\n"
+            f"Positions to close ({len(open_details)}):\n"
+            + ("\n".join(open_details) if open_details else "None")
         )
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
         log("Panic command initiated, awaiting YES confirmation.", level="INFO")
         return
 
     if text.upper() == "YES" and state.get("last_command") == "/panic":
         try:
-            from core.trade_engine import handle_panic  # Updated import to use handle_panic
+            from core.trade_engine import handle_panic
+            from main import stop_event  # Импортируем stop_event здесь
 
-            handle_panic()  # Call the new method instead of manual trade closing
+            handle_panic(stop_event)  # Передаём stop_event
         except Exception as e:
             send_telegram_message(f"Panic failed: {e}", force=True)
             log(f"Panic error: {e}", level="ERROR")
@@ -239,8 +268,6 @@ def handle_telegram_command(message, state):
         elif text == "/summary":
             summary = generate_summary()
             if DRY_RUN:
-                from core.trade_engine import trade_manager
-
                 open_details = [
                     _format_pos_dry(t)
                     for t in trade_manager._trades.values()
@@ -280,9 +307,35 @@ def handle_telegram_command(message, state):
             state["shutdown"] = True
             state["stopping"] = True
             save_state(state)
-            send_telegram_message(
-                "Shutdown initiated. Waiting for positions to close...", force=True, parse_mode=""
-            )
+
+            if DRY_RUN:
+                open_details = [
+                    _format_pos_dry(t)
+                    for t in trade_manager._trades.values()
+                    if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")
+                ]
+            else:
+                try:
+                    positions = exchange.fetch_positions()
+                    open_details = [
+                        _format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0
+                    ]
+                except Exception as e:
+                    log(f"[Shutdown] Failed to fetch positions: {e}", level="ERROR")
+                    send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
+                    open_details = []
+
+            if open_details:
+                msg = (
+                    "🛑 *Shutdown initiated*.\n"
+                    "Waiting for these positions to close:\n"
+                    + "\n".join(open_details)
+                    + "\nBot will exit after closure."
+                )
+            else:
+                msg = "🛑 *Shutdown initiated*.\nNo open positions. Bot will exit shortly."
+
+            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
             log("Shutdown command received.", level="INFO")
         elif text == "/cancel_stop":
             state = load_state()
@@ -328,8 +381,6 @@ def handle_telegram_command(message, state):
         elif text == "/open":
             try:
                 if DRY_RUN:
-                    from core.trade_engine import trade_manager
-
                     open_list = [
                         _format_pos_dry(t)
                         for t in trade_manager._trades.values()
@@ -401,8 +452,6 @@ def handle_telegram_command(message, state):
                 else:
                     status = "✅ Running"
                 if DRY_RUN:
-                    from core.trade_engine import trade_manager
-
                     open_details = [
                         _format_pos_dry(t)
                         for t in trade_manager._trades.values()

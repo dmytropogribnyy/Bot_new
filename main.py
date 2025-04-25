@@ -1,4 +1,5 @@
 # main.py
+import os
 import threading
 import time
 from datetime import datetime
@@ -7,7 +8,7 @@ from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, MAX_POSITIONS, RUNNING,
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
 from core.exchange_init import exchange
-from core.trade_engine import close_real_trade
+from core.trade_engine import close_real_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
 from pair_selector import select_active_symbols, start_symbol_rotation
@@ -21,7 +22,7 @@ from stats import (
     send_yearly_report,
     should_run_optimizer,
 )
-from telegram.telegram_commands import _initiate_stop, handle_telegram_command  # Обновлённый импорт
+from telegram.telegram_commands import _initiate_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import send_telegram_message
 from tp_optimizer import run_tp_optimizer
@@ -91,39 +92,46 @@ def start_trading_loop():
         while RUNNING and not stop_event.is_set():
             state = load_state()
 
-            if state.get("shutdown"):
-                open_trades = state.get("open_trades", [])
-                if not open_trades:
-                    log(
-                        "[Main] Shutdown complete. No open trades. Exiting...",
-                        level="INFO",
-                        important=True,
-                    )
-                    send_telegram_message(
-                        "✅ Shutdown complete. No open trades. Exiting...", force=True
-                    )
-                    state["stopping"] = False
-                    state["shutdown"] = False
-                    save_state(state)
-                    break
+            if state.get("stopping") or state.get("shutdown"):
+                # Fetch positions from Binance API
+                positions = exchange.fetch_positions()
+                active_positions = [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
 
-            if state.get("stopping"):
-                from core.trade_engine import trade_manager
-
-                open_trades = list(trade_manager._trades.values())
-                if not open_trades:
+                if not active_positions:
                     msg = "[Main] Bot is stopping. No open trades. "
-                    msg += (
-                        "Awaiting shutdown..." if state.get("shutdown") else "Will stop shortly..."
-                    )
+                    if state.get("shutdown"):
+                        msg += "Shutting down..."
+                        log(msg, level="INFO", important=True)
+                        send_telegram_message(
+                            "✅ Shutdown complete. No open trades. Exiting...", force=True
+                        )
+                        state["stopping"] = False
+                        state["shutdown"] = False
+                        save_state(state)
+                        os._exit(0)
+                    else:
+                        msg += "Will stop shortly..."
+                        log(msg, level="INFO")
+                        time.sleep(30)
+                        continue
                 else:
-                    symbols = [t["symbol"] for t in open_trades]
-                    msg = f"[Main] Bot is stopping. Waiting for trades to close: {symbols}"
-                log(msg, level="INFO")
-                time.sleep(30)
-                continue
+                    # Show open positions in Telegram
+                    position_symbols = [pos["symbol"] for pos in active_positions]
+                    msg = f"🛑 Bot is stopping. Waiting for trades to close:\n{', '.join(position_symbols)}"
+                    log(msg, level="INFO")
+                    send_telegram_message(msg, force=True)
 
-            # Проверка количества позиций перед циклом
+                    # Actively close positions
+                    for pos in active_positions:
+                        symbol = pos["symbol"]
+                        log(f"[Stop] Closing position for {symbol}", level="INFO")
+                        close_real_trade(symbol)
+                        time.sleep(1)  # Small delay to avoid API rate limits
+
+                    time.sleep(10)  # Check again in 10 seconds
+                    continue
+
+            # Verify positions directly after /panic YES
             try:
                 positions = exchange.fetch_positions()
                 active_positions = sum(
@@ -135,6 +143,16 @@ def start_trading_loop():
                         level="INFO",
                     )
                     time.sleep(30)
+                    continue
+                # Double-check trade_manager consistency
+                if active_positions > 0 and not trade_manager._trades:
+                    log(
+                        f"[Main] State mismatch: {active_positions} positions on exchange, but trade_manager empty. Forcing sync...",
+                        level="WARNING",
+                    )
+                    for pos in positions:
+                        if float(pos.get("contracts", 0)) != 0:
+                            close_real_trade(pos["symbol"])
                     continue
             except Exception as e:
                 log(f"[Main] Failed to fetch positions: {e}", level="ERROR")
@@ -152,12 +170,16 @@ def start_trading_loop():
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
 
-        log(
-            "[Main] RUNNING = False detected. Graceful shutdown triggered.",
-            important=True,
-            level="INFO",
-        )
-        send_telegram_message("🛑 Bot stopped via graceful shutdown.", force=True, parse_mode="")
+        # Only send graceful shutdown message if not stopped by /panic YES
+        if not stop_event.is_set():  # If stop_event is set, /panic YES already handled exit
+            log(
+                "[Main] RUNNING = False detected. Graceful shutdown triggered.",
+                important=True,
+                level="INFO",
+            )
+            send_telegram_message(
+                "🛑 Bot stopped via graceful shutdown.", force=True, parse_mode=""
+            )
 
     except KeyboardInterrupt:
         log("[Main] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")

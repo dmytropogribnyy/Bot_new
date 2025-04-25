@@ -10,19 +10,21 @@ from config import (
     DRY_RUN,
     FILTER_THRESHOLDS,
     LEVERAGE_MAP,
+    MIN_NOTIONAL_OPEN,  # Ensure this is imported
+    MIN_NOTIONAL_ORDER,  # Ensure this is imported
     MIN_TRADE_SCORE,
     SL_PERCENT,
     TAKER_FEE_RATE,
+    TP2_SHARE,
     VOLATILITY_ATR_THRESHOLD,
     VOLATILITY_RANGE_THRESHOLD,
     VOLATILITY_SKIP_ENABLED,
     get_min_net_profit,
-    TP2_SHARE,
 )
 from core.exchange_init import exchange  # Исправляем utils.core на core.exchange_init
 from core.order_utils import calculate_order_quantity
 from core.risk_utils import get_adaptive_risk_percent
-from core.score_evaluator import calculate_score, get_adaptive_min_score
+from core.score_evaluator import calculate_score
 from core.score_logger import log_score_history
 from core.tp_utils import calculate_tp_levels
 from core.trade_engine import get_market_regime, get_position_size, trade_manager
@@ -392,6 +394,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     leverage = LEVERAGE_MAP.get(symbol, 5)
     max_notional = balance * leverage
     notional = qty * entry_price
+
     # Adjust qty to meet max_notional
     if notional > max_notional:
         qty = max_notional / entry_price
@@ -408,40 +411,38 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     )
 
     # Adjust qty to meet Binance minimum notional requirements
-    # 1. Total notional must be >= 20 USDC for opening a position
-    min_notional_open = 20  # Binance minimum for opening a position
-    if notional < min_notional_open:
-        qty = min_notional_open / entry_price
+    # 1. Total notional must be >= MIN_NOTIONAL_OPEN for opening a position
+    if notional < MIN_NOTIONAL_OPEN:
+        qty = MIN_NOTIONAL_OPEN / entry_price
         notional = qty * entry_price
         log(
-            f"{symbol} Adjusted qty to {qty:.6f} to meet minimum notional for opening position (min: {min_notional_open:.2f})",
+            f"{symbol} Adjusted qty to {qty:.6f} to meet minimum notional for opening position (min: {MIN_NOTIONAL_OPEN:.2f})",
             level="DEBUG",
         )
         # Re-check against max_notional after adjustment
         if notional > max_notional:
             log(
-                f"{symbol} ⛔️ Cannot meet minimum notional {min_notional_open:.2f} without exceeding max_notional {max_notional:.2f}",
+                f"{symbol} ⛔️ Cannot meet minimum notional {MIN_NOTIONAL_OPEN:.2f} without exceeding max_notional {max_notional:.2f}",
                 level="WARNING",
             )
             return None
 
-    # 2. TP2 notional must be >= 5 USDC
-    min_notional_tp = 5  # Binance minimum for limit orders
+    # 2. TP2 notional must be >= MIN_NOTIONAL_ORDER
     qty_tp2 = qty * TP2_SHARE
     tp2_notional = qty_tp2 * tp2_price
-    if tp2_notional < min_notional_tp:
+    if tp2_notional < MIN_NOTIONAL_ORDER:
         # Increase qty so that TP2 notional meets the minimum
-        qty_tp2 = min_notional_tp / tp2_price
+        qty_tp2 = MIN_NOTIONAL_ORDER / tp2_price
         qty = qty_tp2 / TP2_SHARE
         notional = qty * entry_price
         log(
-            f"{symbol} Adjusted qty to {qty:.6f} to meet minimum TP2 notional (min: {min_notional_tp:.2f}, TP2 notional: {qty_tp2 * tp2_price:.2f})",
+            f"{symbol} Adjusted qty to {qty:.6f} to meet minimum TP2 notional (min: {MIN_NOTIONAL_ORDER:.2f}, TP2 notional: {qty_tp2 * tp2_price:.2f})",
             level="DEBUG",
         )
         # Re-check against max_notional after adjustment
         if notional > max_notional:
             log(
-                f"{symbol} ⛔️ Cannot meet minimum TP2 notional {min_notional_tp:.2f} without exceeding max_notional {max_notional:.2f}",
+                f"{symbol} ⛔️ Cannot meet minimum TP2 notional {MIN_NOTIONAL_ORDER:.2f} without exceeding max_notional {max_notional:.2f}",
                 level="WARNING",
             )
             return None
