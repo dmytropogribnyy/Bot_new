@@ -217,13 +217,13 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         leverage = LEVERAGE_MAP.get(symbol, 1)
         adjusted_qty = qty * leverage
 
-        # Ensure notional meets Binance minimums (using constants from config)
+        # Ensure notional meets Binance minimums
         notional = adjusted_qty * entry_price
         while notional < MIN_NOTIONAL_OPEN:
             adjusted_qty *= 1.1  # Increase qty until notional is sufficient
             notional = adjusted_qty * entry_price
             log(
-                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.3f} to meet notional {notional:.2f}",
+                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet notional {notional:.2f}",
                 level="DEBUG",
             )
 
@@ -243,11 +243,34 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             adjusted_qty = (max_margin * leverage) / entry_price  # Adjust qty to fit margin limit
             notional = adjusted_qty * entry_price
             log(
-                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.3f} to meet max margin limit (required: {required_margin:.2f}, max: {max_margin:.2f})",
+                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet max margin limit (required: {required_margin:.2f}, max: {max_margin:.2f})",
                 level="DEBUG",
             )
 
-        # Final check after adjustments
+        # Ensure qty meets minimum precision and minimum quantity for the symbol
+        precision = exchange.markets[symbol]["precision"]["amount"]
+        min_qty = exchange.markets[symbol]["limits"]["amount"][
+            "min"
+        ]  # Минимальное количество для символа
+        adjusted_qty = round(adjusted_qty, precision)
+        if adjusted_qty < min_qty:
+            adjusted_qty = max(
+                min_qty, adjusted_qty
+            )  # Устанавливаем минимальное допустимое количество
+            notional = adjusted_qty * entry_price
+            log(
+                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet minimum qty {min_qty}",
+                level="DEBUG",
+            )
+        elif adjusted_qty == 0:
+            adjusted_qty = 10**-precision  # Минимальное допустимое qty
+            notional = adjusted_qty * entry_price
+            log(
+                f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet minimum precision {precision}",
+                level="DEBUG",
+            )
+
+        # Recheck notional after adjustments
         if notional < MIN_NOTIONAL_OPEN:
             log(
                 f"{symbol} ⚠️ Notional too small after adjustment: {notional:.2f} < {MIN_NOTIONAL_OPEN}",
@@ -268,15 +291,15 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         if not DRY_RUN:
             try:
                 if side.lower() == "sell":
-                    exchange.create_market_order(symbol, "sell", qty)
+                    order = exchange.create_market_order(symbol, "sell", qty)
                 else:
-                    exchange.create_market_order(symbol, "buy", qty)
+                    order = exchange.create_market_order(symbol, "buy", qty)
                 log(
                     f"[Enter Trade] Opened {side.upper()} position for {symbol}: qty={qty}, entry={entry_price}",
                     level="INFO",
                 )
             except Exception as e:
-                log(f"[Enter Trade] Failed to open position for {symbol}: {e}", level="ERROR")
+                log(f"[Enter Trade] Failed to open position for {symbol}: {str(e)}", level="ERROR")
                 send_telegram_message(f"❌ Failed to open trade {symbol}: {str(e)}", force=True)
                 return
 
@@ -285,8 +308,8 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             entry_price, side, regime, score
         )
 
-        qty_tp1 = round(qty * qty_tp1_share, 3)
-        qty_tp2 = round(qty * qty_tp2_share, 3)
+        qty_tp1 = round(qty * qty_tp1_share, precision)
+        qty_tp2 = round(qty * qty_tp2_share, precision)
 
         # Ensure TP orders meet minimum notional
         if qty_tp1 * tp1_price < MIN_NOTIONAL_ORDER:
