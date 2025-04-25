@@ -56,7 +56,10 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             stop = entry * (1 - SL_PERCENT) if direction == "buy" else entry * (1 + SL_PERCENT)
             qty = calculate_order_quantity(entry, stop, balance, RISK_PERCENT)
 
-            required_margin = qty * entry / LEVERAGE_MAP.get(symbol, 5)
+            # Normalize symbol format to match LEVERAGE_MAP (e.g., 'XRP/USDC:USDC' -> 'XRP/USDC')
+            normalized_symbol = symbol.split(":")[0] if ":" in symbol else symbol
+
+            required_margin = qty * entry / LEVERAGE_MAP.get(normalized_symbol, 5)
             if required_margin > available_margin:
                 log(
                     f"⚠️ Skipping {symbol} — insufficient margin (required: {required_margin:.2f}, available: {available_margin:.2f})",

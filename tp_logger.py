@@ -49,6 +49,7 @@ def log_trade_result(
     atr,
     adx,
     bb_width,
+    result_type="manual",  # Add result_type parameter with default value
 ):
     # Log to console even in DRY_RUN for debugging
     log(
@@ -58,6 +59,19 @@ def log_trade_result(
 
     if DRY_RUN:
         return  # Skip file write in DRY_RUN, but log to console
+
+    # Determine the result based on the result_type and hit flags
+    result = result_type.upper() if result_type else "MANUAL"
+    if tp1_hit and result_type not in ["soft_exit", "trailing"]:
+        result = "TP1"
+    elif tp2_hit and result_type not in ["soft_exit", "trailing"]:
+        result = "TP2"
+    elif sl_hit and result_type not in ["soft_exit", "trailing"]:
+        result = "SL"
+    elif result_type == "soft_exit":
+        result = "SOFT_EXIT"
+    elif result_type == "trailing":
+        result = "TRAILING"
 
     date_str = now_with_timezone().strftime("%Y-%m-%d %H:%M:%S")
     row = [
@@ -71,7 +85,7 @@ def log_trade_result(
         tp2_hit,
         sl_hit,
         round(pnl_percent, 2),
-        "TP1" if tp1_hit else "TP2" if tp2_hit else "SL" if sl_hit else "MANUAL",
+        result,
         duration_minutes,
         htf_confirmed,
         round(atr, 6),
@@ -157,20 +171,21 @@ def get_trade_stats():
     if not os.path.exists(EXPORT_PATH):
         return 0, 0.0
     try:
-        # Read CSV, skip rows with invalid date formats
         df = pd.read_csv(EXPORT_PATH)
-        # Filter rows where 'Date' matches the expected format
-        df = df[df["Date"].str.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", na=False)]
+        df = df[
+            df["Date"].str.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", na=False)
+            & ~df["Date"].str.startswith("#", na=False)
+        ]
         if df.empty:
             log("[INFO] No valid trade records found in tp_performance.csv", level="INFO")
             return 0, 0.0
-        # Parse dates, coercing errors to NaT and dropping invalid rows
         df["Date"] = pd.to_datetime(df["Date"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
         df = df.dropna(subset=["Date"])
-        # Filter valid trade results
-        df = df[df["Result"].isin(["TP1", "TP2", "SL"])]
+        # Include SOFT_EXIT and TRAILING as valid results
+        df = df[df["Result"].isin(["TP1", "TP2", "SL", "MANUAL", "SOFT_EXIT", "TRAILING"])]
         total = len(df)
-        win = len(df[df["Result"].isin(["TP1", "TP2"])])
+        # Consider TP1, TP2, and SOFT_EXIT as wins (adjust based on your strategy)
+        win = len(df[df["Result"].isin(["TP1", "TP2", "SOFT_EXIT"])])
         return total, (win / total) if total else 0.0
     except Exception as e:
         log(f"[ERROR] Failed to read trade stats: {e}", level="INFO")

@@ -177,29 +177,9 @@ def handle_panic_command(message, state):
 
     if text.upper() == "YES" and state.get("last_command") == "/panic":
         try:
-            from core.trade_engine import close_real_trade, trade_manager
+            from core.trade_engine import handle_panic  # Updated import to use handle_panic
 
-            open_trades = list(trade_manager._trades.values())
-            if open_trades:
-                closed_trades = []
-                for trade in open_trades:
-                    symbol = trade["symbol"]
-                    side = trade["side"]
-                    qty = trade["qty"]
-                    close_real_trade(symbol)
-                    closed_trades.append(f"{symbol} ({side}, {qty})")
-                send_telegram_message(
-                    f"🚨 *Panic Close Executed*:\n{', '.join(closed_trades)}",
-                    force=True,
-                    parse_mode="MarkdownV2",
-                )
-            else:
-                send_telegram_message(
-                    "🚨 *Panic Close Executed*:\nNo open positions.",
-                    force=True,
-                    parse_mode="MarkdownV2",
-                )
-            log("Panic close executed.", level="INFO")
+            handle_panic()  # Call the new method instead of manual trade closing
         except Exception as e:
             send_telegram_message(f"Panic failed: {e}", force=True)
             log(f"Panic error: {e}", level="ERROR")

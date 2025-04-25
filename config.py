@@ -90,25 +90,44 @@ FIXED_PAIRS = [
 MAX_DYNAMIC_PAIRS = 0
 MIN_DYNAMIC_PAIRS = 0
 
+# LEVERAGE_MAP = {
+#     "DOGE/USDC": 10,
+#     "BTC/USDC": 5,
+#     "ETH/USDC": 5,
+#     "BNB/USDC": 5,
+#     "ADA/USDC": 10,
+#     "XRP/USDC": 10,
+#     "SOL/USDC": 10,
+#     "SUI/USDC": 10,
+#     "LINK/USDC": 10,
+#     "ARB/USDC": 10,
+# }
+
+# temp
 LEVERAGE_MAP = {
-    "DOGE/USDC": 10,
-    "BTC/USDC": 5,
-    "ETH/USDC": 5,
-    "BNB/USDC": 5,
-    "ADA/USDC": 10,
-    "XRP/USDC": 10,
-    "SOL/USDC": 10,
-    "SUI/USDC": 10,
-    "LINK/USDC": 10,
-    "ARB/USDC": 10,
+    "DOGE/USDC": 2,  # Reduce for testing
+    "BTC/USDC": 2,
+    "ETH/USDC": 2,
+    "BNB/USDC": 2,
+    "ADA/USDC": 2,
+    "XRP/USDC": 2,
+    "SOL/USDC": 2,
+    "SUI/USDC": 2,
+    "LINK/USDC": 2,
+    "ARB/USDC": 2,
 }
 
 # --- TP / SL Strategy ---
-TP1_SHARE = 1.0
-TP2_SHARE = 0.0
-TP1_PERCENT = 0.005  # 0.5%
-TP2_PERCENT = 0.01  # 1%
-SL_PERCENT = 0.007  # мягкий
+# TP1_SHARE = 1.0
+TP1_SHARE = 0.7  # temp for testing tp performance
+# TP2_SHARE = 0.0
+TP2_SHARE = 0.3  # temp for testing tp performance
+# TP1_PERCENT = 0.005  # 0.5%
+TP1_PERCENT = 0.002  # temp for testing tp performance
+# TP2_PERCENT = 0.01  # 1%
+TP2_PERCENT = 0.003  # temp for testing tp performance
+# SL_PERCENT = 0.007  # мягкий
+SL_PERCENT = 0.002  # temp for testing tp performance
 SOFT_EXIT_THRESHOLD = 0.8  # быстрее сработает частичный выход
 
 # Для возвращения к нормальному флоу после теста
@@ -133,9 +152,10 @@ RISK_DRAWDOWN_THRESHOLD = 5.0
 MAX_OPEN_ORDERS = 3  # Temp for testing
 
 # Фиксированные параметры для теста
-MAX_POSITIONS = 3
+# MAX_POSITIONS = 3
+MAX_POSITIONS = 1  # Temp for testing tp performance
 # RISK_PERCENT = 0.01 #usual value
-RISK_PERCENT = 0.005  # temp value for fix
+RISK_PERCENT = 0.0001  # temp value for fix
 
 # Функции для автоматизации (будут использоваться после теста для нормального флоу)
 # def get_adaptive_risk_percent(balance):
@@ -236,12 +256,21 @@ MIN_TRADE_SCORE = 0
 SCORE_BASED_RISK = True
 SCORE_BASED_TP = True
 
+# SCORE_WEIGHTS = {
+#     "RSI": 1.0,
+#     "MACD_RSI": 1.0,
+#     "MACD_EMA": 1.0,
+#     "HTF": 1.0,
+#     "VOLUME": 0.5,
+# }
+
+# Temporary for testing
 SCORE_WEIGHTS = {
-    "RSI": 1.0,
-    "MACD_RSI": 1.0,
-    "MACD_EMA": 1.0,
+    "RSI": 2.0,  # Increased to make signals more likely
+    "MACD_RSI": 2.0,  # Increased
+    "MACD_EMA": 2.0,  # Increased
     "HTF": 1.0,
-    "VOLUME": 0.5,
+    "VOLUME": 1.0,  # Increased slightly
 }
 
 # --- Runtime Control ---
@@ -280,7 +309,8 @@ TP_ML_SWITCH_THRESHOLD = 0.05
 
 # --- Fees & Profit ---
 TAKER_FEE_RATE = 0.0001  # 0.01% для тейкера
-MIN_NET_PROFIT = {50: 0.13, 100: 0.3, 500: 1.0, "max": 2.0}  # Смягчено для теста
+# MIN_NET_PROFIT = {50: 0.13, 100: 0.3, 500: 1.0, "max": 2.0}  # Смягчено для теста
+MIN_NET_PROFIT = {50: 0.1, 100: 0.1, 500: 0.1, "max": 0.1}  # Reduced for testing
 
 
 def get_min_net_profit(balance):
