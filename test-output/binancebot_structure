@@ -1,0 +1,75 @@
+// BinanceBot Structure
+digraph {
+	rankdir=TB
+	BinanceBot [shape=folder]
+	"BinanceBot/config.py" [shape=note]
+	BinanceBot -> "BinanceBot/config.py"
+	"BinanceBot/htf_optimizer.py" [shape=note]
+	BinanceBot -> "BinanceBot/htf_optimizer.py"
+	"BinanceBot/ip_monitor.py" [shape=note]
+	BinanceBot -> "BinanceBot/ip_monitor.py"
+	"BinanceBot/main.py" [shape=note]
+	BinanceBot -> "BinanceBot/main.py"
+	"BinanceBot/pair_selector.py" [shape=note]
+	BinanceBot -> "BinanceBot/pair_selector.py"
+	"BinanceBot/score_heatmap.py" [shape=note]
+	BinanceBot -> "BinanceBot/score_heatmap.py"
+	"BinanceBot/stats.py" [shape=note]
+	BinanceBot -> "BinanceBot/stats.py"
+	"BinanceBot/test_api.py" [shape=note]
+	BinanceBot -> "BinanceBot/test_api.py"
+	"BinanceBot/test_graphviz.py" [shape=note]
+	BinanceBot -> "BinanceBot/test_graphviz.py"
+	"BinanceBot/tp_logger.py" [shape=note]
+	BinanceBot -> "BinanceBot/tp_logger.py"
+	"BinanceBot/tp_optimizer.py" [shape=note]
+	BinanceBot -> "BinanceBot/tp_optimizer.py"
+	"BinanceBot/tp_optimizer_ml.py" [shape=note]
+	BinanceBot -> "BinanceBot/tp_optimizer_ml.py"
+	"BinanceBot/utils_core.py" [shape=note]
+	BinanceBot -> "BinanceBot/utils_core.py"
+	"BinanceBot/utils_logging.py" [shape=note]
+	BinanceBot -> "BinanceBot/utils_logging.py"
+	core [shape=folder]
+	"core/aggressiveness_controller.py" [shape=note]
+	core -> "core/aggressiveness_controller.py"
+	"core/balance_watcher.py" [shape=note]
+	core -> "core/balance_watcher.py"
+	"core/binance_api.py" [shape=note]
+	core -> "core/binance_api.py"
+	"core/engine_controller.py" [shape=note]
+	core -> "core/engine_controller.py"
+	"core/entry_logger.py" [shape=note]
+	core -> "core/entry_logger.py"
+	"core/exchange_init.py" [shape=note]
+	core -> "core/exchange_init.py"
+	"core/notifier.py" [shape=note]
+	core -> "core/notifier.py"
+	"core/order_utils.py" [shape=note]
+	core -> "core/order_utils.py"
+	"core/risk_utils.py" [shape=note]
+	core -> "core/risk_utils.py"
+	"core/score_evaluator.py" [shape=note]
+	core -> "core/score_evaluator.py"
+	"core/score_logger.py" [shape=note]
+	core -> "core/score_logger.py"
+	"core/strategy.py" [shape=note]
+	core -> "core/strategy.py"
+	"core/symbol_processor.py" [shape=note]
+	core -> "core/symbol_processor.py"
+	"core/tp_utils.py" [shape=note]
+	core -> "core/tp_utils.py"
+	"core/trade_engine.py" [shape=note]
+	core -> "core/trade_engine.py"
+	"core/volatility_controller.py" [shape=note]
+	core -> "core/volatility_controller.py"
+	telegram [shape=folder]
+	"telegram/telegram_commands.py" [shape=note]
+	telegram -> "telegram/telegram_commands.py"
+	"telegram/telegram_handler.py" [shape=note]
+	telegram -> "telegram/telegram_handler.py"
+	"telegram/telegram_ip_commands.py" [shape=note]
+	telegram -> "telegram/telegram_ip_commands.py"
+	"telegram/telegram_utils.py" [shape=note]
+	telegram -> "telegram/telegram_utils.py"
+}

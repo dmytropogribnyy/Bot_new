@@ -1,0 +1,177 @@
+// BinanceBot Real Imports
+digraph {
+	rankdir=LR
+	"config.py" [label="config.py"]
+	"htf_optimizer.py" [label="htf_optimizer.py"]
+	"ip_monitor.py" [label="ip_monitor.py"]
+	"main.py" [label="main.py"]
+	"pair_selector.py" [label="pair_selector.py"]
+	"score_heatmap.py" [label="score_heatmap.py"]
+	"stats.py" [label="stats.py"]
+	"test_api.py" [label="test_api.py"]
+	"test_graphviz.py" [label="test_graphviz.py"]
+	"tp_logger.py" [label="tp_logger.py"]
+	"tp_optimizer.py" [label="tp_optimizer.py"]
+	"tp_optimizer_ml.py" [label="tp_optimizer_ml.py"]
+	"utils_core.py" [label="utils_core.py"]
+	"utils_logging.py" [label="utils_logging.py"]
+	"core/aggressiveness_controller.py" [label="core/aggressiveness_controller.py"]
+	"core/balance_watcher.py" [label="core/balance_watcher.py"]
+	"core/binance_api.py" [label="core/binance_api.py"]
+	"core/engine_controller.py" [label="core/engine_controller.py"]
+	"core/entry_logger.py" [label="core/entry_logger.py"]
+	"core/exchange_init.py" [label="core/exchange_init.py"]
+	"core/notifier.py" [label="core/notifier.py"]
+	"core/order_utils.py" [label="core/order_utils.py"]
+	"core/risk_utils.py" [label="core/risk_utils.py"]
+	"core/score_evaluator.py" [label="core/score_evaluator.py"]
+	"core/score_logger.py" [label="core/score_logger.py"]
+	"core/strategy.py" [label="core/strategy.py"]
+	"core/symbol_processor.py" [label="core/symbol_processor.py"]
+	"core/tp_utils.py" [label="core/tp_utils.py"]
+	"core/trade_engine.py" [label="core/trade_engine.py"]
+	"core/volatility_controller.py" [label="core/volatility_controller.py"]
+	"telegram/telegram_commands.py" [label="telegram/telegram_commands.py"]
+	"telegram/telegram_handler.py" [label="telegram/telegram_handler.py"]
+	"telegram/telegram_ip_commands.py" [label="telegram/telegram_ip_commands.py"]
+	"telegram/telegram_utils.py" [label="telegram/telegram_utils.py"]
+	"config.py" -> "utils_core.py"
+	"htf_optimizer.py" -> "config.py"
+	"htf_optimizer.py" -> "utils_logging.py"
+	"htf_optimizer.py" -> "telegram/telegram_utils.py"
+	"ip_monitor.py" -> "config.py"
+	"ip_monitor.py" -> "utils_logging.py"
+	"ip_monitor.py" -> "telegram/telegram_utils.py"
+	"main.py" -> "config.py"
+	"main.py" -> "htf_optimizer.py"
+	"main.py" -> "ip_monitor.py"
+	"main.py" -> "pair_selector.py"
+	"main.py" -> "score_heatmap.py"
+	"main.py" -> "stats.py"
+	"main.py" -> "tp_logger.py"
+	"main.py" -> "tp_optimizer.py"
+	"main.py" -> "tp_optimizer_ml.py"
+	"main.py" -> "utils_core.py"
+	"main.py" -> "utils_logging.py"
+	"main.py" -> "core/aggressiveness_controller.py"
+	"main.py" -> "core/engine_controller.py"
+	"main.py" -> "core/exchange_init.py"
+	"main.py" -> "core/trade_engine.py"
+	"main.py" -> "telegram/telegram_commands.py"
+	"main.py" -> "telegram/telegram_handler.py"
+	"main.py" -> "telegram/telegram_utils.py"
+	"pair_selector.py" -> "config.py"
+	"pair_selector.py" -> "utils_core.py"
+	"pair_selector.py" -> "utils_logging.py"
+	"pair_selector.py" -> "core/binance_api.py"
+	"pair_selector.py" -> "core/exchange_init.py"
+	"pair_selector.py" -> "telegram/telegram_utils.py"
+	"score_heatmap.py" -> "utils_logging.py"
+	"score_heatmap.py" -> "telegram/telegram_utils.py"
+	"stats.py" -> "config.py"
+	"stats.py" -> "utils_logging.py"
+	"stats.py" -> "core/aggressiveness_controller.py"
+	"stats.py" -> "core/volatility_controller.py"
+	"stats.py" -> "telegram/telegram_utils.py"
+	"tp_logger.py" -> "config.py"
+	"tp_logger.py" -> "stats.py"
+	"tp_logger.py" -> "utils_logging.py"
+	"tp_logger.py" -> "telegram/telegram_utils.py"
+	"tp_optimizer.py" -> "config.py"
+	"tp_optimizer.py" -> "utils_logging.py"
+	"tp_optimizer.py" -> "telegram/telegram_utils.py"
+	"tp_optimizer_ml.py" -> "config.py"
+	"tp_optimizer_ml.py" -> "utils_logging.py"
+	"tp_optimizer_ml.py" -> "telegram/telegram_utils.py"
+	"utils_core.py" -> "config.py"
+	"utils_core.py" -> "utils_logging.py"
+	"utils_core.py" -> "core/exchange_init.py"
+	"utils_core.py" -> "telegram/telegram_utils.py"
+	"utils_logging.py" -> "config.py"
+	"utils_logging.py" -> "telegram/telegram_utils.py"
+	"core/aggressiveness_controller.py" -> "utils_logging.py"
+	"core/balance_watcher.py" -> "config.py"
+	"core/balance_watcher.py" -> "stats.py"
+	"core/balance_watcher.py" -> "utils_logging.py"
+	"core/balance_watcher.py" -> "core/notifier.py"
+	"core/binance_api.py" -> "config.py"
+	"core/binance_api.py" -> "utils_core.py"
+	"core/binance_api.py" -> "utils_logging.py"
+	"core/binance_api.py" -> "core/exchange_init.py"
+	"core/engine_controller.py" -> "config.py"
+	"core/engine_controller.py" -> "utils_core.py"
+	"core/engine_controller.py" -> "utils_logging.py"
+	"core/engine_controller.py" -> "core/aggressiveness_controller.py"
+	"core/engine_controller.py" -> "core/balance_watcher.py"
+	"core/engine_controller.py" -> "core/entry_logger.py"
+	"core/engine_controller.py" -> "core/notifier.py"
+	"core/engine_controller.py" -> "core/risk_utils.py"
+	"core/engine_controller.py" -> "core/symbol_processor.py"
+	"core/engine_controller.py" -> "core/trade_engine.py"
+	"core/engine_controller.py" -> "telegram/telegram_utils.py"
+	"core/entry_logger.py" -> "config.py"
+	"core/entry_logger.py" -> "utils_logging.py"
+	"core/exchange_init.py" -> "config.py"
+	"core/exchange_init.py" -> "utils_logging.py"
+	"core/exchange_init.py" -> "telegram/telegram_utils.py"
+	"core/notifier.py" -> "utils_logging.py"
+	"core/notifier.py" -> "telegram/telegram_utils.py"
+	"core/score_evaluator.py" -> "config.py"
+	"core/score_evaluator.py" -> "utils_core.py"
+	"core/score_evaluator.py" -> "utils_logging.py"
+	"core/score_logger.py" -> "config.py"
+	"core/score_logger.py" -> "utils_logging.py"
+	"core/strategy.py" -> "config.py"
+	"core/strategy.py" -> "stats.py"
+	"core/strategy.py" -> "tp_logger.py"
+	"core/strategy.py" -> "utils_core.py"
+	"core/strategy.py" -> "utils_logging.py"
+	"core/strategy.py" -> "core/binance_api.py"
+	"core/strategy.py" -> "core/order_utils.py"
+	"core/strategy.py" -> "core/risk_utils.py"
+	"core/strategy.py" -> "core/score_evaluator.py"
+	"core/strategy.py" -> "core/score_logger.py"
+	"core/strategy.py" -> "core/tp_utils.py"
+	"core/strategy.py" -> "core/trade_engine.py"
+	"core/strategy.py" -> "core/volatility_controller.py"
+	"core/strategy.py" -> "telegram/telegram_utils.py"
+	"core/symbol_processor.py" -> "config.py"
+	"core/symbol_processor.py" -> "utils_logging.py"
+	"core/symbol_processor.py" -> "core/exchange_init.py"
+	"core/symbol_processor.py" -> "core/order_utils.py"
+	"core/symbol_processor.py" -> "core/strategy.py"
+	"core/symbol_processor.py" -> "core/trade_engine.py"
+	"core/symbol_processor.py" -> "telegram/telegram_utils.py"
+	"core/tp_utils.py" -> "config.py"
+	"core/trade_engine.py" -> "config.py"
+	"core/trade_engine.py" -> "tp_logger.py"
+	"core/trade_engine.py" -> "utils_core.py"
+	"core/trade_engine.py" -> "utils_logging.py"
+	"core/trade_engine.py" -> "core/aggressiveness_controller.py"
+	"core/trade_engine.py" -> "core/binance_api.py"
+	"core/trade_engine.py" -> "core/exchange_init.py"
+	"core/trade_engine.py" -> "core/tp_utils.py"
+	"core/trade_engine.py" -> "telegram/telegram_utils.py"
+	"core/volatility_controller.py" -> "config.py"
+	"core/volatility_controller.py" -> "utils_logging.py"
+	"telegram/telegram_commands.py" -> "config.py"
+	"telegram/telegram_commands.py" -> "main.py"
+	"telegram/telegram_commands.py" -> "score_heatmap.py"
+	"telegram/telegram_commands.py" -> "stats.py"
+	"telegram/telegram_commands.py" -> "utils_core.py"
+	"telegram/telegram_commands.py" -> "utils_logging.py"
+	"telegram/telegram_commands.py" -> "core/aggressiveness_controller.py"
+	"telegram/telegram_commands.py" -> "core/exchange_init.py"
+	"telegram/telegram_commands.py" -> "core/trade_engine.py"
+	"telegram/telegram_commands.py" -> "telegram/telegram_ip_commands.py"
+	"telegram/telegram_commands.py" -> "telegram/telegram_utils.py"
+	"telegram/telegram_handler.py" -> "config.py"
+	"telegram/telegram_ip_commands.py" -> "config.py"
+	"telegram/telegram_ip_commands.py" -> "ip_monitor.py"
+	"telegram/telegram_ip_commands.py" -> "stats.py"
+	"telegram/telegram_ip_commands.py" -> "utils_logging.py"
+	"telegram/telegram_ip_commands.py" -> "core/trade_engine.py"
+	"telegram/telegram_ip_commands.py" -> "telegram/telegram_utils.py"
+	"telegram/telegram_utils.py" -> "config.py"
+	"telegram/telegram_utils.py" -> "utils_logging.py"
+}

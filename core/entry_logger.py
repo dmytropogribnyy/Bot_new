@@ -1,9 +1,10 @@
+# entry_logger.py
 import csv
 import os
 from datetime import datetime
 
 from config import DRY_RUN
-from utils_logging import log_dry_entry
+from utils_logging import log, log_dry_entry
 
 ENTRY_LOG_PATH = "data/entry_log.csv"
 
@@ -43,4 +44,4 @@ def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
                 writer.writeheader()
             writer.writerow(entry)
     except Exception as e:
-        print(f"[entry_logger] Failed to write log: {e}")
+        log(f"[entry_logger] Failed to write log: {e}", level="ERROR")

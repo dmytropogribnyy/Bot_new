@@ -1,0 +1,24 @@
+======== BinanceBot - CheatSheet ========
+
+# Активация виртуального окружения
+source venv/Scripts/activate
+
+# Полная проверка всех файлов на ошибки импорта/синтаксиса
+python -m compileall .
+
+# Быстрая генерация структуры проекта (Graphviz)
+python test_graphviz.py
+
+# Авто-рефакторинг импортов
+python refactor_imports.py
+
+# Откат всех изменений через backup
+python restore_backup.py
+
+# Быстрая чистка __pycache__ и *.pyc файлов (bash)
+find . -name "__pycache__" -type d -exec rm -r {} + && find . -name "*.pyc" -type f -delete
+
+# Альтернативная чистка через Python
+python clean_cache.py
+
+=========================================

@@ -1,12 +1,13 @@
+import os
 import time
 from threading import Lock, Thread
 
 import pandas as pd
 
-from config import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP, LOG_LEVEL, trade_stats
+from config import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP, trade_stats
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
-from core.trade_engine import trade_manager  # Added import for trade_manager
+from core.trade_engine import close_real_trade, trade_manager
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
@@ -174,7 +175,6 @@ def handle_stop_command():
 def handle_panic_command(message, state):
     text = message.get("text", "").strip().lower()
     if text == "/panic":
-        # Show positions that will be closed
         if DRY_RUN:
             open_details = [
                 _format_pos_dry(t)
@@ -206,11 +206,12 @@ def handle_panic_command(message, state):
     if text.upper() == "YES" and state.get("last_command") == "/panic":
         try:
             from core.trade_engine import handle_panic
-            from main import stop_event  # Импортируем stop_event здесь
+            from main import stop_event
 
-            handle_panic(stop_event)  # Передаём stop_event
+            handle_panic(stop_event)
+            log("Panic close executed.", level="INFO")
         except Exception as e:
-            send_telegram_message(f"Panic failed: {e}", force=True)
+            send_telegram_message(f"❌ Panic failed: {e}", force=True)
             log(f"Panic error: {e}", level="ERROR")
         finally:
             state["last_command"] = None
@@ -254,6 +255,7 @@ def handle_telegram_command(message, state):
                 "📜 /log - Export today's log to Telegram\n"
                 "⚖️ /mode - Show strategy bias and score\n"
                 "📈 /open - Show open positions\n"
+                "🔄 /restart - Restart bot after closing positions\n"
                 "🔄 /router_reboot - Plan router reboot\n"
                 "▶️ /resume_after_ip - Resume after IP change\n"
                 "🚪 /shutdown - Exit bot after positions close\n"
@@ -263,39 +265,43 @@ def handle_telegram_command(message, state):
                 "📊 /summary - Show performance summary"
             )
             send_telegram_message(help_msg, force=True, parse_mode="")
-            if LOG_LEVEL == "DEBUG":
-                log("Sent help message.", level="DEBUG")
+            log("Sent help message.", level="INFO")
         elif text == "/summary":
-            summary = generate_summary()
-            if DRY_RUN:
-                open_details = [
-                    _format_pos_dry(t)
-                    for t in trade_manager._trades.values()
-                    if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")
-                ]
-            else:
-                try:
+            try:
+                summary = generate_summary()
+                if DRY_RUN:
+                    open_details = [
+                        _format_pos_dry(t)
+                        for t in trade_manager._trades.values()
+                        if not t.get("tp1_hit")
+                        and not t.get("tp2_hit")
+                        and not t.get("soft_exit_hit")
+                    ]
+                else:
                     positions = exchange.fetch_positions()
                     open_details = [
                         _format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0
                     ]
-                except Exception as e:
-                    log(f"[Summary] Failed fetch: {e}", level="ERROR")
-                    open_details = []
-            msg = (
-                summary
-                + "\n\n*Open Positions*:\n"
-                + ("\n".join(open_details) if open_details else "None")
-            )
-            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-            if LOG_LEVEL == "DEBUG":
-                log("Sent summary via /summary.", level="DEBUG")
+                msg = (
+                    summary
+                    + "\n\n*Open Positions*:\n"
+                    + ("\n".join(open_details) if open_details else "None")
+                )
+                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+                log("Sent summary via /summary.", level="INFO")
+            except Exception as e:
+                send_telegram_message(f"❌ Failed to generate summary: {e}", force=True)
+                log(f"Summary error: {e}", level="ERROR")
         elif text == "/heatmap":
             if DRY_RUN:
                 send_telegram_message("Heatmap unavailable in DRY_RUN mode.", force=True)
             else:
-                generate_score_heatmap(days=7)
-                log("Generated heatmap.", level="INFO")
+                try:
+                    generate_score_heatmap(days=7)
+                    log("Generated heatmap.", level="INFO")
+                except Exception as e:
+                    send_telegram_message(f"❌ Failed to generate heatmap: {e}", force=True)
+                    log(f"Heatmap error: {e}", level="ERROR")
         elif text == "/stop":
             handle_stop_command()
         elif text in ("/panic", "yes"):
@@ -308,35 +314,34 @@ def handle_telegram_command(message, state):
             state["stopping"] = True
             save_state(state)
 
-            if DRY_RUN:
-                open_details = [
-                    _format_pos_dry(t)
-                    for t in trade_manager._trades.values()
-                    if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")
-                ]
-            else:
-                try:
+            try:
+                if DRY_RUN:
+                    open_details = [
+                        _format_pos_dry(t)
+                        for t in trade_manager._trades.values()
+                        if not t.get("tp1_hit")
+                        and not t.get("tp2_hit")
+                        and not t.get("soft_exit_hit")
+                    ]
+                else:
                     positions = exchange.fetch_positions()
                     open_details = [
                         _format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0
                     ]
-                except Exception as e:
-                    log(f"[Shutdown] Failed to fetch positions: {e}", level="ERROR")
-                    send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
-                    open_details = []
-
-            if open_details:
-                msg = (
-                    "🛑 *Shutdown initiated*.\n"
-                    "Waiting for these positions to close:\n"
-                    + "\n".join(open_details)
-                    + "\nBot will exit after closure."
-                )
-            else:
-                msg = "🛑 *Shutdown initiated*.\nNo open positions. Bot will exit shortly."
-
-            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-            log("Shutdown command received.", level="INFO")
+                if open_details:
+                    msg = (
+                        "🛑 *Shutdown initiated*.\n"
+                        "Waiting for these positions to close:\n"
+                        + "\n".join(open_details)
+                        + "\nBot will exit after closure."
+                    )
+                else:
+                    msg = "🛑 *Shutdown initiated*.\nNo open positions. Bot will exit shortly."
+                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+                log("Shutdown command received.", level="INFO")
+            except Exception as e:
+                send_telegram_message(f"❌ Failed to initiate shutdown: {e}", force=True)
+                log(f"Shutdown error: {e}", level="ERROR")
         elif text == "/cancel_stop":
             state = load_state()
             if not state.get("stopping"):
@@ -373,11 +378,17 @@ def handle_telegram_command(message, state):
             state["stopping"] = False
             save_state(state)
             send_telegram_message("✅ Resumed after IP change.", force=True)
+            log("Resumed after IP change.", level="INFO")
         elif text == "/mode":
-            score = round(get_aggressiveness_score(), 2)
-            bias = "🔥 HIGH" if score >= 3.5 else "⚡ MODERATE" if score >= 2.5 else "🧊 LOW"
-            msg = f"🎯 *Strategy Bias*: {bias}\n📈 *Score*: `{score}`"
-            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+            try:
+                score = round(get_aggressiveness_score(), 2)
+                bias = "🔥 HIGH" if score >= 3.5 else "⚡ MODERATE" if score >= 2.5 else "🧊 LOW"
+                msg = f"🎯 *Strategy Bias*: {bias}\n📈 *Score*: `{score}`"
+                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+                log("Sent mode info.", level="INFO")
+            except Exception as e:
+                send_telegram_message(f"❌ Failed to fetch mode: {e}", force=True)
+                log(f"Mode error: {e}", level="ERROR")
         elif text == "/open":
             try:
                 if DRY_RUN:
@@ -399,9 +410,8 @@ def handle_telegram_command(message, state):
                 send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
                 log("Sent /open positions.", level="INFO")
             except Exception as e:
-                err = f"Failed to fetch open positions: {e}"
-                send_telegram_message(err, force=True)
-                log(err, level="ERROR")
+                send_telegram_message(f"❌ Failed to fetch open positions: {e}", force=True)
+                log(f"Open positions error: {e}", level="ERROR")
         elif text == "/last":
             try:
                 df = pd.read_csv(EXPORT_PATH)
@@ -415,15 +425,17 @@ def handle_telegram_command(message, state):
                         f"PnL: {round(last['PnL (%)'],2)}% ({last['Result']})"
                     )
                     send_telegram_message(msg, force=True)
+                log("Sent last trade info.", level="INFO")
             except Exception as e:
-                send_telegram_message(f"Failed to read last trade: {e}", force=True)
+                send_telegram_message(f"❌ Failed to read last trade: {e}", force=True)
                 log(f"Last trade error: {e}", level="ERROR")
         elif text == "/balance":
             try:
                 balance = round(float(get_cached_balance()), 2)
                 send_telegram_message(f"💰 Balance: {balance} USDC", force=True)
+                log("Sent balance info.", level="INFO")
             except Exception as e:
-                send_telegram_message(f"Failed to fetch balance: {e}", force=True)
+                send_telegram_message(f"❌ Failed to fetch balance: {e}", force=True)
                 log(f"Balance error: {e}", level="ERROR")
         elif text == "/status":
             try:
@@ -483,5 +495,40 @@ def handle_telegram_command(message, state):
                 send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
                 log("Sent /status.", level="INFO")
             except Exception as e:
-                send_telegram_message(f"Status error: {e}", force=True)
+                send_telegram_message(f"❌ Status error: {e}", force=True)
                 log(f"Status error: {e}", level="ERROR")
+        elif text == "/restart":
+            state["stopping"] = True
+            save_state(state)
+            try:
+                if DRY_RUN:
+                    open_details = [
+                        _format_pos_dry(t)
+                        for t in trade_manager._trades.values()
+                        if not t.get("tp1_hit")
+                        and not t.get("tp2_hit")
+                        and not t.get("soft_exit_hit")
+                    ]
+                else:
+                    positions = exchange.fetch_positions()
+                    open_details = [
+                        _format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0
+                    ]
+                    for pos in positions:
+                        if float(pos.get("contracts", 0)) > 0:
+                            close_real_trade(pos["symbol"])
+                msg = (
+                    "🔄 *Restarting bot*.\n"
+                    + (
+                        f"Closed positions:\n{'\n'.join(open_details)}\n"
+                        if open_details
+                        else "No open positions.\n"
+                    )
+                    + "Bot will restart shortly."
+                )
+                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+                log("Restart command received.", level="INFO")
+                os.system("python main.py")  # Адаптировать под вашу систему
+            except Exception as e:
+                send_telegram_message(f"❌ Restart failed: {e}", force=True)
+                log(f"Restart error: {e}", level="ERROR")

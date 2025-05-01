@@ -4,7 +4,15 @@ import threading
 import time
 from datetime import datetime
 
-from config import DRY_RUN, IP_MONITOR_INTERVAL_SECONDS, MAX_POSITIONS, RUNNING, VERBOSE
+from config import (
+    DRY_RUN,
+    IP_MONITOR_INTERVAL_SECONDS,
+    MAX_POSITIONS,
+    RUNNING,
+    USE_TESTNET,
+    VERBOSE,
+    initialize_risk_percent,
+)
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.engine_controller import run_trading_cycle
 from core.exchange_init import exchange
@@ -30,19 +38,26 @@ from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import initialize_cache, load_state, save_state
 from utils_logging import log
 
-# Add a global stop event to signal threads to stop
+# Initialize RISK_PERCENT after imports to avoid circular import issues
+initialize_risk_percent()
+
 stop_event = threading.Event()
 
 
+# Rest of the file remains unchanged
 def load_symbols():
-    return select_active_symbols()
+    symbols = select_active_symbols()
+    if not symbols:
+        log("No active symbols loaded, stopping bot", level="ERROR")
+        send_telegram_message("⚠️ No active symbols loaded, stopping bot", force=True)
+        stop_event.set()
+        return []
+    return symbols
 
 
 def start_trading_loop():
-    # Initialize cache
     initialize_cache()
 
-    # Check and close excess positions at startup
     positions = exchange.fetch_positions()
     active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
     if active_positions > MAX_POSITIONS:
@@ -63,7 +78,9 @@ def start_trading_loop():
     state["shutdown"] = False
     save_state(state)
 
-    mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
+    mode = "TESTNET" if USE_TESTNET else "REAL_RUN"
+    if DRY_RUN:
+        mode += " (DRY_RUN)"
     log(f"[Refactor] Starting bot in {mode} mode...", important=True, level="INFO")
 
     score = round(get_aggressiveness_score(), 2)
@@ -83,6 +100,8 @@ def start_trading_loop():
 
     symbols = load_symbols()
     log(f"[Refactor] Loaded symbols: {symbols}", important=True, level="INFO")
+    if not symbols:
+        return  # Exit if no symbols loaded
 
     group_size = 5
     symbol_groups = [symbols[i : i + group_size] for i in range(0, len(symbols), group_size)]
@@ -93,7 +112,6 @@ def start_trading_loop():
             state = load_state()
 
             if state.get("stopping") or state.get("shutdown"):
-                # Fetch positions from Binance API
                 positions = exchange.fetch_positions()
                 active_positions = [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
 
@@ -115,23 +133,20 @@ def start_trading_loop():
                         time.sleep(30)
                         continue
                 else:
-                    # Show open positions in Telegram
                     position_symbols = [pos["symbol"] for pos in active_positions]
                     msg = f"🛑 Bot is stopping. Waiting for trades to close:\n{', '.join(position_symbols)}"
                     log(msg, level="INFO")
                     send_telegram_message(msg, force=True)
 
-                    # Actively close positions
                     for pos in active_positions:
                         symbol = pos["symbol"]
                         log(f"[Stop] Closing position for {symbol}", level="INFO")
                         close_real_trade(symbol)
-                        time.sleep(1)  # Small delay to avoid API rate limits
+                        time.sleep(1)
 
-                    time.sleep(10)  # Check again in 10 seconds
+                    time.sleep(10)
                     continue
 
-            # Verify positions directly after /panic YES
             try:
                 positions = exchange.fetch_positions()
                 active_positions = sum(
@@ -144,7 +159,6 @@ def start_trading_loop():
                     )
                     time.sleep(30)
                     continue
-                # Double-check trade_manager consistency
                 if active_positions > 0 and not trade_manager._trades:
                     log(
                         f"[Main] State mismatch: {active_positions} positions on exchange, but trade_manager empty. Forcing sync...",
@@ -170,8 +184,7 @@ def start_trading_loop():
             current_group_index = (current_group_index + 1) % len(symbol_groups)
             time.sleep(10)
 
-        # Only send graceful shutdown message if not stopped by /panic YES
-        if not stop_event.is_set():  # If stop_event is set, /panic YES already handled exit
+        if not stop_event.is_set():
             log(
                 "[Main] RUNNING = False detected. Graceful shutdown triggered.",
                 important=True,

@@ -17,11 +17,11 @@ from config import (
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
-    MAX_MARGIN_PERCENT,  # Добавляем импорт
+    MAX_MARGIN_PERCENT,
     MAX_OPEN_ORDERS,
     MAX_POSITIONS,
-    MIN_NOTIONAL_OPEN,  # Keep this
-    MIN_NOTIONAL_ORDER,  # Keep this
+    MIN_NOTIONAL_OPEN,
+    MIN_NOTIONAL_ORDER,
     SL_PERCENT,
     SOFT_EXIT_ENABLED,
     SOFT_EXIT_SHARE,
@@ -29,8 +29,10 @@ from config import (
     TAKER_FEE_RATE,
     TP1_PERCENT,
     TP2_PERCENT,
+    USE_TESTNET,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
+from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
 from core.tp_utils import calculate_tp_levels
 from telegram.telegram_utils import send_telegram_message
@@ -83,15 +85,11 @@ class TradeInfoManager:
 
 
 trade_manager = TradeInfoManager()
-
 monitored_stops = {}
 monitored_stops_lock = threading.Lock()
-
 open_positions_count = 0
 dry_run_positions_count = 0
 open_positions_lock = threading.Lock()
-
-# Add a set to track logged trades and a lock for thread safety
 logged_trades = set()
 logged_trades_lock = Lock()
 
@@ -118,11 +116,9 @@ def get_position_size(symbol):
 
 def get_market_regime(symbol):
     try:
-        ohlcv = safe_call_retry(
-            exchange.fetch_ohlcv, symbol, timeframe="15m", limit=50, label=f"fetch_ohlcv {symbol}"
-        )
+        ohlcv = fetch_ohlcv(symbol, timeframe="15m", limit=50)
         log(f"{symbol} 🔍 Fetched {len(ohlcv)} candles for timeframe 15m", level="DEBUG")
-        if not ohlcv or len(ohlcv) < 28:  # 14 periods for ADX + buffer
+        if not ohlcv or len(ohlcv) < 28:
             log(
                 f"{symbol} ⚠️ Insufficient data: only {len(ohlcv) if ohlcv else 0} candles available, need at least 28 for ADX",
                 level="WARNING",
@@ -214,13 +210,15 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
 
         from config import LEVERAGE_MAP
 
-        leverage = LEVERAGE_MAP.get(symbol, 1)
+        leverage_key = (
+            symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")
+        )
+        leverage = LEVERAGE_MAP.get(leverage_key, 1)
         adjusted_qty = qty * leverage
 
-        # Ensure notional meets Binance minimums
         notional = adjusted_qty * entry_price
         while notional < MIN_NOTIONAL_OPEN:
-            adjusted_qty *= 1.1  # Increase qty until notional is sufficient
+            adjusted_qty *= 1.1
             notional = adjusted_qty * entry_price
             log(
                 f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet notional {notional:.2f}",
@@ -235,42 +233,35 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
             return
 
-        # Check margin against MAX_MARGIN_PERCENT
         balance = get_cached_balance()
         max_margin = balance * MAX_MARGIN_PERCENT
-        required_margin = notional / leverage  # Margin = Notional / Leverage
-        if required_margin > max_margin:
-            adjusted_qty = (max_margin * leverage) / entry_price  # Adjust qty to fit margin limit
+        required_margin = notional / leverage
+        if required_margin > max_margin * 0.9:  # Буфер 90%
+            adjusted_qty = (max_margin * leverage * 0.9) / entry_price
             notional = adjusted_qty * entry_price
             log(
                 f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet max margin limit (required: {required_margin:.2f}, max: {max_margin:.2f})",
                 level="DEBUG",
             )
 
-        # Ensure qty meets minimum precision and minimum quantity for the symbol
         precision = exchange.markets[symbol]["precision"]["amount"]
-        min_qty = exchange.markets[symbol]["limits"]["amount"][
-            "min"
-        ]  # Минимальное количество для символа
+        min_qty = exchange.markets[symbol]["limits"]["amount"]["min"]
         adjusted_qty = round(adjusted_qty, precision)
         if adjusted_qty < min_qty:
-            adjusted_qty = max(
-                min_qty, adjusted_qty
-            )  # Устанавливаем минимальное допустимое количество
+            adjusted_qty = max(min_qty, adjusted_qty)
             notional = adjusted_qty * entry_price
             log(
                 f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet minimum qty {min_qty}",
                 level="DEBUG",
             )
         elif adjusted_qty == 0:
-            adjusted_qty = 10**-precision  # Минимальное допустимое qty
+            adjusted_qty = 10**-precision
             notional = adjusted_qty * entry_price
             log(
                 f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet minimum precision {precision}",
                 level="DEBUG",
             )
 
-        # Recheck notional after adjustments
         if notional < MIN_NOTIONAL_OPEN:
             log(
                 f"{symbol} ⚠️ Notional too small after adjustment: {notional:.2f} < {MIN_NOTIONAL_OPEN}",
@@ -291,9 +282,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         if not DRY_RUN:
             try:
                 if side.lower() == "sell":
-                    order = exchange.create_market_order(symbol, "sell", qty)
+                    exchange.create_market_sell_order(symbol, qty)
                 else:
-                    order = exchange.create_market_order(symbol, "buy", qty)
+                    exchange.create_market_buy_order(symbol, qty)
                 log(
                     f"[Enter Trade] Opened {side.upper()} position for {symbol}: qty={qty}, entry={entry_price}",
                     level="INFO",
@@ -308,10 +299,18 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             entry_price, side, regime, score
         )
 
+        # Проверка на None
+        if any(v is None for v in [entry_price, tp1_price, sl_price]):
+            log(
+                f"⚠️ Skipping TP/SL for {symbol} — invalid prices (entry={entry_price}, tp1={tp1_price}, sl={sl_price})",
+                level="ERROR",
+            )
+            send_telegram_message(f"⚠️ Invalid prices for {symbol}", force=True)
+            return
+
         qty_tp1 = round(qty * qty_tp1_share, precision)
         qty_tp2 = round(qty * qty_tp2_share, precision)
 
-        # Ensure TP orders meet minimum notional
         if qty_tp1 * tp1_price < MIN_NOTIONAL_ORDER:
             log(
                 f"[Enter Trade] TP1 notional too small for {symbol}: {qty_tp1 * tp1_price:.2f} < {MIN_NOTIONAL_ORDER}",
@@ -427,6 +426,9 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
 
         initialize_cache()
 
+    except Exception as e:
+        log(f"[Enter Trade] Unexpected error for {symbol}: {str(e)}", level="ERROR")
+        send_telegram_message(f"❌ Unexpected error in trade {symbol}: {str(e)}", force=True)
     finally:
         with open_positions_lock:
             if DRY_RUN:
@@ -435,6 +437,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 open_positions_count -= 1
 
 
+# Остальные функции без изменений
 def track_stop_loss(symbol, side, entry_price, qty, opened_at):
     with monitored_stops_lock:
         monitored_stops[symbol] = {
@@ -459,7 +462,6 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 
     while True:
         try:
-            # Check if trade still exists in trade_manager
             trade = trade_manager.get_trade(symbol)
             if not trade:
                 log(
@@ -468,7 +470,6 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
                 )
                 break
 
-            # Check if position is still open
             position = get_position_size(symbol)
             if position <= 0:
                 log(
@@ -529,16 +530,14 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
     try:
         timeframe = "15m"
-        limit = 50  # Increase limit to ensure enough data for ADX (14 periods + buffer)
-        ohlcv = safe_call_retry(
-            exchange.fetch_ohlcv, symbol, timeframe, limit=limit, label=f"fetch_ohlcv {symbol}"
-        )
-        if not ohlcv or len(ohlcv) < 28:  # 14 periods for ADX + buffer for calculation
+        limit = 50
+        ohlcv = fetch_ohlcv(symbol, timeframe, limit=limit)
+        if not ohlcv or len(ohlcv) < 28:
             log(
                 f"[WARNING] Insufficient data for trailing stop for {symbol}: {len(ohlcv)} candles, need at least 28",
                 level="WARNING",
             )
-            trailing_distance = entry_price * 0.02  # Fallback to default
+            trailing_distance = entry_price * 0.02
         else:
             highs = [c[2] for c in ohlcv]
             lows = [c[3] for c in ohlcv]
@@ -551,7 +550,7 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
                     f"[WARNING] ADX calculation failed for {symbol}: insufficient data after processing",
                     level="WARNING",
                 )
-                trailing_distance = entry_price * 0.02  # Fallback to default
+                trailing_distance = entry_price * 0.02
             else:
                 adx = adx_series.iloc[-1]
                 multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
@@ -627,7 +626,7 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
         level="DEBUG",
     )
 
-    trade_closed = False  # Flag to prevent duplicate logging
+    trade_closed = False
     while True:
         try:
             price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")[
@@ -659,12 +658,10 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
                     trade_manager.update_trade(symbol, "soft_exit_hit", True)
                     log(f"[Soft Exit] Soft exit executed for {symbol} at {price}", level="INFO")
 
-                    # Log the trade result only once
                     if not trade_closed:
                         record_trade_result(symbol, side, entry_price, price, "soft_exit")
                         trade_closed = True
 
-                    # Cancel all open orders
                     try:
                         open_orders = exchange.fetch_open_orders(symbol)
                         for order in open_orders:
@@ -693,8 +690,6 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
                         initialize_cache()
                         break
 
-                break
-
             time.sleep(check_interval)
         except Exception as e:
             log(f"[ERROR] Soft Exit error for {symbol}: {e}", level="ERROR")
@@ -704,14 +699,12 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     global open_positions_count, dry_run_positions_count
 
-    # Log the call with caller information
-    caller_stack = traceback.format_stack()[-2]  # Get the caller info (previous frame)
+    caller_stack = traceback.format_stack()[-2]
     log(
         f"[DEBUG] record_trade_result called for {symbol}, result_type={result_type}, caller: {caller_stack}",
         level="DEBUG",
     )
 
-    # Check if the trade has already been logged (with rounded exit_price)
     trade_key = f"{symbol}_{result_type}_{entry_price}_{round(exit_price, 4)}"
     with logged_trades_lock:
         if trade_key in logged_trades:
@@ -733,7 +726,6 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         log(f"⚠️ No trade info for {symbol} — cannot record result")
         return
 
-    # Preserve soft_exit_hit if set
     final_result_type = result_type
     if trade.get("soft_exit_hit", False) and result_type in ["manual", "stop"]:
         final_result_type = "soft_exit"
@@ -763,7 +755,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         atr=0.0,
         adx=0.0,
         bb_width=0.0,
-        result_type=final_result_type,  # Use final_result_type
+        result_type=final_result_type,
     )
 
     msg = (
@@ -878,7 +870,6 @@ def open_real_trade(symbol, direction, qty, entry_price):
             level="INFO",
         )
 
-        # Update position cache
         initialize_cache()
         return order
     except Exception as e:
@@ -886,14 +877,14 @@ def open_real_trade(symbol, direction, qty, entry_price):
         raise
 
 
-def handle_panic(stop_event):  # Добавьте stop_event как аргумент
+def handle_panic(stop_event):
     global open_positions_count, dry_run_positions_count
     with open_positions_lock:
         open_positions_count = 0
         dry_run_positions_count = 0
 
     max_retries = 3
-    retry_delay = 5  # seconds
+    retry_delay = 5
 
     for symbol in list(trade_manager._trades.keys()):
         close_real_trade(symbol)

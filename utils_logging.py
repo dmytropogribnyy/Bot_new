@@ -1,3 +1,4 @@
+# utils_logging.py
 import os
 import shutil
 from datetime import datetime
@@ -6,6 +7,7 @@ from colorama import Fore, Style, init
 from filelock import FileLock
 
 from config import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 
 init(autoreset=True)
 
@@ -28,7 +30,6 @@ LOG_COLORS = {
 
 
 def notify_error(msg):
-    """Notify an error via Telegram."""
     from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 
     send_telegram_message(f"❌ {escape_markdown_v2(str(msg))}", force=True)
@@ -77,10 +78,11 @@ def log(message: str, important=False, level="INFO"):
         color = LOG_COLORS.get(level, Fore.WHITE)
         print(f"{color}{full_msg}{Style.RESET_ALL}")
         print()
+        if message_level >= LOG_LEVELS["ERROR"]:
+            notify_error(message)
 
 
 def get_recent_logs(n=50):
-    """Get the last n lines from the log file."""
     if not os.path.exists(LOG_FILE_PATH):
         log(f"Log file {LOG_FILE_PATH} not found.", level="WARNING")
         return "Log file not found."
@@ -99,14 +101,10 @@ def log_dry_entry(entry_data):
 
 
 def now():
-    """Get the current time in the configured timezone."""
     return datetime.now()
 
 
 def backup_config():
-    """Backup the config.py file."""
-    from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-
     backup_dir = "data/backups"
     try:
         os.makedirs(backup_dir, exist_ok=True)
@@ -124,9 +122,6 @@ def backup_config():
 
 
 def restore_config(backup_file=None):
-    """Restore the config.py file from a backup."""
-    from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-
     backup_dir = "data/backups"
     try:
         os.makedirs(backup_dir, exist_ok=True)
@@ -159,19 +154,11 @@ def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
             f"🌐 Old IP: `{old_ip}`\n"
             f"🌐 New IP: `{new_ip}`\n"
         )
-        # Note: router_reboot_mode is not defined here since the import was removed
-        # If router_reboot_mode is needed, it should be passed as a parameter or re-imported
-        # For now, let's comment out the usage to fix the issue
-        # if router_reboot_mode.get("enabled"):
-        #     message += "\n\n✅ No action needed. IP changed while reboot mode is active (30 min safe window)."
-        # elif forced_stop:
         if forced_stop:
             message += (
                 "\n\n🚫 *Bot will stop after closing open orders.*\n"
                 "You can cancel this with `/cancel_stop`."
             )
-        from telegram.telegram_utils import send_telegram_message
-
         send_telegram_message(message, force=True)
         log(f"IP changed from {old_ip} to {new_ip}", level="WARNING")
     except Exception as e:

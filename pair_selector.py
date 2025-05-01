@@ -1,3 +1,4 @@
+# pair_selector.py
 import json
 import os
 import time
@@ -10,28 +11,22 @@ from config import (
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
+    SYMBOLS_ACTIVE,
+    USDC_SYMBOLS,
+    USDT_SYMBOLS,
+    USE_TESTNET,
 )
+from core.binance_api import convert_symbol
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, safe_call_retry
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
-UPDATE_INTERVAL_SECONDS = 60 * 60  # 1 час
+UPDATE_INTERVAL_SECONDS = 60 * 60
 symbols_file_lock = Lock()
 
-DRY_RUN_FALLBACK_SYMBOLS = [
-    "ADA/USDC",
-    "XRP/USDC",
-    "SUI/USDC",
-    "LINK/USDC",
-    "ARB/USDC",
-    "AVAX/USDC",
-    "LTC/USDC",
-    "BCH/USDC",
-    "NEAR/USDC",
-    "ALGO/USDC",
-]
+DRY_RUN_FALLBACK_SYMBOLS = USDT_SYMBOLS if USE_TESTNET else USDC_SYMBOLS
 
 
 def fetch_all_symbols():
@@ -41,43 +36,36 @@ def fetch_all_symbols():
             log("No markets returned from API", level="ERROR")
             if DRY_RUN:
                 log("Using fallback symbols in DRY_RUN", level="WARNING")
+                send_telegram_message("⚠️ Using fallback symbols due to API failure", force=True)
                 return DRY_RUN_FALLBACK_SYMBOLS
+            log("No active symbols available and DRY_RUN is False, stopping", level="ERROR")
+            send_telegram_message("⚠️ No active symbols available, stopping bot", force=True)
             return []
         log(f"Loaded markets: {len(markets)} total symbols", level="DEBUG")
         log(f"Sample markets: {list(markets.keys())[:5]}...", level="DEBUG")
 
-        usdc_symbols = [
-            symbol
-            for symbol in markets.keys()
-            if symbol.endswith("/USDC:USDC") or symbol.endswith("USDC:USDC")
-        ]
-        log(f"Found {len(usdc_symbols)} USDC symbols: {usdc_symbols[:5]}...", level="INFO")
+        active_symbols = []
+        for symbol in SYMBOLS_ACTIVE:
+            api_symbol = convert_symbol(symbol)
+            if api_symbol in markets and markets[api_symbol]["active"]:
+                active_symbols.append(symbol)
+                log(
+                    f"Symbol: {symbol}, API: {api_symbol}, Type: {markets[api_symbol]['type']}, Active: {markets[api_symbol]['active']}",
+                    level="DEBUG",
+                )
+            else:
+                log(
+                    f"Symbol {symbol} (API: {api_symbol}) not found or inactive on exchange",
+                    level="WARNING",
+                )
 
-        for symbol in usdc_symbols[:5]:
-            log(
-                f"Symbol: {symbol}, Type: {markets[symbol]['type']}, Active: {markets[symbol]['active']}",
-                level="DEBUG",
-            )
-
-        active_usdc_symbols = [symbol for symbol in usdc_symbols if markets[symbol]["active"]]
         log(
-            f"Found {len(active_usdc_symbols)} active USDC symbols: {active_usdc_symbols[:5]}...",
-            level="DEBUG",
+            f"Validated {len(active_symbols)} active symbols: {active_symbols[:5]}...", level="INFO"
         )
-
-        symbols = [
-            symbol
-            for symbol in active_usdc_symbols
-            if markets[symbol]["type"] in ["future", "swap"]
-        ]
-
-        symbols = [symbol.replace(":USDC", "") for symbol in symbols]
-        log(f"Fetched {len(symbols)} USDC futures symbols: {symbols[:5]}...", level="INFO")
-
-        if not symbols and DRY_RUN:
-            log("No symbols fetched from API in DRY_RUN, using fallback symbols", level="WARNING")
+        if not active_symbols and DRY_RUN:
+            log("No symbols validated from API in DRY_RUN, using fallback symbols", level="WARNING")
             return DRY_RUN_FALLBACK_SYMBOLS
-        return symbols
+        return active_symbols
     except Exception as e:
         log(f"Error fetching all symbols: {str(e)}", level="ERROR")
         if DRY_RUN:
@@ -88,7 +76,7 @@ def fetch_all_symbols():
 
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
     try:
-        api_symbol = f"{symbol}:USDC"
+        api_symbol = convert_symbol(symbol)
         ohlcv = safe_call_retry(
             exchange.fetch_ohlcv, api_symbol, timeframe, limit=limit, label=f"fetch_ohlcv {symbol}"
         )
@@ -111,70 +99,60 @@ def calculate_volatility(df):
 
 
 def select_active_symbols():
-    # Use config values for dynamic pair counts
-    min_dynamic = MIN_DYNAMIC_PAIRS
-    max_dynamic = MAX_DYNAMIC_PAIRS
-
-    # Adjust dynamic pair counts based on balance if dynamic selection is enabled
-    if max_dynamic > 0:  # Only apply balance logic if dynamic pairs are allowed
+    min_dyn = MIN_DYNAMIC_PAIRS
+    max_dyn = MAX_DYNAMIC_PAIRS
+    if max_dyn > 0:
         balance = get_cached_balance()
         if balance < 100:
-            min_dynamic = min(min_dynamic, 5)  # Cap at 5 for small balances
-            max_dynamic = min(max_dynamic, 5)
+            min_dyn = min(min_dyn, 5)
+            max_dyn = min(max_dyn, 5)
         else:
-            min_dynamic = min(min_dynamic, 10)
-            max_dynamic = min(max_dynamic, 25)
+            min_dyn = min(min_dyn, 10)
+            max_dyn = min(max_dyn, 25)
 
     all_symbols = fetch_all_symbols()
-    symbol_data = {}
-
-    for symbol in all_symbols:
-        if symbol in FIXED_PAIRS:
+    fixed = FIXED_PAIRS
+    dynamic_data = {}
+    for s in all_symbols:
+        if s in fixed:
             continue
-        df = fetch_symbol_data(symbol)
+        df = fetch_symbol_data(s)
         if df is not None:
-            volatility = calculate_volatility(df)
-            volume = df["volume"].mean()
-            symbol_data[symbol] = {"volatility": volatility, "volume": volume}
+            dynamic_data[s] = {
+                "volatility": calculate_volatility(df),
+                "volume": df["volume"].mean(),
+            }
 
-    sorted_symbols = sorted(
-        symbol_data.items(),
-        key=lambda x: x[1]["volatility"] * x[1]["volume"],
-        reverse=True,
+    sorted_dyn = sorted(
+        dynamic_data.items(), key=lambda x: x[1]["volatility"] * x[1]["volume"], reverse=True
     )[:30]
+    dyn_count = max(min_dyn, min(max_dyn, len(sorted_dyn)))
+    selected_dyn = [s for s, _ in sorted_dyn[:dyn_count]]
 
-    dynamic_count = max(min_dynamic, min(max_dynamic, len(sorted_symbols)))
-    selected_dynamic = [s[0] for s in sorted_symbols[:dynamic_count]]
-
-    active_symbols = FIXED_PAIRS + selected_dynamic
-    log(
-        f"Selected {len(active_symbols)} active symbols: {len(FIXED_PAIRS)} fixed, {len(selected_dynamic)} dynamic",
-        level="INFO",
-    )
-
+    active_symbols = fixed + selected_dyn
+    log(f"Validated {len(active_symbols)} active symbols: {active_symbols[:5]}...", level="INFO")
     try:
         os.makedirs(os.path.dirname(SYMBOLS_FILE), exist_ok=True)
-        with symbols_file_lock:
-            with open(SYMBOLS_FILE, "w") as f:
-                json.dump(active_symbols, f)
+        with symbols_file_lock, open(SYMBOLS_FILE, "w") as f:
+            json.dump(active_symbols, f)
         log(f"Saved active symbols to {SYMBOLS_FILE}", level="INFO")
     except Exception as e:
         log(f"Error saving active symbols to {SYMBOLS_FILE}: {e}", level="ERROR")
 
+    msg = (
+        f"🔄 Symbol rotation completed:\n"
+        f"Total pairs: {len(active_symbols)}\n"
+        f"Fixed: {len(fixed)}, Dynamic: {len(selected_dyn)}"
+    )
+    send_telegram_message(msg, force=True)
     return active_symbols
 
 
 def start_symbol_rotation(stop_event):
     while not stop_event.is_set():
         try:
-            new_symbols = select_active_symbols()
-            msg = (
-                f"🔄 Symbol rotation completed:\n"
-                f"Total pairs: {len(new_symbols)}\n"
-                f"Fixed: {len(FIXED_PAIRS)}, Dynamic: {len(new_symbols) - len(FIXED_PAIRS)}"
-            )
-            send_telegram_message(msg, force=True, parse_mode="")
+            select_active_symbols()
         except Exception as e:
             log(f"Symbol rotation error: {e}", level="ERROR")
-            send_telegram_message(f"⚠️ Symbol rotation failed: {str(e)}", force=True, parse_mode="")
+            send_telegram_message(f"⚠️ Symbol rotation failed: {e}", force=True)
         time.sleep(UPDATE_INTERVAL_SECONDS)

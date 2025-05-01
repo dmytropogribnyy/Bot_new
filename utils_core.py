@@ -6,6 +6,7 @@ from threading import Lock
 
 from config import LEVERAGE_MAP, SYMBOLS_ACTIVE
 from core.exchange_init import exchange
+from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
 STATE_FILE = "data/bot_state.json"
@@ -72,7 +73,7 @@ def get_cached_balance():
             or api_cache["balance"]["value"] is None
         ):
             try:
-                log("[DEBUG] Fetching balance from exchange...")
+                log("[DEBUG] Fetching balance from exchange...", level="DEBUG")
                 balance_info = exchange.fetch_balance()
                 total_margin_balance = float(balance_info["info"].get("totalMarginBalance", 0))
                 log(
@@ -87,6 +88,7 @@ def get_cached_balance():
                 )
             except Exception as e:
                 log(f"Error fetching balance: {e}", level="ERROR")
+                send_telegram_message(f"⚠️ Failed to fetch balance: {e}", force=True)
                 return (
                     api_cache["balance"]["value"]
                     if api_cache["balance"]["value"] is not None
@@ -112,6 +114,7 @@ def get_cached_positions():
                 )
             except Exception as e:
                 log(f"Error fetching positions: {e}", level="ERROR")
+                send_telegram_message(f"⚠️ Failed to fetch positions: {e}", force=True)
                 return api_cache["positions"]["value"] if api_cache["positions"]["value"] else []
         return api_cache["positions"]["value"]
 
@@ -141,8 +144,6 @@ def load_state():
                 important=True,
                 level="ERROR",
             )
-            from telegram.telegram_utils import send_telegram_message
-
             send_telegram_message(
                 f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.",
                 force=True,
@@ -154,8 +155,6 @@ def load_state():
                 important=True,
                 level="ERROR",
             )
-            from telegram.telegram_utils import send_telegram_message
-
             send_telegram_message(
                 f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.",
                 force=True,
@@ -195,8 +194,6 @@ def save_state(state, retries=3, delay=1):
                     level="ERROR",
                 )
                 if attempt == retries:
-                    from telegram.telegram_utils import send_telegram_message
-
                     send_telegram_message(
                         f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}",
                         force=True,
@@ -219,6 +216,7 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
                 time.sleep(delay)
             else:
                 log(f"{label} exhausted retries", level="ERROR")
+                send_telegram_message(f"⚠️ {label} failed after {tries} retries", force=True)
                 return None
 
 

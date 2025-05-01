@@ -122,15 +122,15 @@ Thread(target=run_trailing_stop, args=(...)).start()
 
 ## 🔧 Config Highlights
 
-| Param          | Value   | Description                  |
-| -------------- | ------- | ---------------------------- |
-| RISK_PERCENT   | 0.05    | 5% per trade                 |
-| TP1_PERCENT    | 0.007   | default (regime-scaled)      |
-| TP2_PERCENT    | 0.013   | default (regime-scaled)      |
-| SL_PERCENT     | 0.01    | or ATR-based                 |
-| MIN_NET_PROFIT | 0.3-2.0 | per config, adaptive by size |
-| MAX_POSITIONS  | 5-10    | by balance                   |
-| LEVERAGE       | 5–10x   | per-symbol, auto-applied     |
+| Param          | Value     | Description                  |
+| -------------- | --------- | ---------------------------- |
+| RISK_PERCENT   | 0.01-0.05 | 1%-5% per trade              |
+| TP1_PERCENT    | 0.007     | default (regime-scaled)      |
+| TP2_PERCENT    | 0.013     | default (regime-scaled)      |
+| SL_PERCENT     | 0.01      | or ATR-based                 |
+| MIN_NET_PROFIT | 0.3-2.0   | per config, adaptive by size |
+| MAX_POSITIONS  | 5-10      | by balance                   |
+| LEVERAGE       | 5–10x     | per-symbol, auto-applied     |
 
 ---
 

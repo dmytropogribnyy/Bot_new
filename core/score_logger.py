@@ -1,12 +1,15 @@
+# score_logger.py
 import csv
 import os
 from datetime import datetime
 
-from config import DRY_RUN
 from utils_logging import log
 
 
 def log_score_history(symbol, score):
+    # Move import inside the function
+    from config import DRY_RUN
+
     try:
         if DRY_RUN:
             return  # Не логируем в DRY_RUN

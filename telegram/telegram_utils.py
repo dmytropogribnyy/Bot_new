@@ -1,7 +1,6 @@
 import requests
 
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
-from utils_logging import log
 
 
 def escape_markdown_v2(text: str) -> str:
@@ -11,6 +10,8 @@ def escape_markdown_v2(text: str) -> str:
 
 
 def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
+    from utils_logging import log  # Импорт внутри функции
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log("[telegram_utils] Telegram not configured.", level="WARNING")
         return

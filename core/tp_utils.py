@@ -1,20 +1,22 @@
 # tp_utils.py
-from config import (
-    AUTO_TP_SL_ENABLED,
-    FLAT_ADJUSTMENT,
-    SL_PERCENT,
-    TP1_PERCENT,
-    TP1_SHARE,
-    TP2_PERCENT,
-    TP2_SHARE,
-    TREND_ADJUSTMENT,
-)
 
 
 def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score: float = 5):
     """
     Вычисляет цены TP1, TP2 и SL на основе цены входа, стороны и режима рынка.
     """
+    # Move imports inside the function
+    from config import (
+        AUTO_TP_SL_ENABLED,
+        FLAT_ADJUSTMENT,
+        SL_PERCENT,
+        TP1_PERCENT,
+        TP1_SHARE,
+        TP2_PERCENT,
+        TP2_SHARE,
+        TREND_ADJUSTMENT,
+    )
+
     tp1_pct = TP1_PERCENT
     tp2_pct = TP2_PERCENT
     sl_pct = SL_PERCENT
