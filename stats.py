@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from config import (
+from common.config_loader import (
     AGGRESSIVENESS_THRESHOLD,
     EXPORT_PATH,
     LOG_LEVEL,

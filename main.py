@@ -4,7 +4,7 @@ import threading
 import time
 from datetime import datetime
 
-from config import (
+from common.config_loader import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     MAX_POSITIONS,

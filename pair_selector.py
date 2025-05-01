@@ -6,7 +6,7 @@ from threading import Lock
 
 import pandas as pd
 
-from config import (
+from common.config_loader import (
     DRY_RUN,
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,

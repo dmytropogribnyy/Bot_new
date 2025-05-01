@@ -3,7 +3,7 @@ import csv
 import os
 from datetime import datetime
 
-from config import DRY_RUN
+from common.config_loader import DRY_RUN  # ✅ добавили сюда
 from utils_logging import log, log_dry_entry
 
 ENTRY_LOG_PATH = "data/entry_log.csv"

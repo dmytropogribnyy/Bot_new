@@ -60,7 +60,7 @@ def get_htf_trend(symbol, tf="1h"):
 
 
 def passes_filters(df, symbol):
-    from config import (
+    from common.config_loader import (
         DRY_RUN,
         FILTER_THRESHOLDS,
         VOLATILITY_ATR_THRESHOLD,
@@ -141,7 +141,7 @@ def passes_filters(df, symbol):
 
 
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
-    from config import (
+    from common.config_loader import (
         AUTO_TP_SL_ENABLED,
         DRY_RUN,
         LEVERAGE_MAP,

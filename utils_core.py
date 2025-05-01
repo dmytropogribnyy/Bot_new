@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from threading import Lock
 
-from config import LEVERAGE_MAP, SYMBOLS_ACTIVE
+from common.config_loader import LEVERAGE_MAP, SYMBOLS_ACTIVE
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log

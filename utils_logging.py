@@ -6,7 +6,7 @@ from datetime import datetime
 from colorama import Fore, Style, init
 from filelock import FileLock
 
-from config import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL
+from common.config_loader import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 
 init(autoreset=True)

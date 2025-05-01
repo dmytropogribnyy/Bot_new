@@ -3,7 +3,7 @@ import time
 
 import pandas as pd
 
-from config import DRY_RUN, EXPORT_PATH  # Добавляем импорт DRY_RUN
+from common.config_loader import DRY_RUN, EXPORT_PATH  # ✅ добавили сюда
 from utils_logging import log
 
 

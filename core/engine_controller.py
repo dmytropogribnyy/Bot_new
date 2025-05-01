@@ -1,4 +1,5 @@
 # core/engine_controller.py
+# core/engine_controller.py
 
 import os
 import threading
@@ -6,8 +7,8 @@ import time
 
 import pandas as pd
 
+from common.config_loader import AGGRESSIVENESS_THRESHOLD, DRY_RUN  # ✅ Добавляем сюда
 from core.aggressiveness_controller import get_aggressiveness_score
-from core.balance_watcher import check_balance_change
 from core.entry_logger import log_entry
 from core.notifier import notify_dry_trade, notify_error
 from core.risk_utils import get_adaptive_risk_percent, get_max_positions
@@ -41,9 +42,7 @@ def get_smart_switch_stats():
         return 0.5
 
 
-def get_adaptive_switch_limit(
-    balance, active_positions, recent_switch_winrate, aggressiveness_threshold
-):
+def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate, aggressiveness_threshold):
     base_limit = 1 if balance < 50 else 2
     if active_positions == 0:
         base_limit += 1
@@ -58,7 +57,6 @@ def get_adaptive_switch_limit(
 
 def run_trading_cycle(symbols, stop_event):
     # Ленивые импорты, чтобы разорвать циклы
-    from config import AGGRESSIVENESS_THRESHOLD, DRY_RUN
     from core.symbol_processor import process_symbol
     from core.trade_engine import (
         close_dry_trade,
@@ -94,18 +92,10 @@ def run_trading_cycle(symbols, stop_event):
 
     # Основной торговый цикл
     balance = get_cached_balance()
-    last_balance = check_balance_change(balance, last_balance)
-
-    current_time = time.time()
-    if current_time - last_balance_log_time >= 300:
-        log(f"Balance for cycle: {round(balance, 2)} USDC", level="INFO")
-        last_balance_log_time = current_time
 
     active_positions = sum(get_position_size(sym) > 0 for sym in symbols)
     recent_wr = get_smart_switch_stats()
-    switch_limit = get_adaptive_switch_limit(
-        balance, active_positions, recent_wr, AGGRESSIVENESS_THRESHOLD
-    )
+    switch_limit = get_adaptive_switch_limit(balance, active_positions, recent_wr, AGGRESSIVENESS_THRESHOLD)
     smart_switch_count = 0
 
     for symbol in symbols:
@@ -114,9 +104,7 @@ def run_trading_cycle(symbols, stop_event):
             break
 
         try:
-            if current_time - last_check_log_time >= 300:
-                log(f"🔍 Checking {symbol}", level="INFO")
-                last_check_log_time = current_time
+            log(f"🔍 Checking {symbol}", level="DEBUG")  # Просто лог на каждую проверку
 
             trade_data = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
             if not trade_data:

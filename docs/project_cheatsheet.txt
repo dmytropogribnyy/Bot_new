@@ -21,4 +21,75 @@ find . -name "__pycache__" -type d -exec rm -r {} + && find . -name "*.pyc" -typ
 # Альтернативная чистка через Python
 python clean_cache.py
 
+
+ruff check --select F401,F403,F404,E402,E401 .
+Находит все ошибки импортов и сразу показывает где!
+
+# Исправление всех отступов (вручную через VSCode)
+Ctrl+A → Ctrl+Shift+P → Format Document
+
 =========================================
+✅ Настройки проекта:
+
+1. VSCode settings.json:
+    - editor.formatOnSave = true
+    - tabSize = 4, insertSpaces = true
+    - detectIndentation = false
+    - ruff.linting.enabled = true
+    - python.formatting.provider = black (резервный)
+    - autoSave = onFocusChange
+
+2. pyproject.toml:
+    - [tool.ruff]: настройки Ruff
+    - [tool.black]: настройки Black
+    - [tool.isort]: сортировка импортов
+    - [tool.mypy]: базовые проверки типов
+    - [tool.pytest]: настройки для тестов (если будут)
+
+3. tasks.json:
+    - Task "Safe Compile Project" → запускает `safe_compile.py`
+    - Клавиша сборки (Ctrl+Shift+B) запускает компиляцию проекта.
+
+4. launch.json:
+    - Позволяет вручную запускать `safe_compile.py` в режиме отладки.
+
+---
+
+🔵 При необходимости устранения серых пунктов:
+    - Убедиться в правильности pyproject.toml
+    - Перезагрузить окно VSCode ("Reload Window")
+
+✅ VSCode project setup checklist:
+
+- settings.json:
+  - Автоформатирование через Ruff при сохранении.
+  - Резервный форматтер Black.
+  - Включён lint Ruff, отключены pylint, flake8, mypy.
+  - tabSize = 4, insertSpaces = true, rulers = 100.
+  - Автоактивация venv.
+
+- tasks.json:
+  - Команда "Lint and Fix with Ruff" → `ruff check --fix .`
+
+- launch.json:
+  - Простой запуск активированного проекта через `python`.
+
+- pyproject.toml:
+  - Ruff настроен: select ["E", "F", "I", "W"], auto-fix.
+  - Стиль кавычек: double.
+  - Line length: 100.
+  - Исключения: .git, venv, __pycache__, backup папки.
+
+
+# VSCode Project Settings
+
+- Python и Ruff интегрированы через расширение Microsoft.
+- Ruff используется для линтинга и форматирования (`charliermarsh.ruff`).
+- AutoFix включён на сохранение (`source.fixAll.ruff`).
+- Имена модулей добавлены в `python.analysis.extraPaths` (`core`, `telegram`).
+- Настроены rulers на 100 символов.
+- Форматирование пробелами, табуляция 4.
+- Автоматическая активация виртуального окружения при запуске терминала.
+- Вручную выбран линтер и форматтер через команды:
+  - `Python: Select Linter -> Ruff`
+  - `Python: Configure Formatter -> Ruff`

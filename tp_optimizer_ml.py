@@ -6,7 +6,7 @@ import shutil
 
 import pandas as pd
 
-from config import (
+from common.config_loader import (
     CONFIG_FILE,
     TP_ML_MIN_TRADES_FULL,
     TP_ML_MIN_TRADES_INITIAL,

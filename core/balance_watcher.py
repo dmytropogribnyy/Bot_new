@@ -1,4 +1,4 @@
-from config import trade_stats, trade_stats_lock
+from common.config_loader import trade_stats, trade_stats_lock
 from core.notifier import notify_deposit, notify_withdrawal
 from utils_logging import log
 

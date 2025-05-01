@@ -1,31 +1,36 @@
 {
-  // Общие настройки
-  "editor.formatOnSave": true,
-  "editor.tabSize": 4,
-  "editor.rulers": [100],
-  "files.trimTrailingWhitespace": true,
-  "files.insertFinalNewline": true,
-  "files.autoSave": "onFocusChange",
-
-  // Python
-  "python.linting.enabled": true,
-  "ruff.linting.enabled": true,
-  "ruff.formatOnSave": true,
-  "python.terminal.activateEnvironment": true, // Automatically activate venv for this project
-
-  // Проверка орфографии
-  "cSpell.enabled": false,
-  "editor.codeActionsOnSave": {
-    "source.fixAll": "never"
-  },
-
-  "[python]": {
-    "editor.formatOnType": true,
     "editor.formatOnSave": true,
-    "editor.defaultFormatter": "charliermarsh.ruff"
-  },
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "editor.rulers": [100],
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "files.autoSave": "onFocusChange",
 
-  // Cody: путь к проекту
-  "cody.codebase": "file:///C:/Bots/BinanceBot",
-  "cody.commandCodeLenses": false
+    // Ruff
+    "ruff.linting.enabled": true,
+    "ruff.formatOnSave": true,
+    "ruff.lint.fixable": ["I001"],
+
+    // Python
+    "python.analysis.extraPaths": ["./core", "./telegram"],
+    "python.terminal.activateEnvironment": true,
+    "python.terminal.executeInFileDir": true,
+
+    // Для Python файлов
+    "[python]": {
+        "editor.formatOnType": true,
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "charliermarsh.ruff"
+    },
+
+    // Проверка орфографии
+    "cSpell.enabled": false,
+
+    // Авто-действия при сохранении
+    "editor.codeActionsOnSave": {
+        "source.fixAll.ruff": "explicit",
+        "source.organizeImports": "explicit"
+    }
 }

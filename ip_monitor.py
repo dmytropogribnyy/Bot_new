@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from config import (
+from common.config_loader import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,

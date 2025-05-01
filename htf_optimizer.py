@@ -1,11 +1,11 @@
-# htf_optimizer.py (с авто-включением и авто-выключением HTF фильтра)
+# htf_optimizer.py
 
 import datetime
 import shutil
 
 import pandas as pd
 
-from config import CONFIG_FILE, USE_HTF_CONFIRMATION
+from common.config_loader import CONFIG_FILE, USE_HTF_CONFIRMATION  # ✅ добавили сюда
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 

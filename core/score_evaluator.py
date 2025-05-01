@@ -1,10 +1,17 @@
 # score_evaluator.py
+# score_evaluator.py
 import threading
 import time
 from datetime import datetime
 
 import pandas as pd
 
+from common.config_loader import (
+    ADAPTIVE_SCORE_ENABLED,
+    DRY_RUN,
+    EXPORT_PATH,
+    SCORE_WEIGHTS,
+)
 from utils_logging import log
 
 last_score_data = {}
@@ -13,7 +20,6 @@ last_score_lock = threading.Lock()
 
 def get_adaptive_min_score(trade_count, winrate):
     # Move imports inside the function
-    from config import EXPORT_PATH
     from utils_core import get_cached_balance
 
     balance = get_cached_balance()
@@ -61,7 +67,6 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
         winrate (float): Винрейт (для расчёта порога).
     """
     # Move imports inside the function
-    from config import ADAPTIVE_SCORE_ENABLED, DRY_RUN, SCORE_WEIGHTS
 
     raw_score = 0.0
     price = df["close"].iloc[-1]

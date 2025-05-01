@@ -1,5 +1,5 @@
 # binance_api.py
-from config import USE_TESTNET
+from common.config_loader import USE_TESTNET
 from core.exchange_init import exchange
 from utils_core import safe_call_retry
 from utils_logging import log

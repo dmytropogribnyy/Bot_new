@@ -1,6 +1,6 @@
 import requests
 
-from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+from common.config_loader import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN  # ✅ добавили
 
 
 def escape_markdown_v2(text: str) -> str:
@@ -94,7 +94,6 @@ def send_telegram_file(file_path: str, caption: str = ""):
 
 def send_telegram_image(image_path, caption=""):
     """Send image to Telegram via sendPhoto (inline preview)."""
-    from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"

@@ -1,7 +1,7 @@
 # core/exchange_init.py
 import ccxt
 
-from config import API_KEY, API_SECRET, USE_TESTNET
+from common.config_loader import API_KEY, API_SECRET, USE_TESTNET  # ✅ добавили сюда
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 

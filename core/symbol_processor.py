@@ -1,4 +1,4 @@
-from config import (
+from common.config_loader import (
     LEVERAGE_MAP,
     MAX_POSITIONS,
     MIN_NOTIONAL_OPEN,

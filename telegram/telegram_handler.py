@@ -3,7 +3,7 @@ import time
 
 import requests
 
-from config import TELEGRAM_TOKEN, VERBOSE
+from common.config_loader import TELEGRAM_TOKEN, VERBOSE  # ✅ добавили
 
 UPDATE_FILE = "data/last_update.txt"
 

@@ -8,7 +8,7 @@ from threading import Lock
 import pandas as pd
 import ta
 
-from config import (
+from common.config_loader import (
     ADX_FLAT_THRESHOLD,
     ADX_TREND_THRESHOLD,
     AGGRESSIVENESS_THRESHOLD,
@@ -17,6 +17,7 @@ from config import (
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
+    LEVERAGE_MAP,  # ❗ Не забудь добавить сюда! Он используется в enter_trade
     MAX_MARGIN_PERCENT,
     MAX_OPEN_ORDERS,
     MAX_POSITIONS,
@@ -207,8 +208,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 return
             log(f"Re-entry triggered for {symbol} at {entry_price}", level="INFO")
             send_telegram_message(f"🔄 Re-entry {symbol} @ {entry_price}", force=True)
-
-        from config import LEVERAGE_MAP
 
         leverage_key = (
             symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")

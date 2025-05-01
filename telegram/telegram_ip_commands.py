@@ -1,6 +1,6 @@
 import json
 
-from config import DRY_RUN, FIXED_PAIRS
+from common.config_loader import DRY_RUN, FIXED_PAIRS  # ✅ добавили
 from core.trade_engine import close_dry_trade, trade_manager
 from ip_monitor import (
     cancel_router_reboot_mode,

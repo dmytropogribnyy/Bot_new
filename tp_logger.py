@@ -3,7 +3,7 @@ import os
 
 import pandas as pd
 
-from config import DRY_RUN, EXPORT_PATH, TP_LOG_FILE
+from common.config_loader import DRY_RUN, EXPORT_PATH, TP_LOG_FILE
 from stats import now_with_timezone
 from utils_logging import log
 
