@@ -16,7 +16,6 @@ from common.config_loader import (
     USDT_SYMBOLS,
     USE_TESTNET,
 )
-from core.binance_api import convert_symbol
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, safe_call_retry
@@ -240,6 +239,11 @@ def select_active_symbols():
 
     send_telegram_message(msg, force=True)
     return active_symbols
+
+
+# Добавить в начало файла pair_selector.py:
+def convert_symbol(symbol: str) -> str:
+    return symbol.replace("/", "")
 
 
 def start_symbol_rotation(stop_event):
