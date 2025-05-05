@@ -68,10 +68,7 @@ def get_cached_balance():
     with cache_lock:
         now = time.time()
         log("Checking balance cache...", level="DEBUG")
-        if (
-            now - api_cache["balance"]["timestamp"] > CACHE_TTL
-            or api_cache["balance"]["value"] is None
-        ):
+        if now - api_cache["balance"]["timestamp"] > CACHE_TTL or api_cache["balance"]["value"] is None:
             try:
                 log("[DEBUG] Fetching balance from exchange...", level="DEBUG")
                 balance_info = exchange.fetch_balance()
@@ -89,11 +86,7 @@ def get_cached_balance():
             except Exception as e:
                 log(f"Error fetching balance: {e}", level="ERROR")
                 send_telegram_message(f"⚠️ Failed to fetch balance: {e}", force=True)
-                return (
-                    api_cache["balance"]["value"]
-                    if api_cache["balance"]["value"] is not None
-                    else 0.0
-                )
+                return api_cache["balance"]["value"] if api_cache["balance"]["value"] is not None else 0.0
         log(f"Returning cached balance: {api_cache['balance']['value']}", level="DEBUG")
         return api_cache["balance"]["value"]
 
@@ -101,10 +94,7 @@ def get_cached_balance():
 def get_cached_positions():
     with cache_lock:
         now = time.time()
-        if (
-            now - api_cache["positions"]["timestamp"] > CACHE_TTL
-            or not api_cache["positions"]["value"]
-        ):
+        if now - api_cache["positions"]["timestamp"] > CACHE_TTL or not api_cache["positions"]["value"]:
             try:
                 api_cache["positions"]["value"] = exchange.fetch_positions()
                 api_cache["positions"]["timestamp"] = now
@@ -232,6 +222,128 @@ def set_leverage_for_symbols():
             label=f"set_leverage {symbol}",
         )
     log("Leverage set for all symbols", level="INFO")
+
+
+# --- Новые функции для адаптивного риск-менеджмента ---
+
+
+def get_adaptive_risk_percent(balance):
+    """
+    Возвращает адаптивный процент риска на основе размера счета.
+
+    Args:
+        balance: Размер депозита
+
+    Returns:
+        Процент риска для данного размера счета
+    """
+    if balance < 100:
+        return 0.01  # 1%
+    elif balance < 150:
+        return 0.02  # 2%
+    elif balance < 300:
+        return 0.03  # 3%
+    else:
+        return 0.05  # 5%
+
+
+def get_max_positions(balance):
+    """
+    Возвращает максимальное количество позиций на основе размера счета.
+
+    Args:
+        balance: Размер депозита
+
+    Returns:
+        Максимальное количество открытых позиций
+    """
+    if balance < 100:
+        return 1
+    elif balance < 150:
+        return 2
+    elif balance < 300:
+        return 3
+    else:
+        return 5
+
+
+def get_min_net_profit(balance):
+    """
+    Возвращает минимальную допустимую прибыль для сделки на основе размера счета.
+
+    Args:
+        balance: Размер депозита
+
+    Returns:
+        Минимальная прибыль в USDC
+    """
+    if balance < 100:
+        return 0.2  # $0.2 для очень малых депозитов
+    elif balance < 200:
+        return 0.3  # $0.3 для малых депозитов
+    elif balance < 500:
+        return 0.5  # $0.5 для средних депозитов
+    else:
+        return 1.0  # $1.0 для больших депозитов
+
+
+def calculate_risk_reward_ratio(entry_price, tp_price, sl_price, side):
+    """
+    Рассчитывает соотношение риск/прибыль для сделки.
+
+    Args:
+        entry_price: Цена входа
+        tp_price: Цена тейк-профита
+        sl_price: Цена стоп-лосса
+        side: Направление ("buy" или "sell")
+
+    Returns:
+        Соотношение риск/прибыль (reward / risk)
+    """
+    if side.lower() == "buy":
+        reward = abs(tp_price - entry_price)
+        risk = abs(entry_price - sl_price)
+    else:  # side == "sell"
+        reward = abs(entry_price - tp_price)
+        risk = abs(sl_price - entry_price)
+
+    if risk == 0:
+        return 0  # Избегаем деления на ноль
+
+    return reward / risk
+
+
+def check_min_profit(entry_price, tp_price, qty, tp_share, side, taker_fee_rate, min_profit):
+    """
+    Проверяет, обеспечивает ли сделка минимальную прибыль после комиссий.
+
+    Args:
+        entry_price: Цена входа
+        tp_price: Цена тейк-профита
+        qty: Количество
+        tp_share: Доля позиции, закрываемая на TP (0-1)
+        side: Направление ("buy" или "sell")
+        taker_fee_rate: Комиссия тейкера
+        min_profit: Минимальная требуемая прибыль в USDC
+
+    Returns:
+        (bool, float): Результат проверки и ожидаемая прибыль
+    """
+    # Рассчитываем прибыль без комиссий
+    if side.lower() == "buy":
+        gross_profit = qty * tp_share * (tp_price - entry_price)
+    else:  # side == "sell"
+        gross_profit = qty * tp_share * (entry_price - tp_price)
+
+    # Рассчитываем комиссии
+    open_commission = qty * entry_price * taker_fee_rate
+    close_commission = qty * tp_share * tp_price * taker_fee_rate
+    total_commission = open_commission + close_commission
+
+    # Чистая прибыль
+    net_profit = gross_profit - total_commission
+
+    return net_profit >= min_profit, net_profit
 
 
 if __name__ == "__main__":

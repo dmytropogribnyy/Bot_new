@@ -35,18 +35,46 @@ def save_aggressiveness():
         log(f"Failed to save aggressiveness: {e}", level="ERROR")
 
 
-def update_aggressiveness(winrate, sl_ratio, tp2_ratio, avg_pnl):
+def update_aggressiveness(winrate, sl_ratio, tp2_ratio, avg_pnl, balance=None):
     """
-    Обновляет уровень агрессивности на основе статистики торговли.
+    Updates aggressiveness level based on trading statistics with account size awareness.
+
+    Args:
+        winrate: Win percentage (0.0-1.0)
+        sl_ratio: Ratio of stop-loss hits
+        tp2_ratio: Ratio of TP2 hits
+        avg_pnl: Average profit and loss
+        balance: Current account balance (for small account adaptation)
     """
     with LOCK:
         old_score = aggressiveness_data.get("score", 0.5)
 
-        # Расчёт нового значения с EMA-сглаживанием
+        # Calculate raw score
         raw = 0.25 * winrate + 0.25 * (1 - sl_ratio) + 0.25 * tp2_ratio + 0.25 * avg_pnl
-        new_score = 0.7 * old_score + 0.3 * raw
+
+        # Apply account size adaptation if balance is provided
+        if balance is not None:
+            # More conservative for small accounts
+            if balance < 100:
+                # For very small accounts, cap maximum aggressiveness
+                raw = min(raw, 0.6)
+                # Use more momentum from old score (slower changes)
+                new_score = 0.8 * old_score + 0.2 * raw
+            elif balance < 150:
+                # For small accounts, moderate aggressiveness cap
+                raw = min(raw, 0.75)
+                # Slightly slower adaptation
+                new_score = 0.75 * old_score + 0.25 * raw
+            else:
+                # Normal calculation for larger accounts
+                new_score = 0.7 * old_score + 0.3 * raw
+        else:
+            # Original calculation if no balance provided
+            new_score = 0.7 * old_score + 0.3 * raw
+
         new_score = round(max(0.0, min(1.0, new_score)), 2)
 
+        # Update data
         aggressiveness_data["score"] = new_score
         aggressiveness_data["updated_at"] = datetime.utcnow().isoformat()
         aggressiveness_data.setdefault("history", []).append(
@@ -56,12 +84,13 @@ def update_aggressiveness(winrate, sl_ratio, tp2_ratio, avg_pnl):
                 "sl_ratio": sl_ratio,
                 "tp2_ratio": tp2_ratio,
                 "avg_pnl": avg_pnl,
+                "balance": balance,
                 "score": new_score,
             }
         )
 
         save_aggressiveness()
-        log(f"🤖 Aggressiveness score updated: {old_score} → {new_score}")
+        log(f"🤖 Aggressiveness score updated: {old_score} → {new_score}" + (f" (Small Account: {balance} USDC)" if balance and balance < 150 else ""))
 
 
 def get_aggressiveness_score():

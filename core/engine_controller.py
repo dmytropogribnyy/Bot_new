@@ -1,5 +1,4 @@
 # core/engine_controller.py
-# core/engine_controller.py
 
 import os
 import threading
@@ -7,13 +6,13 @@ import time
 
 import pandas as pd
 
-from common.config_loader import AGGRESSIVENESS_THRESHOLD, DRY_RUN  # ✅ Добавляем сюда
+from common.config_loader import AGGRESSIVENESS_THRESHOLD, DRY_RUN
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.entry_logger import log_entry
 from core.notifier import notify_dry_trade, notify_error
-from core.risk_utils import get_adaptive_risk_percent, get_max_positions
+from core.risk_utils import get_max_positions
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, load_state, set_leverage_for_symbols
+from utils_core import get_cached_balance, get_cached_positions, load_state, set_leverage_for_symbols
 from utils_logging import log
 
 last_trade_times = {}
@@ -56,7 +55,7 @@ def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate, 
 
 
 def run_trading_cycle(symbols, stop_event):
-    # Ленивые импорты, чтобы разорвать циклы
+    # Lazy imports to break circular dependencies
     from core.symbol_processor import process_symbol
     from core.trade_engine import (
         close_dry_trade,
@@ -66,17 +65,21 @@ def run_trading_cycle(symbols, stop_event):
         trade_manager,
     )
 
+    # Validate input
+    if not symbols:
+        log("No symbols provided to trading cycle", level="WARNING")
+        return
+
     state = load_state()
 
-    # Установка плеча
+    # Set leverage for all symbols
     set_leverage_for_symbols()
 
-    # Адаптивный риск и позиции
+    # Adaptive risk and position management
     balance = get_cached_balance()
-    get_adaptive_risk_percent(balance)
-    get_max_positions(balance)
+    max_positions = get_max_positions(balance)
 
-    # Обработка флага остановки
+    # Handle stopping flag
     if state.get("stopping"):
         open_trades = sum(get_position_size(sym) > 0 for sym in symbols)
         log(f"Open trades count: {open_trades}", level="DEBUG")
@@ -90,10 +93,16 @@ def run_trading_cycle(symbols, stop_event):
             log(f"Waiting for {open_trades} open positions...", level="INFO")
         return
 
-    # Основной торговый цикл
-    balance = get_cached_balance()
+    # Main trading cycle
+    # Efficiently check position count once
+    positions = get_cached_positions()
+    active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
 
-    active_positions = sum(get_position_size(sym) > 0 for sym in symbols)
+    # Check against max_positions before processing
+    if active_positions >= max_positions:
+        log(f"Max positions ({max_positions}) reached. Active: {active_positions}. Skipping cycle.", level="INFO")
+        return
+
     recent_wr = get_smart_switch_stats()
     switch_limit = get_adaptive_switch_limit(balance, active_positions, recent_wr, AGGRESSIVENESS_THRESHOLD)
     smart_switch_count = 0
@@ -103,8 +112,15 @@ def run_trading_cycle(symbols, stop_event):
             log(f"[Trading Cycle] Stop signal received, aborting cycle for {symbol}.", level="INFO")
             break
 
+        # Skip if max positions reached during iteration
+        positions = get_cached_positions()
+        current_active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
+        if current_active_positions >= max_positions:
+            log(f"Max positions ({max_positions}) reached during cycle. Skipping remaining symbols.", level="INFO")
+            break
+
         try:
-            log(f"🔍 Checking {symbol}", level="DEBUG")  # Просто лог на каждую проверку
+            log(f"🔍 Checking {symbol}", level="DEBUG")
 
             trade_data = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
             if not trade_data:
@@ -113,7 +129,7 @@ def run_trading_cycle(symbols, stop_event):
             score = trade_data["score"]
             is_reentry = trade_data["is_reentry"]
 
-            # Smart switch
+            # Smart switch logic
             current_trade = trade_manager.get_trade(symbol)
             if current_trade:
                 current_score = current_trade.get("score", 0)
@@ -144,7 +160,7 @@ def run_trading_cycle(symbols, stop_event):
                 else:
                     continue
 
-            # Вход в сделку
+            # Enter trade
             if DRY_RUN:
                 notify_dry_trade(trade_data)
                 log_entry(trade_data, status="SUCCESS", mode="DRY_RUN")

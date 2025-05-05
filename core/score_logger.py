@@ -3,22 +3,37 @@ import csv
 import os
 from datetime import datetime
 
-from common.config_loader import DRY_RUN  # ✅ добавили сюда
+from common.config_loader import DRY_RUN, get_adaptive_score_threshold
+from utils_core import get_cached_balance
 from utils_logging import log
 
 
 def log_score_history(symbol, score):
-    # Move import inside the function
-
     try:
         if DRY_RUN:
-            return  # Не логируем в DRY_RUN
+            return  # Don't log in DRY_RUN
+
+        # Get account details for context
+        balance = get_cached_balance()
+        account_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
+        threshold = get_adaptive_score_threshold(balance)
 
         os.makedirs("data", exist_ok=True)
         filepath = "data/score_history.csv"
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check if file exists to determine if we need to write headers
+        file_exists = os.path.isfile(filepath)
+
         with open(filepath, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([symbol, score, now_str])
+
+            # Write headers if file is new
+            if not file_exists:
+                writer.writerow(["Symbol", "Score", "Timestamp", "Balance", "Category", "Threshold"])
+
+            # Write data with additional context
+            writer.writerow([symbol, score, now_str, balance, account_category, threshold])
+
     except Exception as e:
         log(f"[ScoreHistory] Failed to log score for {symbol}: {e}", level="ERROR")

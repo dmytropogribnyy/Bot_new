@@ -1,15 +1,10 @@
 # score_evaluator.py
-# score_evaluator.py
 import threading
-import time
 from datetime import datetime
-
-import pandas as pd
 
 from common.config_loader import (
     ADAPTIVE_SCORE_ENABLED,
     DRY_RUN,
-    EXPORT_PATH,
     SCORE_WEIGHTS,
 )
 from utils_logging import log
@@ -18,42 +13,87 @@ last_score_data = {}
 last_score_lock = threading.Lock()
 
 
-def get_adaptive_min_score(trade_count, winrate):
-    # Move imports inside the function
-    from utils_core import get_cached_balance
+def get_adaptive_min_score(balance, market_volatility=None):
+    """
+    Возвращает адаптивный минимальный score на основе размера счета и волатильности рынка.
 
-    balance = get_cached_balance()
+    Args:
+        balance: Размер депозита
+        market_volatility: Оценка общей волатильности рынка (high/medium/low)
 
-    # Адаптация base в зависимости от депозита
+    Returns:
+        Минимальный score для входа в сделку
+    """
+    # Базовый минимальный score в зависимости от баланса
     if balance < 100:
-        base = 2.0  # Смягчаем для депозита < 100 долларов
-    elif 100 <= balance < 500:
-        base = 2.25
-    elif 500 <= balance < 1000:
-        base = 2.5
+        base_threshold = 2.5  # Снижено для маленьких депозитов
+    elif balance < 200:
+        base_threshold = 3.0
     else:
-        base = 2.0  # Для депозита ≥ 1000 долларов
+        base_threshold = 3.5
 
-    if trade_count < 20:
-        threshold = base + 0.25  # Уменьшаем влияние trade_count
+    # Корректировка на волатильность рынка
+    if market_volatility == "high":
+        # В высоковолатильном рынке снижаем требования - больше сигналов
+        return max(2.0, base_threshold - 0.5)
+    elif market_volatility == "low":
+        # В низковолатильном рынке повышаем требования - меньше ложных сигналов
+        return base_threshold + 0.5
+
+    return base_threshold
+
+
+def get_risk_percent_by_score(balance, score):
+    """
+    Адаптивный процент риска на основе score и размера счета.
+
+    Args:
+        balance: Размер депозита
+        score: Оценка качества сигнала (1-5)
+
+    Returns:
+        Процент риска для данной сделки
+    """
+    from utils_core import get_adaptive_risk_percent
+
+    # Получаем базовый риск в зависимости от размера счета
+    base_risk = get_adaptive_risk_percent(balance)
+
+    # Корректируем риск в зависимости от score
+    if score < 3.0:
+        risk = base_risk * 0.5  # 50% от базового риска для слабых сигналов
+    elif score < 3.5:
+        risk = base_risk * 0.75  # 75% от базового риска для средних сигналов
+    elif score < 4.0:
+        risk = base_risk  # 100% от базового риска для хороших сигналов
     else:
-        threshold = base - (winrate - 0.5) * 1.0  # Влияние winrate ±0.5
+        risk = min(base_risk * 1.2, 0.02)  # 120% от базового риска для отличных сигналов, но не более 2%
 
-    # Корректировка на основе частоты сделок
-    if trade_count > 0:
-        try:
-            df = pd.read_csv(EXPORT_PATH)
-            if not df.empty:
-                days = (time.time() - pd.to_datetime(df["Date"]).min().timestamp()) / (24 * 60 * 60)
-                trades_per_day = trade_count / max(days, 1)
-                if trades_per_day < 1:
-                    threshold -= 0.25  # Смягчаем, если сделок мало
-                elif trades_per_day > 5:
-                    threshold += 0.25  # Ужесточаем, если сделок много
-        except Exception as e:
-            log(f"[ERROR] Failed to calculate trades per day: {e}")
+    # Дополнительное ограничение для очень маленьких депозитов
+    if balance < 100:
+        risk = min(risk, 0.01)  # Не более 1% для депозитов менее 100 USDC
 
-    return max(threshold, base - 0.5)  # Минимальный порог
+    return risk
+
+
+def get_required_risk_reward_ratio(score):
+    """
+    Возвращает минимальное требуемое соотношение риск/прибыль в зависимости от score.
+
+    Args:
+        score: Оценка качества сигнала (1-5)
+
+    Returns:
+        Минимальное соотношение риск/прибыль
+    """
+    if score < 3.0:
+        return 2.0  # Для слабых сигналов требуем соотношение 1:2
+    elif score < 3.5:
+        return 1.7  # Для средних сигналов требуем соотношение 1:1.7
+    elif score < 4.0:
+        return 1.5  # Для хороших сигналов требуем соотношение 1:1.5
+    else:
+        return 1.3  # Для отличных сигналов требуем соотношение 1:1.3
 
 
 def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
@@ -66,7 +106,7 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
         trade_count (int): Количество сделок (для расчёта порога).
         winrate (float): Винрейт (для расчёта порога).
     """
-    # Move imports inside the function
+    from utils_core import get_cached_balance
 
     raw_score = 0.0
     price = df["close"].iloc[-1]
@@ -125,20 +165,35 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
     normalized_score = (raw_score / max_raw_score) * 5
     final_score = round(normalized_score, 1)
 
+    # Получаем текущий баланс
+    balance = get_cached_balance()
+
+    # Определяем волатильность рынка (можно реализовать более сложную логику)
+    market_volatility = "medium"
+    if "atr" in df.columns and not df["atr"].empty:
+        atr_pct = df["atr"].iloc[-1] / price
+        if atr_pct > 0.02:  # 2% ATR считаем высокой волатильностью
+            market_volatility = "high"
+        elif atr_pct < 0.005:  # 0.5% ATR считаем низкой волатильностью
+            market_volatility = "low"
+
+    # Получаем минимальный порог на основе баланса и волатильности
+    min_score = get_adaptive_min_score(balance, market_volatility)
+
     # Логирование деталей score
     with last_score_lock:
         last_score_data[symbol] = {
             "symbol": symbol,
             "total": final_score,
             "details": breakdown,
-            "threshold": get_adaptive_min_score(trade_count, winrate),
-            "final": final_score >= get_adaptive_min_score(trade_count, winrate),
+            "threshold": min_score,
+            "final": final_score >= min_score,
             "timestamp": datetime.utcnow(),
         }
 
     if DRY_RUN:
         log(
-            f"{symbol or ''} 📊 Score: {final_score:.1f}/5 (raw: {raw_score:.2f}/{max_raw_score:.1f})",
+            f"{symbol or ''} 📊 Score: {final_score:.1f}/5 (raw: {raw_score:.2f}/{max_raw_score:.1f}), " f"Min required: {min_score:.1f}, Market volatility: {market_volatility}",
             level="DEBUG",
         )
 
@@ -146,6 +201,9 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
 
 
 def explain_score(df):
+    """
+    Объясняет факторы, повлиявшие на расчет score, в человекочитаемом виде.
+    """
     price = df["close"].iloc[-1]
     ema = df["ema"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
@@ -169,6 +227,15 @@ def explain_score(df):
 
 
 def get_last_score_breakdown(symbol=None):
+    """
+    Возвращает детальную информацию о последнем рассчитанном score.
+
+    Args:
+        symbol: Символ пары (если None, возвращает самый последний для любой пары)
+
+    Returns:
+        Словарь с информацией о score или None
+    """
     with last_score_lock:
         if not last_score_data:
             return None

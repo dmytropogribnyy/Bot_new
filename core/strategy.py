@@ -38,9 +38,7 @@ def fetch_data(symbol, tf="15m"):
         df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
         df["macd"] = ta.trend.MACD(df["close"]).macd()
         df["macd_signal"] = ta.trend.MACD(df["close"]).macd_signal()
-        df["atr"] = ta.volatility.AverageTrueRange(
-            df["high"], df["low"], df["close"], window=14
-        ).average_true_range()
+        df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
         df["fast_ema"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
         df["slow_ema"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
         df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
@@ -71,9 +69,7 @@ def passes_filters(df, symbol):
 
     balance = get_cached_balance()
     filter_mode = "default_light" if balance < 100 else "default"
-    normalized_symbol = (
-        symbol.split(":")[0].replace("/", "") if ":" in symbol else symbol.replace("/", "")
-    )
+    normalized_symbol = symbol.split(":")[0].replace("/", "") if ":" in symbol else symbol.replace("/", "")
     base_filters = FILTER_THRESHOLDS.get(normalized_symbol, FILTER_THRESHOLDS[filter_mode])
 
     filters = get_volatility_filters(symbol, base_filters)
@@ -120,9 +116,7 @@ def passes_filters(df, symbol):
             f"{symbol} ⛔️ Rejected: BB Width {bb_width:.5f} < {filters['bb']} (relax={relax_factor})",
             level="DEBUG",
         )
-        send_telegram_message(
-            f"⚠️ {symbol} rejected: BB Width {bb_width:.5f} < {filters['bb']}", force=True
-        )
+        send_telegram_message(f"⚠️ {symbol} rejected: BB Width {bb_width:.5f} < {filters['bb']}", force=True)
         return False
 
     if VOLATILITY_SKIP_ENABLED:
@@ -133,9 +127,7 @@ def passes_filters(df, symbol):
         range_ratio = (high - low) / price
         if atr < VOLATILITY_ATR_THRESHOLD and range_ratio < VOLATILITY_RANGE_THRESHOLD:
             if DRY_RUN:
-                log(
-                    f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr:.5f}, Range: {range_ratio:.5f})"
-                )
+                log(f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr:.5f}, Range: {range_ratio:.5f})")
             return False
     return True
 
@@ -199,7 +191,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     log(f"{symbol} 🔎 Step 3: Scoring check", level="DEBUG")
     trade_count, winrate = get_trade_stats()
     score = calculate_score(df, symbol, trade_count, winrate)
-    min_required = 0  # Temporary change to force a signal for testing
+    min_required = MIN_TRADE_SCORE
     if MIN_TRADE_SCORE is not None and score < MIN_TRADE_SCORE:
         log(
             f"{symbol} ⛔️ Rejected: score {score:.2f} < MIN_TRADE_SCORE {MIN_TRADE_SCORE}",
@@ -213,19 +205,14 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     if score < min_required:
         if DRY_RUN:
-            log(
-                f"{symbol} ❌ No entry: insufficient score\n"
-                f"Final Score: {score:.2f} / (Required: {min_required:.4f})"
-            )
+            log(f"{symbol} ❌ No entry: insufficient score\n" f"Final Score: {score:.2f} / (Required: {min_required:.4f})")
         return None
 
     log(f"{symbol} 🔎 Step 4: Direction determination", level="DEBUG")
     direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
 
     entry_price = df["close"].iloc[-1]
-    stop_price = (
-        entry_price * (1 - SL_PERCENT) if direction == "BUY" else entry_price * (1 + SL_PERCENT)
-    )
+    stop_price = entry_price * (1 - SL_PERCENT) if direction == "BUY" else entry_price * (1 + SL_PERCENT)
     risk_percent = get_adaptive_risk_percent(balance)
     qty = calculate_order_quantity(entry_price, stop_price, balance, risk_percent)
 
@@ -244,9 +231,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         )
 
     regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
-    tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(
-        entry_price, direction, regime, score
-    )
+    tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(entry_price, direction, regime, score)
 
     if notional < MIN_NOTIONAL_OPEN:
         qty = MIN_NOTIONAL_OPEN / entry_price

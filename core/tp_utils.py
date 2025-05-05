@@ -1,5 +1,7 @@
 # tp_utils.py
 
+import pandas as pd
+
 from common.config_loader import (
     AUTO_TP_SL_ENABLED,
     FLAT_ADJUSTMENT,
@@ -10,30 +12,62 @@ from common.config_loader import (
     TP2_SHARE,
     TREND_ADJUSTMENT,
 )
+from utils_logging import log
 
 
-def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score: float = 5):
+def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score: float = 5, df=None):
     """
-    Вычисляет цены TP1, TP2 и SL на основе цены входа, стороны и режима рынка.
+    Вычисляет цены TP1, TP2 и SL на основе ATR и цены входа.
+
+    Args:
+        entry_price: Цена входа
+        side: "buy" или "sell"
+        regime: Режим рынка ("flat", "trend", или None)
+        score: Оценка сигнала (1-5)
+        df: DataFrame с данными OHLC и индикаторами, включая 'atr'
     """
+    # Дефолтные значения
     tp1_pct = TP1_PERCENT
     tp2_pct = TP2_PERCENT
     sl_pct = SL_PERCENT
 
+    # Используем ATR если доступен
+    if df is not None and "atr" in df.columns and not df["atr"].empty:
+        try:
+            atr = df["atr"].iloc[-1]
+            # Проверка на валидность ATR
+            if atr and not pd.isna(atr):
+                atr_pct = atr / entry_price
+
+                # ATR-зависимые расчеты с минимальными порогами
+                tp1_pct = max(atr_pct * 1.0, TP1_PERCENT)  # Минимум TP1_PERCENT
+                tp2_pct = max(atr_pct * 2.0, TP2_PERCENT)  # Минимум TP2_PERCENT
+                sl_pct = max(atr_pct * 1.5, SL_PERCENT)  # Минимум SL_PERCENT
+
+                log(f"ATR-зависимый расчет TP/SL: ATR={atr:.6f}, TP1={tp1_pct:.4f}, TP2={tp2_pct:.4f}, SL={sl_pct:.4f}", level="DEBUG")
+        except Exception as e:
+            log(f"Ошибка расчета ATR-зависимых TP/SL: {e}", level="ERROR")
+
+    # Применяем корректировки режима рынка
     if AUTO_TP_SL_ENABLED and regime:
         if regime == "flat":
             tp1_pct *= FLAT_ADJUSTMENT
-            tp2_pct *= FLAT_ADJUSTMENT if tp2_pct else None
+            tp2_pct *= FLAT_ADJUSTMENT
             sl_pct *= FLAT_ADJUSTMENT
+            log(f"Применена корректировка для бокового рынка: TP1={tp1_pct:.4f}, TP2={tp2_pct:.4f}, SL={sl_pct:.4f}", level="DEBUG")
         elif regime == "trend":
-            tp2_pct *= TREND_ADJUSTMENT if tp2_pct else None
+            tp2_pct *= TREND_ADJUSTMENT
             sl_pct *= TREND_ADJUSTMENT
+            log(f"Применена корректировка для трендового рынка: TP2={tp2_pct:.4f}, SL={sl_pct:.4f}", level="DEBUG")
 
-    if score == 3:
+    # Корректировки на основе оценки для слабых сигналов
+    if score <= 3:
         tp1_pct *= 0.8
-        tp2_pct = None
+        tp2_pct = None  # Отключаем TP2 для слабых сигналов
         sl_pct *= 0.8
+        log(f"Применена корректировка для слабого сигнала: TP1={tp1_pct:.4f}, TP2=None, SL={sl_pct:.4f}", level="DEBUG")
 
+    # Расчет конечных цен
     if side.lower() == "buy":
         tp1_price = entry_price * (1 + tp1_pct)
         tp2_price = entry_price * (1 + tp2_pct) if tp2_pct else None

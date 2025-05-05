@@ -49,11 +49,7 @@ def get_safe_stats():
 def build_performance_report(title: str, period: str):
     stats = get_safe_stats()
     winrate = round((stats["wins"] / stats["total"]) * 100, 1) if stats["total"] else 0
-    streak_str = (
-        f"{abs(stats['streak_loss'])} wins"
-        if stats["streak_loss"] < 0
-        else (f"{stats['streak_loss']} losses" if stats["streak_loss"] > 0 else "-")
-    )
+    streak_str = f"{abs(stats['streak_loss'])} wins" if stats["streak_loss"] < 0 else (f"{stats['streak_loss']} losses" if stats["streak_loss"] > 0 else "-")
     mode = get_mode_label()
 
     if stats["total"] == 0:
@@ -108,10 +104,7 @@ def export_trade_log():
     try:
         with open("data/trade_log.txt", "a") as f:
             timestamp = now_with_timezone().strftime("%Y-%m-%d %H:%M")
-            f.write(
-                f"[{timestamp}] Total: {stats['total']}, Wins: {stats['wins']}, "
-                f"Losses: {stats['losses']}, PnL: {stats['pnl']}, Withdrawals: {stats['withdrawals']}\n"
-            )
+            f.write(f"[{timestamp}] Total: {stats['total']}, Wins: {stats['wins']}, " f"Losses: {stats['losses']}, PnL: {stats['pnl']}, Withdrawals: {stats['withdrawals']}\n")
         send_telegram_message(escape_markdown_v2("Trade log exported."), force=True)
         if LOG_LEVEL == "DEBUG":
             log("Trade log exported successfully.", level="DEBUG")
@@ -140,9 +133,7 @@ def send_weekly_report():
 def send_monthly_report():
     end = now_with_timezone()
     start = (end - timedelta(days=30)).strftime("%d.%m")
-    msg = build_performance_report(
-        "Monthly Performance Summary", f"{start}-{end.strftime('%d.%m')}"
-    )
+    msg = build_performance_report("Monthly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent monthly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
@@ -151,9 +142,7 @@ def send_monthly_report():
 def send_quarterly_report():
     end = now_with_timezone()
     start = (end - timedelta(days=90)).strftime("%d.%m")
-    msg = build_performance_report(
-        "3-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}"
-    )
+    msg = build_performance_report("3-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent quarterly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
@@ -162,9 +151,7 @@ def send_quarterly_report():
 def send_halfyear_report():
     end = now_with_timezone()
     start = (end - timedelta(days=180)).strftime("%d.%m")
-    msg = build_performance_report(
-        "6-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}"
-    )
+    msg = build_performance_report("6-Month Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent half-year report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
@@ -213,58 +200,106 @@ def generate_pnl_graph(days=7):
 
 def generate_daily_report(days=1):
     """
-    Генерирует ежедневный отчёт и отправляет его в Telegram.
-    Включает статистику по сделкам, винрейт, PnL и relax_factor.
+    Generates a daily report and sends it to Telegram.
+    Includes trade statistics, winrate, PnL, commission impact,
+    and priority pair performance for small accounts.
 
     Args:
-        days (int): Период для анализа (по умолчанию 1 день).
+        days (int): Period for analysis (default 1 day).
     """
     try:
-        # Читаем данные из tp_performance.csv
+        from utils_core import get_cached_balance
+
+        # Read data from tp_performance.csv
         df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
         if df.empty:
             report_message = "📊 Daily Report\n" "No trades recorded yet."
             send_telegram_message(report_message, force=True, parse_mode="")
             return
 
-        # Фильтруем данные за последние days дней
+        # Filter data for the last days days
         df = df[df["Date"] >= pd.Timestamp.now() - pd.Timedelta(days=days)]
         if df.empty:
             report_message = f"📊 Daily Report\n" f"No trades in the last {days} day(s)."
             send_telegram_message(report_message, force=True, parse_mode="")
             return
 
-        # Общее количество сделок
+        # Get current balance for context
+        balance = get_cached_balance()
+        balance_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
+
+        # Total number of trades
         total_trades = len(df)
 
-        # Количество выигрышных сделок (TP1, TP2)
+        # Winning trades count (TP1, TP2, SOFT_EXIT with profit)
         win_trades = len(df[df["Result"].isin(["TP1", "TP2"])])
+        if "Net PnL (%)" in df.columns:
+            # If we have net PnL column, use that for more accurate win counting
+            win_trades = len(df[df["Net PnL (%)"] > 0])
+
         winrate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
 
-        # Общий PnL
+        # Total PnL
         total_pnl = df["PnL (%)"].sum()
 
-        # Средний PnL за сделку
+        # Average PnL per trade
         avg_pnl = df["PnL (%)"].mean() if total_trades > 0 else 0.0
 
-        # Получаем relax_factor
+        # Get relax_factor
         relax_factor = get_filter_relax_factor()
 
-        # Формируем отчёт
+        # Form base report
         report_message = (
             f"📊 Daily Report (Last {days} Day(s))\n"
+            f"Account: {balance:.2f} USDC ({balance_category} Account)\n"
             f"Total Trades: {total_trades}\n"
             f"Winrate: {winrate:.2f}%\n"
             f"Total PnL: {total_pnl:.2f}%\n"
             f"Average PnL per Trade: {avg_pnl:.2f}%\n"
             f"Filter Relax Factor: {relax_factor:.2f}"
         )
-        send_telegram_message(report_message, force=True, parse_mode="")
 
-        log(f"Daily report sent: {report_message}", level="INFO")
+        # Add commission impact analysis (critical for small accounts)
+        if "Commission" in df.columns:
+            total_commission = df["Commission"].sum()
+            commission_pct = (total_commission / (balance * total_pnl / 100)) * 100 if total_pnl != 0 else 0
+            report_message += "\n\n💰 Commission Analysis:\n"
+            report_message += f"Total Commission: {total_commission:.6f} USDC\n"
+            report_message += f"Commission Impact: {commission_pct:.2f}% of profit"
+
+        # Add absolute profit tracking (especially important for small accounts)
+        if "Absolute Profit" in df.columns:
+            total_abs_profit = df["Absolute Profit"].sum()
+            avg_profit_per_trade = total_abs_profit / total_trades if total_trades > 0 else 0
+            report_message += "\n\n💵 Absolute Profit Analysis:\n"
+            report_message += f"Total Profit: {total_abs_profit:.6f} USDC\n"
+            report_message += f"Avg Profit/Trade: {avg_profit_per_trade:.6f} USDC"
+
+        # Add priority pair tracking for small accounts
+        if balance < 150:  # For small accounts
+            priority_pairs = ["XRP/USDC", "DOGE/USDC", "ADA/USDC", "SOL/USDC"]
+            priority_df = df[df["Symbol"].isin(priority_pairs)]
+            if not priority_df.empty:
+                priority_winrate = len(priority_df[priority_df["Result"].isin(["TP1", "TP2"])]) / len(priority_df) * 100
+                report_message += "\n\n🔍 Priority Pairs Performance:\n"
+                report_message += f"Trades: {len(priority_df)}\n"
+                report_message += f"Winrate: {priority_winrate:.2f}%"
+                if "Absolute Profit" in priority_df.columns:
+                    priority_profit = priority_df["Absolute Profit"].sum()
+                    report_message += f"\nProfit: {priority_profit:.6f} USDC"
+                    report_message += f"\n% of Total Profit: {(priority_profit/total_abs_profit)*100:.2f}%" if total_abs_profit != 0 else ""
+
+        # Add account growth information
+        if "Absolute Profit" in df.columns:
+            growth_pct = (total_abs_profit / balance) * 100
+            daily_growth = growth_pct / days
+            report_message += "\n\n📈 Account Growth:\n"
+            report_message += f"Growth: {growth_pct:.2f}% over {days} day(s)\n"
+            report_message += f"Daily Growth Rate: {daily_growth:.2f}%"
+
+        send_telegram_message(report_message, force=True, parse_mode="")
+        log(f"Daily report sent with {total_trades} trades", level="INFO")
 
     except Exception as e:
         log(f"[ERROR] Failed to generate daily report: {e}", level="ERROR")
-        send_telegram_message(
-            f"⚠️ Failed to generate daily report: {str(e)}", force=True, parse_mode=""
-        )
+        send_telegram_message(f"⚠️ Failed to generate daily report: {str(e)}", force=True, parse_mode="")
