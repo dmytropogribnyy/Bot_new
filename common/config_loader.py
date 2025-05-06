@@ -1,4 +1,4 @@
-# common/config_loader.py (optimized for small deposits)
+# common/config_loader.py (optimized for short-term trading with small deposits)
 import os
 from pathlib import Path
 from threading import Lock
@@ -30,8 +30,6 @@ TELEGRAM_TOKEN = get_config("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_config("TELEGRAM_CHAT_ID")
 
 # ========== Paths and Files ==========
-# Match paths exactly as in the original config.py
-# In config_loader.py, add or update this line in the Paths and Files section:
 CONFIG_FILE = get_config("CONFIG_FILE", "C:/Bots/BinanceBot/common/config_loader.py")
 EXPORT_PATH = get_config("EXPORT_PATH", "C:/Bots/BinanceBot/data/tp_performance.csv")
 TP_LOG_FILE = get_config("TP_LOG_FILE", "C:/Bots/BinanceBot/data/tp_performance.csv")
@@ -43,6 +41,7 @@ else:
     print(f"TP_LOG_FILE found at: {TP_LOG_FILE}")
 
 # ========== Trading Symbols ==========
+# We'll keep these for reference but will use dynamic selection
 USDT_SYMBOLS = ["BTC/USDT"]
 USDC_SYMBOLS = [
     "BTC/USDC",
@@ -57,14 +56,17 @@ USDC_SYMBOLS = [
     "SUI/USDC",
 ]
 
-# Priority symbols for small deposits - low price, good volatility
+# Priority symbols for small deposits - expanded with more low-price options
 PRIORITY_SMALL_BALANCE_PAIRS = [
     "XRP/USDC",  # Low price, high liquidity
     "DOGE/USDC",  # Low price, good volatility
     "ADA/USDC",  # Low price, steady volatility
     "SOL/USDC",  # Medium price, good volume
+    "MATIC/USDC",  # Added: Low price, high liquidity
+    "DOT/USDC",  # Added: Good volatility profile
 ]
 
+# Symbol selection will be dynamic, but these serve as fallback
 SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMBOLS_ACTIVE") else USDC_SYMBOLS
 FIXED_PAIRS = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
 MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 10))
@@ -79,11 +81,12 @@ MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
 MIN_NOTIONAL_ORDER = float(get_config("MIN_NOTIONAL_ORDER", 20))
 
 # ========== TP/SL Settings ==========
-TP1_PERCENT = float(get_config("TP1_PERCENT", 0.007))  # 0.7%
-TP2_PERCENT = float(get_config("TP2_PERCENT", 0.013))  # 1.3%
-SL_PERCENT = float(get_config("SL_PERCENT", 0.01))  # 1.0%
-TP1_SHARE = float(get_config("TP1_SHARE", 0.7))
-TP2_SHARE = float(get_config("TP2_SHARE", 0.3))
+# Modified for faster profit taking
+TP1_PERCENT = float(get_config("TP1_PERCENT", 0.006))  # 0.6% (lowered from 0.7%)
+TP2_PERCENT = float(get_config("TP2_PERCENT", 0.013))  # 1.3% (unchanged)
+SL_PERCENT = float(get_config("SL_PERCENT", 0.009))  # 0.9% (lowered from 1.0% for better risk:reward)
+TP1_SHARE = float(get_config("TP1_SHARE", 0.8))  # 80% (increased from 70%)
+TP2_SHARE = float(get_config("TP2_SHARE", 0.2))  # 20% (reduced from 30%)
 
 # ========== Fee Rates ==========
 TAKER_FEE_RATE = float(get_config("TAKER_FEE_RATE", 0.0005))  # 0.05%
@@ -93,7 +96,18 @@ MAKER_FEE_RATE = float(get_config("MAKER_FEE_RATE", 0.0002))  # 0.02%
 USE_HTF_CONFIRMATION = get_config("USE_HTF_CONFIRMATION", "False") == "True"
 ADAPTIVE_SCORE_ENABLED = get_config("ADAPTIVE_SCORE_ENABLED", "True") == "True"
 AGGRESSIVENESS_THRESHOLD = float(get_config("AGGRESSIVENESS_THRESHOLD", 0.6))
-SCORE_WEIGHTS = {"RSI": 2.0, "MACD_RSI": 2.0, "MACD_EMA": 2.0, "HTF": 1.0, "VOLUME": 1.0}
+
+# Enhanced scoring weights for short-term trading
+SCORE_WEIGHTS = {
+    "RSI": 1.5,  # Reduced from 2.0
+    "MACD_RSI": 2.0,  # Unchanged
+    "MACD_EMA": 2.0,  # Unchanged
+    "HTF": 0.5,  # Reduced from 1.0 (less important for short-term)
+    "VOLUME": 1.5,  # Increased from 1.0 (more important for short-term)
+    "EMA_CROSS": 2.0,  # New: Short-term momentum indicator
+    "VOL_SPIKE": 1.5,  # New: Volume spike detection
+    "PRICE_ACTION": 1.5,  # New: Recent price action importance
+}
 
 # ========== Auto TP/SL Adjustments ==========
 AUTO_TP_SL_ENABLED = get_config("AUTO_TP_SL_ENABLED", "True") == "True"
@@ -105,13 +119,12 @@ ADX_FLAT_THRESHOLD = float(get_config("ADX_FLAT_THRESHOLD", 15))
 # ========== Exit Strategies ==========
 ENABLE_TRAILING = get_config("ENABLE_TRAILING", "True") == "True"
 ENABLE_BREAKEVEN = get_config("ENABLE_BREAKEVEN", "True") == "True"
-BREAKEVEN_TRIGGER = float(get_config("BREAKEVEN_TRIGGER", 0.5))
+BREAKEVEN_TRIGGER = float(get_config("BREAKEVEN_TRIGGER", 0.4))  # Changed from 0.5 to 0.4 for earlier breakeven
 SOFT_EXIT_ENABLED = get_config("SOFT_EXIT_ENABLED", "True") == "True"
+SOFT_EXIT_THRESHOLD = float(get_config("SOFT_EXIT_THRESHOLD", 0.7))  # Changed from 0.8 to 0.7 for earlier profit taking
 SOFT_EXIT_SHARE = float(get_config("SOFT_EXIT_SHARE", 0.5))
-SOFT_EXIT_THRESHOLD = float(get_config("SOFT_EXIT_THRESHOLD", 0.8))
 
 # ========== Signal Strength Control ==========
-# Moved this section earlier to prevent import errors
 MIN_TRADE_SCORE = int(get_config("MIN_TRADE_SCORE", 0))
 SCORE_BASED_RISK = get_config("SCORE_BASED_RISK", "True") == "True"
 SCORE_BASED_TP = get_config("SCORE_BASED_TP", "True") == "True"
@@ -126,40 +139,56 @@ TP_ML_MIN_TRADES_FULL = int(get_config("TP_ML_MIN_TRADES_FULL", 20))
 TP_ML_SWITCH_THRESHOLD = float(get_config("TP_ML_SWITCH_THRESHOLD", 0.05))
 
 # ========== Safety and Margin Buffer ==========
-MARGIN_SAFETY_BUFFER = float(get_config("MARGIN_SAFETY_BUFFER", 0.9))  # Use 90% of available margin
+MARGIN_SAFETY_BUFFER = float(get_config("MARGIN_SAFETY_BUFFER", 0.92))  # Increased from 0.9 to 0.92
 
 # ========== Timezone Settings ==========
 TIMEZONE = pytz.timezone(get_config("TIMEZONE", "Europe/Bratislava"))
 
+# ========== Trading Hours Settings ========== (New section)
+TRADING_HOURS_FILTER = get_config("TRADING_HOURS_FILTER", "False") == "True"  # Enable/disable trading hours filter
+HIGH_ACTIVITY_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]  # UTC hours with highest market activity
+WEEKEND_TRADING = get_config("WEEKEND_TRADING", "False") == "True"  # Disable trading on weekends
+
+# ========== Short-term Trading Optimizations ========== (New section)
+SHORT_TERM_MODE = get_config("SHORT_TERM_MODE", "True") == "True"  # Enable short-term focused trading
+MOMENTUM_LOOKBACK = int(get_config("MOMENTUM_LOOKBACK", 6))  # Number of candles to check for momentum
+VOLUME_SPIKE_THRESHOLD = float(get_config("VOLUME_SPIKE_THRESHOLD", 1.5))  # Volume increase to consider as spike
+BREAKOUT_DETECTION = get_config("BREAKOUT_DETECTION", "True") == "True"  # Enable breakout detection
+
 # ========== Small Balance Filter Thresholds ==========
-# Enhanced filter thresholds for small deposits (less strict to allow more trades)
+# Adjusted for more opportunities in short-term trading
 FILTER_THRESHOLDS = {
     "default": {"atr": 0.0025, "adx": 15.0, "bb": 0.007, "relax_factor": 1.0},
-    "default_light": {"atr": 0.002, "adx": 13.0, "bb": 0.006, "relax_factor": 0.9},  # Less strict for small accounts
-    "XRPUSDC": {"atr": 0.0018, "adx": 12.0, "bb": 0.005, "relax_factor": 0.8},  # Optimized for XRP
-    "DOGEUSDC": {"atr": 0.0018, "adx": 12.0, "bb": 0.005, "relax_factor": 0.8},  # Optimized for DOGE
-    "ADAUSDC": {"atr": 0.0018, "adx": 12.0, "bb": 0.005, "relax_factor": 0.8},  # Optimized for ADA
+    "default_light": {"atr": 0.0018, "adx": 12.0, "bb": 0.005, "relax_factor": 0.9},  # Less strict for small accounts
+    "XRPUSDC": {"atr": 0.0016, "adx": 10.0, "bb": 0.004, "relax_factor": 0.85},  # More permissive
+    "DOGEUSDC": {"atr": 0.0016, "adx": 10.0, "bb": 0.004, "relax_factor": 0.85},  # More permissive
+    "ADAUSDC": {"atr": 0.0016, "adx": 10.0, "bb": 0.004, "relax_factor": 0.85},  # More permissive
+    "MATICUSDC": {"atr": 0.0016, "adx": 10.0, "bb": 0.004, "relax_factor": 0.85},  # Added for new pair
+    "DOTUSDC": {"atr": 0.0018, "adx": 12.0, "bb": 0.005, "relax_factor": 0.85},  # Added for new pair
 }
 
 # ========== Volatility Settings ==========
 VOLATILITY_SKIP_ENABLED = get_config("VOLATILITY_SKIP_ENABLED", "True") == "True"
-VOLATILITY_ATR_THRESHOLD = float(get_config("VOLATILITY_ATR_THRESHOLD", 0.002))  # Lower for small accounts
-VOLATILITY_RANGE_THRESHOLD = float(get_config("VOLATILITY_RANGE_THRESHOLD", 0.005))  # Lower for small accounts
+VOLATILITY_ATR_THRESHOLD = float(get_config("VOLATILITY_ATR_THRESHOLD", 0.0018))  # Lowered from 0.002
+VOLATILITY_RANGE_THRESHOLD = float(get_config("VOLATILITY_RANGE_THRESHOLD", 0.004))  # Lowered from 0.005
 
 # ========== Leverage Settings ==========
+# Added more assets with optimized leverage
 LEVERAGE_MAP = {
     "BTCUSDT": 5,
     "ETHUSDT": 5,
     "BTCUSDC": 5,
     "ETHUSDC": 5,
-    "DOGEUSDC": 10,  # Higher leverage for small price pairs
-    "XRPUSDC": 10,  # Higher leverage for small price pairs
-    "ADAUSDC": 10,  # Higher leverage for small price pairs
-    "SOLUSDC": 5,
-    "BNBUSDC": 5,
-    "LINKUSDC": 5,
-    "ARBUSDC": 5,
-    "SUIUSDC": 5,
+    "DOGEUSDC": 12,  # Increased from 10 for better capital efficiency
+    "XRPUSDC": 12,  # Increased from 10
+    "ADAUSDC": 10,  # Unchanged
+    "SOLUSDC": 6,  # Increased from 5
+    "BNBUSDC": 5,  # Unchanged
+    "LINKUSDC": 8,  # Increased from 5
+    "ARBUSDC": 6,  # Increased from 5
+    "SUIUSDC": 6,  # Increased from 5
+    "MATICUSDC": 10,  # Added new pair
+    "DOTUSDC": 8,  # Added new pair
 }
 
 # ========== Runtime State ==========
@@ -170,6 +199,7 @@ trade_stats = {
     "losses": 0,
     "pnl": 0.0,
     "streak_loss": 0,
+    "streak_win": 0,  # Added streak tracking for win streaks
     "initial_balance": 0,
     "deposits_today": 0,
     "deposits_week": 0,
@@ -179,24 +209,31 @@ trade_stats = {
 
 
 # ========== Risk Management Functions ==========
-def get_adaptive_risk_percent(balance):
-    """Return appropriate risk percentage based on account size.
+def get_adaptive_risk_percent(balance, win_streak=0):
+    """Return appropriate risk percentage based on account size and recent performance.
     Optimized for small deposits with a progressive scale."""
+    # Base risk based on account size
     if balance < 100:
-        return 0.02  # 2% for ultra-small accounts (more aggressive for quick results)
+        base_risk = 0.018  # 1.8% for ultra-small accounts (slightly reduced from 2%)
     elif balance < 150:
-        return 0.025  # 2.5% for small accounts
+        base_risk = 0.022  # 2.2% for small accounts (slightly reduced from 2.5%)
     elif balance < 300:
-        return 0.03  # 3% for medium accounts
+        base_risk = 0.028  # 2.8% for medium accounts (slightly reduced from 3%)
     else:
-        return 0.04  # 4% for larger accounts (less than 5% to stay conservative)
+        base_risk = 0.038  # 3.8% for larger accounts (slightly reduced from 4%)
+
+    # Adjust based on recent performance
+    win_streak_boost = min(win_streak * 0.002, 0.01)  # Up to +1% for win streaks
+
+    # Cap final risk percentage
+    return min(base_risk + win_streak_boost, 0.05)  # Cap at 5%
 
 
 def get_max_positions(balance):
     """Return maximum number of positions based on account size.
     Allow multiple positions even for smaller accounts for faster testing."""
     if balance < 100:
-        return 2  # Allow 2 positions for ultra-small accounts for faster testing
+        return 2  # Allow 2 positions for ultra-small accounts
     elif balance < 150:
         return 3  # More positions for small accounts
     elif balance < 300:
@@ -211,33 +248,43 @@ def initialize_risk_percent():
     from utils_core import get_cached_balance
 
     balance = get_cached_balance() or 100
-    RISK_PERCENT = get_adaptive_risk_percent(balance)
+    win_streak = trade_stats.get("streak_win", 0)
+    RISK_PERCENT = get_adaptive_risk_percent(balance, win_streak)
 
 
 def get_min_net_profit(balance):
     """Get minimum acceptable net profit based on balance.
-    Lower thresholds for small accounts to enable more trades."""
+    Lowered thresholds for small accounts to enable more trades."""
     if balance < 100:
-        return 0.15  # Very small min profit for ultra-small accounts
+        return 0.12  # Reduced from 0.15 to allow more trades for very small accounts
     elif balance < 150:
-        return 0.2  # Small min profit for small accounts
+        return 0.18  # Reduced from 0.2 to allow more trades for small accounts
     elif balance < 300:
-        return 0.3  # Medium min profit for medium accounts
+        return 0.25  # Reduced from 0.3
     else:
-        return 0.5  # Higher requirements for larger accounts
+        return 0.4  # Reduced from 0.5
 
 
-def get_adaptive_score_threshold(balance):
-    """Get minimum signal score threshold based on account size.
-    Lower for smaller accounts to enable more trades."""
+def get_adaptive_score_threshold(balance, market_volatility="normal"):
+    """Get minimum signal score threshold based on account size and market conditions.
+    Lower thresholds during high volatility periods."""
+    # Base thresholds by account size
     if balance < 100:
-        return 2.7  # Lower threshold for ultra-small accounts
+        base_threshold = 2.7  # Lower threshold for ultra-small accounts
     elif balance < 150:
-        return 3.0  # Medium threshold for small accounts
+        base_threshold = 3.0  # Medium threshold for small accounts
     elif balance < 300:
-        return 3.2  # Higher threshold for medium accounts
+        base_threshold = 3.2  # Higher threshold for medium accounts
     else:
-        return 3.5  # Very high threshold for large accounts
+        base_threshold = 3.5  # Very high threshold for larger accounts
+
+    # Adjust for market volatility
+    if market_volatility == "high":
+        return max(base_threshold - 0.3, 2.3)  # More lenient in volatile markets
+    elif market_volatility == "low":
+        return base_threshold + 0.2  # More strict in low volatility
+
+    return base_threshold
 
 
 def get_priority_pairs(balance):
@@ -248,3 +295,69 @@ def get_priority_pairs(balance):
     else:
         # For larger accounts, use full symbol list
         return USDC_SYMBOLS
+
+
+# ========== ATR Multipliers for TP/SL ==========
+def get_atr_multipliers(regime="neutral", score=3.0):
+    """Return optimized ATR multipliers based on market regime and signal strength."""
+    # Base multipliers for neutral market
+    tp1_mult = 0.8  # Reduced from 1.0 for faster profit taking
+    tp2_mult = 1.6  # Reduced from 2.0 for faster profit taking
+    sl_mult = 1.2  # Reduced from 1.5 for better risk:reward
+
+    # Adjust for market regime
+    if regime == "trend":
+        tp1_mult *= 1.1
+        tp2_mult *= 1.2
+        sl_mult *= 0.9  # Tighter stop in trending markets
+    elif regime == "flat":
+        tp1_mult *= 0.8
+        tp2_mult *= 0.7
+        sl_mult *= 0.8  # Tighter range in flat markets
+    elif regime == "breakout":
+        tp1_mult *= 1.2  # More aggressive targets in breakouts
+        tp2_mult *= 1.3
+
+    # Adjust for signal strength
+    if score > 4.0:  # Strong signals get more room
+        tp2_mult *= 1.2
+        sl_mult *= 0.9  # Tighter stop for high conviction
+    elif score < 3.0:  # Weak signals get tighter targets
+        tp1_mult *= 0.9
+        tp2_mult *= 0.8
+
+    return tp1_mult, tp2_mult, sl_mult
+
+
+# ========== Adaptive Leverage Function ==========
+def get_adaptive_leverage(symbol, volatility_ratio=1.0, balance=None):
+    """Determines optimal leverage for a pair based on current volatility and account size.
+
+    Args:
+        symbol: Trading pair (normalized format without '/')
+        volatility_ratio: Ratio of current volatility to average (>1 = higher than average)
+        balance: Current account balance
+
+    Returns:
+        Optimized leverage value
+    """
+    # Base leverage from configuration
+    base_leverage = LEVERAGE_MAP.get(symbol, 5)
+
+    # Adjust for volatility (inverse relationship)
+    vol_adjustment = 1 / volatility_ratio if volatility_ratio > 0 else 1
+
+    # Adjust for account size (higher leverage for small deposits)
+    if balance and balance < 150:
+        balance_factor = 1.2  # +20% for small deposits
+    else:
+        balance_factor = 1.0
+
+    # Calculate final leverage with constraints
+    adjusted_leverage = base_leverage * vol_adjustment * balance_factor
+
+    # Constrain to reasonable limits
+    min_leverage = 3
+    max_leverage = 20
+
+    return max(min_leverage, min(round(adjusted_leverage), max_leverage))
