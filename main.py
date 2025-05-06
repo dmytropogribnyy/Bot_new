@@ -91,11 +91,7 @@ def start_trading_loop():
     else:
         bias = "🧊 LOW"
 
-    message = (
-        f"Bot started in {mode} mode\n"
-        f"Strategy Bias: {bias} ({score})\n"
-        f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
-    )
+    message = f"Bot started in {mode} mode\n" f"Strategy Bias: {bias} ({score})\n" f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     send_telegram_message(message, force=True, parse_mode="")
 
     symbols = load_symbols()
@@ -120,9 +116,7 @@ def start_trading_loop():
                     if state.get("shutdown"):
                         msg += "Shutting down..."
                         log(msg, level="INFO", important=True)
-                        send_telegram_message(
-                            "✅ Shutdown complete. No open trades. Exiting...", force=True
-                        )
+                        send_telegram_message("✅ Shutdown complete. No open trades. Exiting...", force=True)
                         state["stopping"] = False
                         state["shutdown"] = False
                         save_state(state)
@@ -149,9 +143,7 @@ def start_trading_loop():
 
             try:
                 positions = exchange.fetch_positions()
-                active_positions = sum(
-                    1 for pos in positions if float(pos.get("contracts", 0)) != 0
-                )
+                active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
                 if active_positions >= MAX_POSITIONS:
                     log(
                         f"[Main] Max open positions ({MAX_POSITIONS}) reached. Active: {active_positions}. Skipping cycle...",
@@ -190,15 +182,11 @@ def start_trading_loop():
                 important=True,
                 level="INFO",
             )
-            send_telegram_message(
-                "🛑 Bot stopped via graceful shutdown.", force=True, parse_mode=""
-            )
+            send_telegram_message("🛑 Bot stopped via graceful shutdown.", force=True, parse_mode="")
 
     except KeyboardInterrupt:
         log("[Main] Bot manually stopped via console (Ctrl+C)", important=True, level="INFO")
-        send_telegram_message(
-            "🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode=""
-        )
+        send_telegram_message("🛑 Bot manually stopped via console (Ctrl+C)", force=True, parse_mode="")
         stop_event.set()
 
 
@@ -272,18 +260,35 @@ def start_report_loops():
 
 
 if __name__ == "__main__":
+    import time
+
+    from utils_core import reset_state_flags  # Add this import
+    from utils_logging import add_log_separator, log
+
+    # Add visual separator in log before starting
+    add_log_separator()
+
+    # Reset state flags at startup to ensure clean state
+    reset_state_flags()
+    log("State flags reset at startup", level="INFO")
+
+    # Create and save session start time
     state = load_state()
+    current_time = time.time()
+    state["session_start_time"] = current_time
+    save_state(state)
+    log(f"New bot session started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}", level="INFO")
+
     from tp_logger import ensure_log_exists
 
     ensure_log_exists()
+
     threading.Thread(
         target=lambda: process_telegram_commands(state, handle_telegram_command),
         daemon=True,
     ).start()
     threading.Thread(
-        target=lambda: start_ip_monitor(
-            _initiate_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
-        ),
+        target=lambda: start_ip_monitor(_initiate_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
         daemon=True,
     ).start()
     threading.Thread(

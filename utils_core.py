@@ -25,6 +25,29 @@ cache_lock = Lock()
 state_lock = Lock()
 
 
+def ensure_data_directory():
+    """Убедиться, что директория data/ существует и доступна"""
+    data_dir = "data/"
+    if not os.path.exists(data_dir):
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            log(f"Создана директория {data_dir}", level="INFO")
+        except Exception as e:
+            log(f"Ошибка при создании директории {data_dir}: {e}", level="ERROR")
+            return False
+
+    # Проверка прав доступа
+    try:
+        test_file = os.path.join(data_dir, ".test_access")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        return True
+    except Exception as e:
+        log(f"Ошибка доступа к директории {data_dir}: {e}", level="ERROR")
+        return False
+
+
 def get_last_signal_time():
     path = "data/last_signal.txt"
     if not os.path.exists(path):
@@ -110,6 +133,9 @@ def get_cached_positions():
 
 
 def initialize_cache():
+    if not ensure_data_directory():
+        send_telegram_message("⚠️ Проблема с доступом к директории data/. Проверьте права доступа.", force=True)
+
     get_cached_balance()
     get_cached_positions()
     log("API cache initialized", level="INFO")
@@ -344,6 +370,17 @@ def check_min_profit(entry_price, tp_price, qty, tp_share, side, taker_fee_rate,
     net_profit = gross_profit - total_commission
 
     return net_profit >= min_profit, net_profit
+
+
+def reset_state_flags():
+    """Reset stop and shutdown flags in the state file."""
+    state = load_state()
+    state["stopping"] = False
+    state["shutdown"] = False
+    save_state(state)
+    from utils_logging import log
+
+    log("Reset stopping and shutdown flags in state file", level="INFO")
 
 
 if __name__ == "__main__":

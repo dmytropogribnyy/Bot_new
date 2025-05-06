@@ -3,7 +3,7 @@ import time
 
 import ccxt
 
-from common.config_loader import API_KEY, API_SECRET, DRY_RUN, LEVERAGE_MAP, SYMBOLS_ACTIVE
+from common.config_loader import API_KEY, API_SECRET, DRY_RUN, LEVERAGE_MAP, SYMBOLS_ACTIVE, USE_TESTNET
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
@@ -34,33 +34,41 @@ except Exception as e:
 
 def set_leverage_for_symbols():
     """Sets leverage for all active symbols."""
+    from core.binance_api import convert_symbol  # Правильный импорт
+
     success_count = 0
     error_count = 0
 
     for symbol in SYMBOLS_ACTIVE:
         try:
-            normalized_symbol = symbol.replace("/", "")
-            if normalized_symbol not in exchange.markets:
-                log(f"Symbol {symbol} not found on exchange (skip)", level="WARNING")
+            api_symbol = convert_symbol(symbol)  # Корректное преобразование символа
+
+            # Правильное форматирование символа для API
+            if USE_TESTNET:
+                # Для тестнета может потребоваться другой формат
+                normalized_symbol = api_symbol.replace("/", "").replace(":USDC", "")
+            else:
+                # Для реального режима - убираем слеш
+                normalized_symbol = symbol.replace("/", "")
+
+            # Проверка существования символа на бирже
+            markets = exchange.load_markets()
+            if normalized_symbol not in [m.replace("/", "") for m in markets.keys()]:
+                log(f"Symbol {symbol} не найден на бирже (пропускаем)", level="WARNING")
                 continue
 
+            # Получение значения кредитного плеча из конфигурации
             leverage = LEVERAGE_MAP.get(normalized_symbol, 5)
+
+            # Установка кредитного плеча
             exchange.fapiPrivate_post_leverage({"symbol": normalized_symbol, "leverage": leverage})
-            log(f"Set leverage {leverage}x for {symbol}", level="INFO")
+            log(f"Установлено кредитное плечо {leverage}x для {symbol}", level="INFO")
             success_count += 1
-            time.sleep(0.2)
+            time.sleep(0.2)  # Небольшая задержка между запросами
         except Exception as e:
-            log(f"Failed to set leverage for {symbol}: {e}", level="ERROR")
+            log(f"Ошибка установки кредитного плеча для {symbol}: {e}", level="ERROR")
             error_count += 1
 
-    log(f"Leverage setup complete: {success_count} symbols set, {error_count} errors", level="INFO")
+    log(f"Настройка кредитного плеча завершена: установлено для {success_count} символов, {error_count} ошибок", level="INFO")
     if success_count > 0:
-        send_telegram_message(f"✅ Leverage set for {success_count} symbols", force=True)
-
-
-# Set leverage after connecting
-try:
-    set_leverage_for_symbols()
-except Exception as e:
-    log(f"Error setting leverage: {e}", level="ERROR")
-    send_telegram_message(f"⚠️ Error setting leverage: {e}", force=True)
+        send_telegram_message(f"✅ Кредитное плечо установлено для {success_count} символов", force=True)

@@ -113,19 +113,33 @@ def export_trade_log():
         log(f"Failed to export trade log: {e}", level="ERROR")
 
 
-def send_daily_report():
+def send_daily_report(parse_mode="MarkdownV2"):
+    """Send a daily performance report via Telegram.
+
+    Args:
+        parse_mode (str): Telegram parse mode ("MarkdownV2", "HTML", or "" for plain text)
+    """
     today = now_with_timezone().strftime("%d.%m.%Y")
     msg = build_performance_report("Daily Performance Summary", today)
-    send_telegram_message(escape_markdown_v2(msg), force=True)
+
+    # Only escape if using MarkdownV2
+    if parse_mode == "MarkdownV2":
+        msg = escape_markdown_v2(msg)
+
+    send_telegram_message(msg, force=True, parse_mode=parse_mode)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent daily report for {today}.", level="DEBUG")
 
 
-def send_weekly_report():
+def send_weekly_report(parse_mode="MarkdownV2"):
     end = now_with_timezone()
     start = (end - timedelta(days=7)).strftime("%d.%m")
     msg = build_performance_report("Weekly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
-    send_telegram_message(escape_markdown_v2(msg), force=True)
+
+    if parse_mode == "MarkdownV2":
+        msg = escape_markdown_v2(msg)
+
+    send_telegram_message(msg, force=True, parse_mode=parse_mode)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent weekly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 

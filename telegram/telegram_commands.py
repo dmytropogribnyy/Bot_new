@@ -113,12 +113,16 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
                 send_telegram_message("✅ All positions closed.", force=True)
                 state["stopping"] = False
                 save_state(state)
+                log("[Stop Monitor] All positions successfully closed", level="INFO", important=True)
     except Exception as e:
         log(f"[Stop Monitor] Final check error: {e}", level="ERROR")
 
 
 def _initiate_stop(reason):
     """Initiate stop process with enhanced position handling"""
+    # Import the global stop_event
+    from main import stop_event
+
     state = load_state()
     if state.get("stopping"):
         send_telegram_message("⚠️ Bot is already stopping…", force=True)
@@ -126,6 +130,11 @@ def _initiate_stop(reason):
 
     state["stopping"] = True
     save_state(state)
+
+    # Set the global stop event
+    if stop_event:
+        stop_event.set()
+        log(f"[Stop] Setting global stop_event for {reason}", level="INFO")
 
     try:
         if DRY_RUN:
@@ -159,10 +168,27 @@ def _initiate_stop(reason):
 
 
 def handle_stop_command():
-    """Enhanced stop command with active position closing"""
+    """Enhanced stop command with active position closing and stop_event triggering"""
+    # Import the global stop_event
+    from main import stop_event
+
+    # Make sure we load the latest state
     state = load_state()
+    log(f"[Stop] Current state before update: stopping={state.get('stopping', False)}", level="DEBUG")
+
+    # Update the stopping flag and save immediately
     state["stopping"] = True
     save_state(state)
+    log("[Stop] Updated state file with stopping=True", level="INFO")
+
+    # Verify state was saved correctly
+    verification_state = load_state()
+    log(f"[Stop] Verified state after update: stopping={verification_state.get('stopping', False)}", level="DEBUG")
+
+    # Set the global stop event
+    if stop_event:
+        stop_event.set()
+        log("[Stop] Setting global stop_event for stop command", level="INFO", important=True)
 
     try:
         if DRY_RUN:
@@ -189,8 +215,8 @@ def handle_stop_command():
         Thread(target=_monitor_stop_timeout, args=("Stop command", state), daemon=True).start()
     else:
         msg = "🛑 *Stop command received*.\nNo open positions. Bot will stop shortly."
-        state["stopping"] = False
-        save_state(state)
+        # Note: We're NOT resetting stopping flag here - let the main loop handle shutdown
+        log("[Stop] No open positions. Bot will stop shortly.", level="INFO")
 
     send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
     log("[Stop] Stop command processed.", level="INFO")
@@ -267,6 +293,14 @@ def handle_panic_command(message, state):
 
 def handle_telegram_command(message, state):
     """Main Telegram command handler with thread safety and enhanced reliability"""
+    # Get message timestamp (Telegram provides this in UTC seconds)
+    message_date = message.get("date", 0)
+    session_start_time = state.get("session_start_time", 0)
+
+    # Skip commands sent before current session started
+    if message_date and session_start_time and message_date < session_start_time:
+        log(f"Ignoring stale command from previous session: {message.get('text', '').strip()}", level="DEBUG")
+        return
     text = message.get("text", "").strip().lower()
     chat_id = message.get("chat", {}).get("id", 0)
     log(f"Received command: {text} from chat ID {chat_id}", level="DEBUG")
@@ -342,13 +376,23 @@ def handle_telegram_command(message, state):
         elif text in ("/panic", "yes"):
             handle_panic_command(message, state)
         elif text == "/shutdown":
+            # Import necessary components
             import common.config_loader as config_loader
+            from main import stop_event
+
+            # Log shutdown initiation
+            log("[Shutdown] Shutdown command received. Initiating shutdown process...", level="INFO", important=True)
 
             config_loader.RUNNING = False
 
             state["shutdown"] = True
             state["stopping"] = True
             save_state(state)
+
+            # Set the global stop event
+            if stop_event:
+                stop_event.set()
+                log("[Shutdown] Setting global stop_event for shutdown command", level="INFO", important=True)
 
             try:
                 if DRY_RUN:
@@ -372,10 +416,12 @@ def handle_telegram_command(message, state):
                 else:
                     msg = "🛑 *Shutdown initiated*.\nNo open positions. Bot will exit shortly."
                     # No positions to close, can exit immediately
+                    log("[Shutdown] No open positions - exiting immediately", level="INFO", important=True)
+                    send_telegram_message("✅ Shutdown complete. No open trades. Exiting...", force=True)
                     os._exit(0)
 
                 send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                log("Shutdown command received.", level="INFO")
+                log("[Shutdown] Shutdown process in progress - waiting for positions to close", level="INFO")
             except Exception as e:
                 send_telegram_message(f"❌ Failed to initiate shutdown: {e}", force=True)
                 log(f"Shutdown error: {e}", level="ERROR")

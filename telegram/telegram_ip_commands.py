@@ -74,9 +74,7 @@ def handle_ip_and_misc_commands(text, handle_stop):
                     else:
                         symbol = text.split()[1].upper()
                         if symbol not in [t["symbol"].upper() for t in open_trades]:
-                            send_telegram_message(
-                                f"Symbol {symbol} not found in open DRY trades.", force=True
-                            )
+                            send_telegram_message(f"Symbol {symbol} not found in open DRY trades.", force=True)
                         else:
                             close_dry_trade(symbol)
                             send_telegram_message(f"Closed DRY trade for {symbol}", force=True)
@@ -92,11 +90,9 @@ def handle_ip_and_misc_commands(text, handle_stop):
             send_telegram_message(msg, force=True, parse_mode="")
             log("Sent debug log via /debuglog command.", level="INFO")
         else:
-            send_telegram_message(
-                "Debug log only available in DRY_RUN mode.", force=True, parse_mode=""
-            )
+            send_telegram_message("Debug log only available in DRY_RUN mode.", force=True, parse_mode="")
             log("Debug log request denied: not in DRY_RUN mode.", level="INFO")
 
     elif text == "/log":
-        send_daily_report()
+        send_daily_report(parse_mode="")  # Use plain text mode to avoid markdown parsing errors
         log("Sent daily report via /log command.", level="INFO")

@@ -1,23 +1,22 @@
 # binance_api.py
-from config import USE_TESTNET
+from common.config_loader import USE_TESTNET
 from core.exchange_init import exchange
 from utils_core import safe_call_retry
 from utils_logging import log
 
 
 def convert_symbol(symbol: str) -> str:
+    """
+    Returns symbol as-is since we're primarily running in real mode.
+    Only converts formats in testnet if needed.
+    """
     if USE_TESTNET:
-        if symbol.endswith("USDC"):
+        if symbol.endswith("/USDC"):
             base = symbol.replace("/USDC", "")
-            converted = f"{base}/USDC:USDC"
-        elif symbol.endswith("USDT"):
+            return f"{base}/USDC:USDC"
+        elif symbol.endswith("/USDT"):
             base = symbol.replace("/USDT", "")
-            converted = f"{base}/USDT:USDT"
-        else:
-            log(f"Invalid symbol format for Testnet: {symbol}", level="ERROR")
-            return symbol
-        log(f"Converted symbol: {symbol} -> {converted}", level="DEBUG")
-        return converted
+            return f"{base}/USDT:USDT"
     return symbol
 
 

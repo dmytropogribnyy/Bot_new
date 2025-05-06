@@ -1,5 +1,6 @@
 # common/config_loader.py (optimized for small deposits)
 import os
+from pathlib import Path
 from threading import Lock
 
 import pytz
@@ -29,11 +30,17 @@ TELEGRAM_TOKEN = get_config("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = get_config("TELEGRAM_CHAT_ID")
 
 # ========== Paths and Files ==========
-EXPORT_PATH = get_config("EXPORT_PATH", "data/")
-TP_LOG_FILE = get_config("TP_LOG_FILE", "data/tp_log.csv")
-LOG_FILE_PATH = get_config("LOG_FILE_PATH", "logs/main.log")
+# Match paths exactly as in the original config.py
+# In config_loader.py, add or update this line in the Paths and Files section:
+CONFIG_FILE = get_config("CONFIG_FILE", "C:/Bots/BinanceBot/common/config_loader.py")
+EXPORT_PATH = get_config("EXPORT_PATH", "C:/Bots/BinanceBot/data/tp_performance.csv")
+TP_LOG_FILE = get_config("TP_LOG_FILE", "C:/Bots/BinanceBot/data/tp_performance.csv")
+LOG_FILE_PATH = get_config("LOG_FILE_PATH", "C:/Bots/BinanceBot/logs/main.log")
 LOG_LEVEL = get_config("LOG_LEVEL", "INFO")
-CONFIG_FILE = get_config("CONFIG_FILE", "config/config.json")
+if not Path(TP_LOG_FILE).exists():
+    print(f"Warning: TP_LOG_FILE not found at: {TP_LOG_FILE}")
+else:
+    print(f"TP_LOG_FILE found at: {TP_LOG_FILE}")
 
 # ========== Trading Symbols ==========
 USDT_SYMBOLS = ["BTC/USDT"]
@@ -102,6 +109,12 @@ BREAKEVEN_TRIGGER = float(get_config("BREAKEVEN_TRIGGER", 0.5))
 SOFT_EXIT_ENABLED = get_config("SOFT_EXIT_ENABLED", "True") == "True"
 SOFT_EXIT_SHARE = float(get_config("SOFT_EXIT_SHARE", 0.5))
 SOFT_EXIT_THRESHOLD = float(get_config("SOFT_EXIT_THRESHOLD", 0.8))
+
+# ========== Signal Strength Control ==========
+# Moved this section earlier to prevent import errors
+MIN_TRADE_SCORE = int(get_config("MIN_TRADE_SCORE", 0))
+SCORE_BASED_RISK = get_config("SCORE_BASED_RISK", "True") == "True"
+SCORE_BASED_TP = get_config("SCORE_BASED_TP", "True") == "True"
 
 # ========== Monitoring Settings ==========
 IP_MONITOR_INTERVAL_SECONDS = int(get_config("IP_MONITOR_INTERVAL_SECONDS", 180))

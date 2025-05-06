@@ -133,9 +133,7 @@ def restore_config(backup_file=None):
         if not backup_file:
             backup_file = backups[0]
         shutil.copy(f"{backup_dir}/{backup_file}", "config.py")
-        send_telegram_message(
-            f"🔄 Restored config from {escape_markdown_v2(backup_file)}", force=True
-        )
+        send_telegram_message(f"🔄 Restored config from {escape_markdown_v2(backup_file)}", force=True)
         log(f"Restored config from {backup_file}", level="INFO")
         if len(backups) > 5:
             for old in backups[5:]:
@@ -148,18 +146,40 @@ def restore_config(backup_file=None):
 
 def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
     try:
-        message = (
-            f"⚠️ *IP Address Changed!*\n\n"
-            f"🕒 `{timestamp} (Bratislava)`\n"
-            f"🌐 Old IP: `{old_ip}`\n"
-            f"🌐 New IP: `{new_ip}`\n"
-        )
+        message = f"⚠️ *IP Address Changed!*\n\n" f"🕒 `{timestamp} (Bratislava)`\n" f"🌐 Old IP: `{old_ip}`\n" f"🌐 New IP: `{new_ip}`\n"
         if forced_stop:
-            message += (
-                "\n\n🚫 *Bot will stop after closing open orders.*\n"
-                "You can cancel this with `/cancel_stop`."
-            )
+            message += "\n\n🚫 *Bot will stop after closing open orders.*\n" "You can cancel this with `/cancel_stop`."
         send_telegram_message(message, force=True)
         log(f"IP changed from {old_ip} to {new_ip}", level="WARNING")
     except Exception as e:
         log(f"[notify_ip_change] Telegram error: {e}", level="ERROR")
+
+
+def add_log_separator():
+    """Adds a clear visual separator to the log file between different bot runs."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    separator_line = "=" * 80
+    separator_message = f"\n\n{separator_line}\n NEW BOT RUN - {timestamp}\n{separator_line}\n\n"
+
+    log_dir = os.path.dirname(LOG_FILE_PATH)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    lock = FileLock(f"{LOG_FILE_PATH}.lock")
+    try:
+        with lock:
+            if not os.path.exists(LOG_FILE_PATH):
+                with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
+                    f.write("--- Telegram Log ---\n")
+
+            with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
+                f.write(separator_message)
+
+        # Also print to console
+        print(f"\n{Fore.CYAN}{separator_line}")
+        print(f"{Fore.CYAN} NEW BOT RUN - {timestamp}")
+        print(f"{Fore.CYAN}{separator_line}\n{Style.RESET_ALL}")
+
+    except Exception as e:
+        error_msg = f"[ERROR] Failed to write separator to log file {LOG_FILE_PATH}: {e}"
+        print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")

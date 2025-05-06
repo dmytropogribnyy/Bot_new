@@ -16,6 +16,11 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
         log("[telegram_utils] Telegram not configured.", level="WARNING")
         return
 
+    # NEW: Automatically switch to plain text for error and warning messages
+    if any(marker in text for marker in ["⚠️", "❌", "Error", "error", "[ERROR]", "cannot import", "failed", "Failed"]):
+        parse_mode = ""  # Use plain text for error messages
+        log("[telegram_utils] Switched to plain text mode for error message", level="DEBUG")
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     if parse_mode == "MarkdownV2":
@@ -40,9 +45,7 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            log(
-                f"[telegram_utils] Message sent successfully: {escaped_text[:60]}...", level="DEBUG"
-            )
+            log(f"[telegram_utils] Message sent successfully: {escaped_text[:60]}...", level="DEBUG")
         else:
             log(
                 f"[telegram_utils] Telegram response {response.status_code}: {response.text}",

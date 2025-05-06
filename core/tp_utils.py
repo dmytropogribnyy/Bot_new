@@ -18,15 +18,18 @@ from utils_logging import log
 def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score: float = 5, df=None):
     """
     Вычисляет цены TP1, TP2 и SL на основе ATR и цены входа.
-
-    Args:
-        entry_price: Цена входа
-        side: "buy" или "sell"
-        regime: Режим рынка ("flat", "trend", или None)
-        score: Оценка сигнала (1-5)
-        df: DataFrame с данными OHLC и индикаторами, включая 'atr'
     """
-    # Дефолтные значения
+    # Проверка валидности входных данных
+    if entry_price is None or entry_price <= 0:
+        log(f"Ошибка: некорректная цена входа {entry_price}", level="ERROR")
+        # Возвращаем безопасные дефолтные значения
+        return None, None, None, TP1_SHARE, 0
+
+    if side is None:
+        log("Ошибка: side is None", level="ERROR")
+        return None, None, None, TP1_SHARE, 0
+
+    # Явная инициализация дефолтных значений
     tp1_pct = TP1_PERCENT
     tp2_pct = TP2_PERCENT
     sl_pct = SL_PERCENT
@@ -35,8 +38,8 @@ def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score
     if df is not None and "atr" in df.columns and not df["atr"].empty:
         try:
             atr = df["atr"].iloc[-1]
-            # Проверка на валидность ATR
-            if atr and not pd.isna(atr):
+            # Расширенная проверка на валидность ATR
+            if atr is not None and not pd.isna(atr) and atr > 0:
                 atr_pct = atr / entry_price
 
                 # ATR-зависимые расчеты с минимальными порогами
@@ -45,8 +48,18 @@ def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score
                 sl_pct = max(atr_pct * 1.5, SL_PERCENT)  # Минимум SL_PERCENT
 
                 log(f"ATR-зависимый расчет TP/SL: ATR={atr:.6f}, TP1={tp1_pct:.4f}, TP2={tp2_pct:.4f}, SL={sl_pct:.4f}", level="DEBUG")
+            else:
+                log(f"ATR невалиден: {atr}, используем стандартные значения", level="WARNING")
+                # Убедимся, что стандартные значения заданы
+                tp1_pct = TP1_PERCENT
+                tp2_pct = TP2_PERCENT
+                sl_pct = SL_PERCENT
         except Exception as e:
             log(f"Ошибка расчета ATR-зависимых TP/SL: {e}", level="ERROR")
+            # Убедимся, что стандартные значения заданы при ошибке
+            tp1_pct = TP1_PERCENT
+            tp2_pct = TP2_PERCENT
+            sl_pct = SL_PERCENT
 
     # Применяем корректировки режима рынка
     if AUTO_TP_SL_ENABLED and regime:
@@ -67,23 +80,28 @@ def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score
         sl_pct *= 0.8
         log(f"Применена корректировка для слабого сигнала: TP1={tp1_pct:.4f}, TP2=None, SL={sl_pct:.4f}", level="DEBUG")
 
-    # Расчет конечных цен
-    if side.lower() == "buy":
-        tp1_price = entry_price * (1 + tp1_pct)
-        tp2_price = entry_price * (1 + tp2_pct) if tp2_pct else None
-        sl_price = entry_price * (1 - sl_pct)
-    else:  # side == "sell"
-        tp1_price = entry_price * (1 - tp1_pct)
-        tp2_price = entry_price * (1 - tp2_pct) if tp2_pct else None
-        sl_price = entry_price * (1 + sl_pct)
+    # Расчет конечных цен - с дополнительной проверкой
+    try:
+        if side.lower() == "buy":
+            tp1_price = entry_price * (1 + tp1_pct)
+            tp2_price = entry_price * (1 + tp2_pct) if tp2_pct is not None else None
+            sl_price = entry_price * (1 - sl_pct)
+        else:  # side == "sell"
+            tp1_price = entry_price * (1 - tp1_pct)
+            tp2_price = entry_price * (1 - tp2_pct) if tp2_pct is not None else None
+            sl_price = entry_price * (1 + sl_pct)
 
-    qty_tp1 = TP1_SHARE
-    qty_tp2 = TP2_SHARE if tp2_price else 0
+        qty_tp1 = TP1_SHARE
+        qty_tp2 = TP2_SHARE if tp2_price is not None else 0
 
-    return (
-        round(tp1_price, 4),
-        round(tp2_price, 4) if tp2_price else None,
-        round(sl_price, 4),
-        qty_tp1,
-        qty_tp2,
-    )
+        return (
+            round(tp1_price, 4),
+            round(tp2_price, 4) if tp2_price is not None else None,
+            round(sl_price, 4),
+            qty_tp1,
+            qty_tp2,
+        )
+    except Exception as e:
+        log(f"Ошибка при расчете конечных цен TP/SL: {e}", level="ERROR")
+        # Возвращаем безопасные дефолтные значения при ошибке
+        return None, None, None, TP1_SHARE, 0

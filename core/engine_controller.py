@@ -72,8 +72,11 @@ def run_trading_cycle(symbols, stop_event):
 
     state = load_state()
 
-    # Set leverage for all symbols
-    set_leverage_for_symbols()
+    # Only set leverage when symbols change or on first run
+    if not hasattr(run_trading_cycle, "last_symbols") or run_trading_cycle.last_symbols != symbols:
+        log("Setting leverage for symbols due to symbol list change", level="DEBUG")
+        set_leverage_for_symbols()
+        run_trading_cycle.last_symbols = symbols.copy()  # Store a copy of the symbols
 
     # Adaptive risk and position management
     balance = get_cached_balance()

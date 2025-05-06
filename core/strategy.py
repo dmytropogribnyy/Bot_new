@@ -148,9 +148,9 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     )
     from core.order_utils import calculate_order_quantity
     from core.risk_utils import get_adaptive_risk_percent
-    from core.score_evaluator import calculate_score  # Moved inside the function
-    from core.score_logger import log_score_history  # Moved inside the function
-    from core.tp_utils import calculate_tp_levels  # Moved inside the function
+    from core.score_evaluator import calculate_score
+    from core.score_logger import log_score_history
+    from core.tp_utils import calculate_tp_levels
     from utils_logging import log
 
     if df is None:
@@ -209,17 +209,46 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         return None
 
     log(f"{symbol} 🔎 Step 4: Direction determination", level="DEBUG")
-    direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+    # Ensure MACD values are not None
+    if "macd" not in df.columns or "macd_signal" not in df.columns:
+        log(f"{symbol} ⚠️ MACD columns missing from DataFrame", level="ERROR")
+        return None
+
+    macd_value = df["macd"].iloc[-1] if not pd.isna(df["macd"].iloc[-1]) else 0
+    macd_signal_value = df["macd_signal"].iloc[-1] if not pd.isna(df["macd_signal"].iloc[-1]) else 0
+    log(f"{symbol} DEBUG: MACD={macd_value}, Signal={macd_signal_value}", level="DEBUG")
+
+    direction = "BUY" if macd_value > macd_signal_value else "SELL"
 
     entry_price = df["close"].iloc[-1]
     stop_price = entry_price * (1 - SL_PERCENT) if direction == "BUY" else entry_price * (1 + SL_PERCENT)
     risk_percent = get_adaptive_risk_percent(balance)
-    qty = calculate_order_quantity(entry_price, stop_price, balance, risk_percent)
+
+    try:
+        qty = calculate_order_quantity(entry_price, stop_price, balance, risk_percent)
+        if qty is None:
+            log(f"{symbol} ⚠️ Quantity calculation returned None, using default", level="WARNING")
+            qty = MIN_NOTIONAL_OPEN / entry_price
+    except Exception as e:
+        log(f"{symbol} ⚠️ Error calculating quantity: {e}", level="WARNING")
+        return None
 
     log(f"{symbol} 🔎 Step 5: Notional check", level="DEBUG")
     leverage_key = symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")
     leverage = LEVERAGE_MAP.get(leverage_key, 5)
+
+    # Verify all values before multiplication
+    if None in (balance, leverage):
+        log(f"{symbol} ⚠️ Invalid values: balance={balance}, leverage={leverage}", level="ERROR")
+        return None
+
     max_notional = balance * leverage
+
+    # Verify qty before multiplication
+    if qty is None:
+        log(f"{symbol} ⚠️ Invalid quantity: None", level="ERROR")
+        return None
+
     notional = qty * entry_price
 
     if notional > max_notional:
@@ -231,7 +260,16 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         )
 
     regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
-    tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(entry_price, direction, regime, score)
+    log(f"DEBUG: About to calculate TP/SL for {symbol} with regime={regime}", level="DEBUG")
+
+    tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(entry_price, direction, regime, score, df)
+
+    # Add validation for tp_levels values
+    log(f"DEBUG: TP/SL values for {symbol}: tp1={tp1_price}, tp2={tp2_price}, sl={sl_price}, tp1_share={qty_tp1_share}, tp2_share={qty_tp2_share}", level="DEBUG")
+
+    if tp1_price is None or sl_price is None:
+        log(f"⚠️ Skipping {symbol} — invalid TP/SL values: tp1={tp1_price}, sl={sl_price}", level="ERROR")
+        return None
 
     if notional < MIN_NOTIONAL_OPEN:
         qty = MIN_NOTIONAL_OPEN / entry_price
@@ -247,22 +285,29 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             )
             return None
 
-    qty_tp2 = qty * TP2_SHARE
-    tp2_notional = qty_tp2 * tp2_price
-    if tp2_notional < MIN_NOTIONAL_ORDER:
-        qty_tp2 = MIN_NOTIONAL_ORDER / tp2_price
-        qty = qty_tp2 / TP2_SHARE
-        notional = qty * entry_price
-        log(
-            f"{symbol} Adjusted qty to {qty:.6f} to meet minimum TP2 notional (min: {MIN_NOTIONAL_ORDER:.2f}, TP2 notional: {qty_tp2 * tp2_price:.2f})",
-            level="DEBUG",
-        )
-        if notional > max_notional:
+    # Handle TP2 calculations only if tp2_price is not None
+    if tp2_price is not None:
+        qty_tp2 = qty * TP2_SHARE
+        tp2_notional = qty_tp2 * tp2_price
+
+        if tp2_notional < MIN_NOTIONAL_ORDER:
+            qty_tp2 = MIN_NOTIONAL_ORDER / tp2_price
+            qty = qty_tp2 / TP2_SHARE
+            notional = qty * entry_price
             log(
-                f"{symbol} ⛔️ Cannot meet minimum TP2 notional {MIN_NOTIONAL_ORDER:.2f} without exceeding max_notional {max_notional:.2f}",
-                level="WARNING",
+                f"{symbol} Adjusted qty to {qty:.6f} to meet minimum TP2 notional (min: {MIN_NOTIONAL_ORDER:.2f}, TP2 notional: {qty_tp2 * tp2_price:.2f})",
+                level="DEBUG",
             )
-            return None
+            if notional > max_notional:
+                log(
+                    f"{symbol} ⛔️ Cannot meet minimum TP2 notional {MIN_NOTIONAL_ORDER:.2f} without exceeding max_notional {max_notional:.2f}",
+                    level="WARNING",
+                )
+                return None
+    else:
+        # Handle the case when tp2_price is None (for weak signals)
+        log(f"{symbol} ℹ️ No TP2 price set (likely due to weak signal), using TP1 only", level="DEBUG")
+        qty_tp2 = 0
 
     log(f"{symbol} 🔎 Step 6: TP1 share check", level="DEBUG")
     if qty_tp1_share == 0:
@@ -301,9 +346,12 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             if score <= 4:
                 log(f"Skipping {symbol}: cooldown active, score {score:.2f} <= 4", level="DEBUG")
                 return None
-            direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+
+            # Use safe MACD check
+            direction = "BUY" if macd_value > macd_signal_value else "SELL"
+
             log(
-                f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
+                f"{symbol} 🔍 Generated signal: {direction}, MACD: {macd_value:.5f}, Signal: {macd_signal_value:.5f}",
                 level="DEBUG",
             )
             last_trade_times[symbol] = utc_now
@@ -316,9 +364,11 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             return ("buy" if direction == "BUY" else "sell", score, True)
 
         if last_score and score - last_score >= 1.5 and position_size == 0:
-            direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+            # Use safe MACD check
+            direction = "BUY" if macd_value > macd_signal_value else "SELL"
+
             log(
-                f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
+                f"{symbol} 🔍 Generated signal: {direction}, MACD: {macd_value:.5f}, Signal: {macd_signal_value:.5f}",
                 level="DEBUG",
             )
             last_trade_times[symbol] = utc_now
@@ -334,9 +384,11 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     with last_trade_times_lock:
         last_trade_times[symbol] = utc_now
 
-    direction = "BUY" if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1] else "SELL"
+    # Use safe MACD check
+    direction = "BUY" if macd_value > macd_signal_value else "SELL"
+
     log(
-        f"{symbol} 🔍 Generated signal: {direction}, MACD: {df['macd'].iloc[-1]:.5f}, Signal: {df['macd_signal'].iloc[-1]:.5f}",
+        f"{symbol} 🔍 Generated signal: {direction}, MACD: {macd_value:.5f}, Signal: {macd_signal_value:.5f}",
         level="DEBUG",
     )
     if not DRY_RUN:
