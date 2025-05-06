@@ -99,14 +99,14 @@ AGGRESSIVENESS_THRESHOLD = float(get_config("AGGRESSIVENESS_THRESHOLD", 0.6))
 
 # Enhanced scoring weights for short-term trading
 SCORE_WEIGHTS = {
-    "RSI": 1.5,  # Reduced from 2.0
-    "MACD_RSI": 2.0,  # Unchanged
-    "MACD_EMA": 2.0,  # Unchanged
-    "HTF": 0.5,  # Reduced from 1.0 (less important for short-term)
-    "VOLUME": 1.5,  # Increased from 1.0 (more important for short-term)
-    "EMA_CROSS": 2.0,  # New: Short-term momentum indicator
-    "VOL_SPIKE": 1.5,  # New: Volume spike detection
-    "PRICE_ACTION": 1.5,  # New: Recent price action importance
+    "RSI": 2.0,  # Увеличено с 1.5
+    "MACD_RSI": 2.5,  # Увеличено с 2.0
+    "MACD_EMA": 2.5,  # Увеличено с 2.0
+    "HTF": 0.5,  # Без изменений
+    "VOLUME": 2.0,  # Увеличено с 1.5
+    "EMA_CROSS": 3.0,  # Увеличено с 2.0
+    "VOL_SPIKE": 2.5,  # Увеличено с 1.5
+    "PRICE_ACTION": 2.5,  # Увеличено с 1.5
 }
 
 # ========== Auto TP/SL Adjustments ==========

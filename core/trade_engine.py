@@ -3,9 +3,11 @@ import os
 import threading
 import time
 import traceback
+from datetime import datetime
 from threading import Lock
 
 import pandas as pd
+import pytz
 import ta
 
 from common.config_loader import (
@@ -14,15 +16,19 @@ from common.config_loader import (
     AGGRESSIVENESS_THRESHOLD,
     AUTO_TP_SL_ENABLED,
     BREAKEVEN_TRIGGER,
+    BREAKOUT_DETECTION,
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
-    LEVERAGE_MAP,  # ❗ Не забудь добавить сюда! Он используется в enter_trade
+    HIGH_ACTIVITY_HOURS,
+    LEVERAGE_MAP,
     MAX_MARGIN_PERCENT,
     MAX_OPEN_ORDERS,
     MAX_POSITIONS,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
+    PRIORITY_SMALL_BALANCE_PAIRS,
+    SHORT_TERM_MODE,
     SL_PERCENT,
     SOFT_EXIT_ENABLED,
     SOFT_EXIT_SHARE,
@@ -95,6 +101,18 @@ logged_trades = set()
 logged_trades_lock = Lock()
 
 
+def is_optimal_trading_hour():
+    """
+    Determine if current time is during peak trading hours.
+    Returns True during high market activity hours.
+    """
+    current_time = datetime.now(pytz.UTC)
+    hour_utc = current_time.hour
+
+    # Check if current hour is in high activity hours list
+    return hour_utc in HIGH_ACTIVITY_HOURS
+
+
 def calculate_risk_amount(balance, risk_percent):
     return balance * risk_percent
 
@@ -116,6 +134,9 @@ def get_position_size(symbol):
 
 
 def get_market_regime(symbol):
+    """
+    Enhanced market regime detection with support for breakout detection.
+    """
     try:
         ohlcv = fetch_ohlcv(symbol, timeframe="15m", limit=50)
         log(f"{symbol} 🔍 Fetched {len(ohlcv)} candles for timeframe 15m", level="DEBUG")
@@ -130,6 +151,8 @@ def get_market_regime(symbol):
         lows = [c[3] for c in ohlcv]
         closes = [c[4] for c in ohlcv]
         df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
+
+        # Calculate ADX for trend strength
         adx_series = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
         if len(adx_series) < 1 or adx_series.isna().all():
             log(
@@ -139,8 +162,20 @@ def get_market_regime(symbol):
             return "neutral"
         adx = adx_series.iloc[-1]
 
-        log(f"{symbol} 🔍 Market regime: ADX = {adx:.2f}", level="DEBUG")
-        if adx > ADX_TREND_THRESHOLD:
+        # Calculate Bollinger Bands for volatility detection
+        bb = ta.volatility.BollingerBands(df["close"], window=20)
+        bb_width = (bb.bollinger_hband() - bb.bollinger_lband()).iloc[-1] / df["close"].iloc[-1] if not bb.bollinger_hband().empty and not bb.bollinger_lband().empty else 0
+
+        log(f"{symbol} 🔍 Market regime: ADX = {adx:.2f}, BB Width = {bb_width:.4f}", level="DEBUG")
+
+        # Breakout detection - wide BB width and strong ADX
+        if BREAKOUT_DETECTION and bb_width > 0.05 and adx > 20:
+            log(
+                f"{symbol} 🔍 Breakout detected! (BB Width > 0.05, ADX > 20)",
+                level="INFO",
+            )
+            return "breakout"
+        elif adx > ADX_TREND_THRESHOLD:
             log(
                 f"{symbol} 🔍 Market regime determined: trend (ADX > {ADX_TREND_THRESHOLD})",
                 level="INFO",
@@ -169,6 +204,17 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         log("Cannot enter trade: bot is stopping.", level="WARNING")
         return
 
+    # Check trading hours if enabled
+    if SHORT_TERM_MODE and not is_optimal_trading_hour():
+        # For small accounts, still allow priority pairs during non-optimal hours
+        balance = get_cached_balance()
+        if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+            log(f"{symbol} Priority pair allowed during non-optimal hours", level="INFO")
+        else:
+            log(f"{symbol} ⏰ Skipping trade during non-optimal trading hours", level="INFO")
+            send_telegram_message(f"⏰ Skipping {symbol}: non-optimal trading hours", force=True)
+            return
+
     if len(trade_manager._trades) >= MAX_POSITIONS:
         log(f"[Skip] Trade limit reached ({MAX_POSITIONS})", level="INFO")
         return
@@ -191,8 +237,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     account_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
 
     # Check if symbol is a priority pair for small accounts
-    from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
-
     is_priority_pair = symbol in PRIORITY_SMALL_BALANCE_PAIRS if balance < 150 else False
 
     if account_category == "Small" and is_priority_pair:
@@ -245,8 +289,8 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         balance = get_cached_balance()
         max_margin = balance * MAX_MARGIN_PERCENT
         required_margin = notional / leverage
-        if required_margin > max_margin * 0.9:  # 90% buffer
-            adjusted_qty = (max_margin * leverage * 0.9) / entry_price
+        if required_margin > max_margin * 0.92:  # Increased from 0.9 to 0.92 for safety
+            adjusted_qty = (max_margin * leverage * 0.92) / entry_price
             notional = adjusted_qty * entry_price
             log(
                 f"[Enter Trade] Adjusted qty for {symbol} to {adjusted_qty:.6f} to meet max margin limit (required: {required_margin:.2f}, max: {max_margin:.2f})",
@@ -307,6 +351,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 send_telegram_message(f"❌ Failed to open trade {symbol}: {str(e)}", force=True)
                 return
 
+        # Use enhanced market regime detection
         regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
         tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(entry_price, side, regime, score)
 
@@ -442,6 +487,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             "account_category": account_category,  # Store account category for reference
             "commission": commission,  # Store commission for reference
             "net_profit_tp1": net_profit_tp1,  # Store expected profit for reference
+            "market_regime": regime,  # Store market regime for reference
         }
         trade_manager.add_trade(symbol, trade_data)
 
@@ -480,7 +526,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 open_positions_count -= 1
 
 
-# Остальные функции без изменений
 def track_stop_loss(symbol, side, entry_price, qty, opened_at):
     with monitored_stops_lock:
         monitored_stops[symbol] = {
@@ -492,7 +537,11 @@ def track_stop_loss(symbol, side, entry_price, qty, opened_at):
 
 
 def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
+    """
+    Run break-even monitoring with earlier trigger (0.4 instead of 0.5).
+    """
     target = entry_price * (1 + tp_percent) if side == "buy" else entry_price * (1 - tp_percent)
+    # Using BREAKEVEN_TRIGGER (already set to 0.4 in config_loader)
     trigger = entry_price + (target - entry_price) * BREAKEVEN_TRIGGER if side == "buy" else entry_price - (entry_price - target) * BREAKEVEN_TRIGGER
     log(
         f"[DEBUG] Break-even for {symbol}: entry={entry_price}, target={target}, trigger={trigger}",
@@ -565,7 +614,14 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 
 
 def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
+    """
+    Enhanced trailing stop with breakout mode support.
+    """
     try:
+        # Fetch trade data to get market regime
+        trade = trade_manager.get_trade(symbol)
+        market_regime = trade.get("market_regime", "neutral") if trade else "neutral"
+
         timeframe = "15m"
         limit = 50
         ohlcv = fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -580,7 +636,11 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
             lows = [c[3] for c in ohlcv]
             closes = [c[4] for c in ohlcv]
             df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
-            atr = max([h - low for h, low in zip(highs, lows)])
+            atr = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range().iloc[-1]
+
+            if pd.isna(atr) or atr == 0:
+                atr = max([h - low for h, low in zip(highs, lows)])  # Fallback calculation
+
             adx_series = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
             if len(adx_series) < 1 or adx_series.isna().all():
                 log(
@@ -590,11 +650,24 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
                 trailing_distance = entry_price * 0.02
             else:
                 adx = adx_series.iloc[-1]
-                multiplier = 3 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 2
-                if adx > 25:
-                    multiplier *= 0.7
+
+                # Adjust multiplier based on market regime
+                if market_regime == "breakout":
+                    # Tighter trailing stop for breakout mode to capture explosive moves
+                    base_multiplier = 1.5
+                    log(f"{symbol} 📊 Using tighter trailing stop for breakout mode", level="INFO")
+                elif market_regime == "trend":
+                    # Normal trailing for trend
+                    base_multiplier = 2.0
+                else:
+                    # Wider trailing for flat or neutral
+                    base_multiplier = 2.5
+
+                # Further adjust based on aggressiveness
+                multiplier = base_multiplier * (0.8 if get_aggressiveness_score() > AGGRESSIVENESS_THRESHOLD else 1.0)
+
                 trailing_distance = atr * multiplier
-                log(f"{symbol} 📐 ADX: {adx:.1f}, Trailing distance: {trailing_distance:.5f}")
+                log(f"{symbol} 📐 ADX: {adx:.1f}, Regime: {market_regime}, Trailing distance: {trailing_distance:.5f}")
     except Exception as e:
         log(f"[ERROR] Trailing init fallback: {e}", level="ERROR")
         trailing_distance = entry_price * 0.02
@@ -608,6 +681,12 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
             if side == "buy":
                 if price > highest:
                     highest = price
+                    # For very profitable trades, tighten the trailing stop
+                    profit_pct = (price - entry_price) / entry_price
+                    if profit_pct > 0.03:  # Over 3% profit
+                        trailing_distance *= 0.85  # Reduce trailing distance by 15%
+                        log(f"{symbol} 📉 Tightening trailing stop due to high profit: {profit_pct:.2%}", level="DEBUG")
+
                 if price <= highest - trailing_distance:
                     size = get_position_size(symbol)
                     safe_call_retry(
@@ -622,6 +701,12 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
             else:
                 if price < lowest:
                     lowest = price
+                    # For very profitable trades, tighten the trailing stop
+                    profit_pct = (entry_price - price) / entry_price
+                    if profit_pct > 0.03:  # Over 3% profit
+                        trailing_distance *= 0.85  # Reduce trailing distance by 15%
+                        log(f"{symbol} 📈 Tightening trailing stop due to high profit: {profit_pct:.2%}", level="DEBUG")
+
                 if price >= lowest + trailing_distance:
                     size = get_position_size(symbol)
                     safe_call_retry(
@@ -640,15 +725,25 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
 
 def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5):
+    """
+    Enhanced soft exit with earlier profit taking.
+    """
     global open_positions_count, dry_run_positions_count
     tp1_price = entry_price * (1 + tp1_percent) if side == "buy" else entry_price * (1 - tp1_percent)
+
+    # Use SOFT_EXIT_THRESHOLD (already set to 0.7 in config_loader, was 0.8 previously)
     soft_exit_price = entry_price + (tp1_price - entry_price) * SOFT_EXIT_THRESHOLD if side == "buy" else entry_price - (entry_price - tp1_price) * SOFT_EXIT_THRESHOLD
+
+    # Use SOFT_EXIT_SHARE (typically 0.5 - close half position)
     soft_exit_qty = qty * SOFT_EXIT_SHARE
 
     log(
         f"[Soft Exit] Monitoring {symbol}: entry={entry_price}, tp1_price={tp1_price}, " f"soft_exit_price={soft_exit_price}, soft_exit_qty={soft_exit_qty}",
         level="DEBUG",
     )
+
+    # Dynamic check interval - more frequent during optimal trading hours
+    dynamic_check_interval = check_interval // 2 if is_optimal_trading_hour() else check_interval
 
     trade_closed = False
     while True:
@@ -682,17 +777,34 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
                         record_trade_result(symbol, side, entry_price, price, "soft_exit")
                         trade_closed = True
 
-                    try:
-                        open_orders = exchange.fetch_open_orders(symbol)
-                        for order in open_orders:
-                            exchange.cancel_order(order["id"], symbol)
-                            log(
-                                f"[Soft Exit] Cancelled order {order['id']} for {symbol}",
-                                level="INFO",
-                            )
-                    except Exception as e:
-                        log(f"[Soft Exit] Failed to cancel orders for {symbol}: {e}", level="ERROR")
-                        send_telegram_message(f"❌ Failed to cancel orders for {symbol}: {e}", force=True)
+                    # For small accounts, consider moving stop loss to entry price
+                    trade = trade_manager.get_trade(symbol)
+                    if trade and trade.get("account_category") == "Small":
+                        try:
+                            # Cancel any existing stop orders
+                            open_orders = exchange.fetch_open_orders(symbol)
+                            stop_orders = [o for o in open_orders if o["type"].upper() == "STOP_MARKET" or o["type"].upper() == "STOP"]
+
+                            for order in stop_orders:
+                                exchange.cancel_order(order["id"], symbol)
+                                log(f"[Soft Exit] Cancelled stop order {order['id']} for {symbol}", level="INFO")
+
+                            # Set new stop at entry price (break-even)
+                            remaining_position = get_position_size(symbol)
+                            if remaining_position > 0:
+                                safe_call_retry(
+                                    exchange.create_order,
+                                    symbol,
+                                    "STOP_MARKET",
+                                    "sell" if side == "buy" else "buy",
+                                    remaining_position,
+                                    params={"stopPrice": entry_price, "reduceOnly": True},
+                                    label=f"soft_exit_break_even {symbol}",
+                                )
+                                log(f"[Soft Exit] Set break-even stop for remaining position in {symbol}", level="INFO")
+                                send_telegram_message(f"🔒 Break-even stop set for remaining position in {symbol}", force=True)
+                        except Exception as e:
+                            log(f"[Soft Exit] Failed to adjust stop orders for {symbol}: {e}", level="ERROR")
 
                     position = get_position_size(symbol)
                     log(
@@ -708,7 +820,8 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
                         initialize_cache()
                         break
 
-            time.sleep(check_interval)
+            # Use dynamic check interval
+            time.sleep(dynamic_check_interval)
         except Exception as e:
             log(f"[ERROR] Soft Exit error for {symbol}: {e}", level="ERROR")
             break
@@ -758,6 +871,15 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         level="DEBUG",
     )
 
+    # Enhanced trade result logging with account category
+    account_category = trade.get("account_category", "Standard")
+    commission = trade.get("commission", 0)
+
+    # Calculate absolute profit for small accounts
+    qty = trade.get("qty", 0)
+    absolute_profit = (exit_price - entry_price) * qty if side == "buy" else (entry_price - exit_price) * qty
+    net_absolute_profit = absolute_profit - commission
+
     log_trade_result(
         symbol=symbol,
         direction=side.upper(),
@@ -774,14 +896,26 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         adx=0.0,
         bb_width=0.0,
         result_type=final_result_type,
+        account_category=account_category,
+        net_profit_usdc=round(net_absolute_profit, 2) if account_category == "Small" else None,
     )
 
-    msg = (
-        f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
-        f"• {symbol} — {side.upper()}\n"
-        f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-        f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
-    )
+    # Enhanced notification with absolute profit for small accounts
+    if account_category == "Small":
+        msg = (
+            f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
+            f"• {symbol} — {side.upper()}\n"
+            f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
+            f"• PnL: {round(pnl, 2)}% | ${round(net_absolute_profit, 2)} USDC\n"
+            f"• Held: {duration} min"
+        )
+    else:
+        msg = (
+            f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
+            f"• {symbol} — {side.upper()}\n"
+            f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
+            f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
+        )
     send_telegram_message(msg, force=True)
 
     trade_manager.remove_trade(symbol)

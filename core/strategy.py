@@ -3,9 +3,19 @@ import threading
 from datetime import datetime
 
 import pandas as pd
+import pytz
 import ta
 
-from core.trade_engine import get_market_regime, get_position_size, trade_manager
+from common.config_loader import (
+    BREAKOUT_DETECTION,
+    HIGH_ACTIVITY_HOURS,
+    MOMENTUM_LOOKBACK,
+    SHORT_TERM_MODE,
+    TRADING_HOURS_FILTER,
+    VOLUME_SPIKE_THRESHOLD,
+    WEEKEND_TRADING,
+)
+from core.trade_engine import get_position_size, trade_manager
 from core.volatility_controller import get_volatility_filters
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
@@ -15,12 +25,35 @@ last_trade_times = {}
 last_trade_times_lock = threading.Lock()
 
 
+def is_optimal_trading_hour():
+    """
+    Determine if the current time is during optimal trading hours.
+    Returns True during hours of high market activity, False otherwise.
+    """
+    if not TRADING_HOURS_FILTER:
+        return True  # Always allow if filter is disabled
+
+    current_time = datetime.now(pytz.UTC)
+    hour_utc = current_time.hour
+
+    # Weekend check - skip trading on weekends if configured
+    if not WEEKEND_TRADING and current_time.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+
+    # Check if current hour is in high activity hours list
+    return hour_utc in HIGH_ACTIVITY_HOURS
+
+
 def fetch_data(symbol, tf="15m"):
+    """
+    Fetch market data with enhanced indicators for short-term trading.
+    """
     from core.binance_api import fetch_ohlcv
     from utils_logging import log
 
     try:
-        data = fetch_ohlcv(symbol, timeframe=tf, limit=50)
+        # Get more data for better indicator calculation
+        data = fetch_ohlcv(symbol, timeframe=tf, limit=100)  # Increased from 50
         if not data:
             log(f"No data returned for {symbol} on timeframe {tf}", level="ERROR")
             return None
@@ -34,16 +67,37 @@ def fetch_data(symbol, tf="15m"):
         if len(df) < 14:
             log(f"Not enough data for {symbol} on timeframe {tf} (rows: {len(df)})", level="ERROR")
             return None
+
+        # Standard indicators
         df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
         df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
         df["macd"] = ta.trend.MACD(df["close"]).macd()
         df["macd_signal"] = ta.trend.MACD(df["close"]).macd_signal()
         df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+
+        # Enhanced short-term indicators
         df["fast_ema"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
         df["slow_ema"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
         df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
+
+        # Bollinger Bands for breakout detection
         bb = ta.volatility.BollingerBands(df["close"], window=20)
         df["bb_width"] = bb.bollinger_hband() - bb.bollinger_lband()
+        df["bb_width_pct"] = df["bb_width"] / df["close"]  # Normalized width
+        df["bb_upper"] = bb.bollinger_hband()
+        df["bb_lower"] = bb.bollinger_lband()
+
+        # Short-term momentum detection
+        if len(df) >= MOMENTUM_LOOKBACK + 1:
+            df["momentum"] = df["close"].pct_change(MOMENTUM_LOOKBACK) * 100
+
+        # Calculate relative volume (compared to same time yesterday)
+        if len(df) >= 96:  # At least 24 hours of data (96 periods in 15m)
+            df["yesterday_vol"] = df["volume"].shift(96)  # 96 periods = 24h in 15m tf
+            df["rel_volume"] = df["volume"] / df["yesterday_vol"]
+        else:
+            df["rel_volume"] = df["volume"] / df["volume"].mean()
+
         return df
     except Exception as e:
         log(f"Error fetching data for {symbol}: {e}", level="ERROR")
@@ -51,10 +105,91 @@ def fetch_data(symbol, tf="15m"):
 
 
 def get_htf_trend(symbol, tf="1h"):
+    """
+    Get higher timeframe trend with enhanced logic for breakout detection.
+    """
     df_htf = fetch_data(symbol, tf=tf)
     if df_htf is None:
         return False
-    return df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
+
+    # Standard trend check
+    price_above_ema = df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
+
+    # Enhanced trend check - look for momentum
+    momentum_increasing = False
+    if "momentum" in df_htf.columns and len(df_htf) >= 3:
+        momentum_increasing = df_htf["momentum"].iloc[-1] > df_htf["momentum"].iloc[-2]
+
+    return price_above_ema and momentum_increasing
+
+
+def get_enhanced_market_regime(symbol):
+    """
+    Enhanced market regime detection with breakout identification.
+    """
+    from common.config_loader import ADX_FLAT_THRESHOLD, ADX_TREND_THRESHOLD
+    from core.binance_api import fetch_ohlcv
+    from utils_logging import log
+
+    try:
+        ohlcv = fetch_ohlcv(symbol, timeframe="15m", limit=50)
+        log(f"{symbol} 🔍 Fetched {len(ohlcv)} candles for timeframe 15m", level="DEBUG")
+        if not ohlcv or len(ohlcv) < 28:
+            log(
+                f"{symbol} ⚠️ Insufficient data: only {len(ohlcv) if ohlcv else 0} candles available, need at least 28 for ADX",
+                level="WARNING",
+            )
+            return "neutral"
+
+        highs = [c[2] for c in ohlcv]
+        lows = [c[3] for c in ohlcv]
+        closes = [c[4] for c in ohlcv]
+        df = pd.DataFrame({"high": highs, "low": lows, "close": closes})
+
+        # Calculate ADX for trend strength
+        adx_series = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
+        if len(adx_series) < 1 or adx_series.isna().all():
+            log(
+                f"{symbol} ⚠️ ADX calculation failed: insufficient data after processing",
+                level="WARNING",
+            )
+            return "neutral"
+        adx = adx_series.iloc[-1]
+
+        # Calculate Bollinger Bands for volatility
+        bb = ta.volatility.BollingerBands(df["close"], window=20)
+        bb_width = (bb.bollinger_hband() - bb.bollinger_lband()).iloc[-1] / df["close"].iloc[-1]
+
+        log(f"{symbol} 🔍 Market regime: ADX = {adx:.2f}, BB Width = {bb_width:.4f}", level="DEBUG")
+
+        # Breakout detection - wide BB width and strong ADX
+        if BREAKOUT_DETECTION and bb_width > 0.05 and adx > 20:
+            log(
+                f"{symbol} 🔍 Breakout detected! (BB Width > 0.05, ADX > 20)",
+                level="INFO",
+            )
+            return "breakout"
+        elif adx > ADX_TREND_THRESHOLD:
+            log(
+                f"{symbol} 🔍 Market regime determined: trend (ADX > {ADX_TREND_THRESHOLD})",
+                level="INFO",
+            )
+            return "trend"
+        elif adx < ADX_FLAT_THRESHOLD:
+            log(
+                f"{symbol} 🔍 Market regime determined: flat (ADX < {ADX_FLAT_THRESHOLD})",
+                level="INFO",
+            )
+            return "flat"
+        else:
+            log(
+                f"{symbol} 🔍 Market regime determined: neutral (ADX between {ADX_FLAT_THRESHOLD} and {ADX_TREND_THRESHOLD})",
+                level="INFO",
+            )
+            return "neutral"
+    except Exception as e:
+        log(f"[ERROR] Failed to determine market regime for {symbol}: {e}", level="ERROR")
+        return "neutral"
 
 
 def passes_filters(df, symbol):
@@ -74,6 +209,12 @@ def passes_filters(df, symbol):
 
     filters = get_volatility_filters(symbol, base_filters)
     relax_factor = filters["relax_factor"]
+
+    # Relaxed filters during optimal trading hours
+    if SHORT_TERM_MODE and is_optimal_trading_hour():
+        filters["atr"] *= 0.9  # 10% more permissive during peak hours
+        filters["adx"] *= 0.85  # 15% more permissive during peak hours
+        filters["bb"] *= 0.9  # 10% more permissive during peak hours
 
     if DRY_RUN:
         filters["atr"] *= 0.6
@@ -119,6 +260,13 @@ def passes_filters(df, symbol):
         send_telegram_message(f"⚠️ {symbol} rejected: BB Width {bb_width:.5f} < {filters['bb']}", force=True)
         return False
 
+    # Volume spike check for short-term trading
+    if SHORT_TERM_MODE and "rel_volume" in df.columns and not pd.isna(df["rel_volume"].iloc[-1]):
+        rel_volume = df["rel_volume"].iloc[-1]
+        if rel_volume < 0.7:  # Volume significantly below average
+            log(f"{symbol} ⛔️ Rejected: Low relative volume {rel_volume:.2f}", level="DEBUG")
+            return False
+
     if VOLATILITY_SKIP_ENABLED:
         price = df["close"].iloc[-1]
         high = df["high"].iloc[-1]
@@ -140,9 +288,11 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         MIN_NOTIONAL_OPEN,
         MIN_NOTIONAL_ORDER,
         MIN_TRADE_SCORE,
+        PRIORITY_SMALL_BALANCE_PAIRS,
         SL_PERCENT,
         TAKER_FEE_RATE,
         TP2_SHARE,
+        TRADING_HOURS_FILTER,
         USE_TESTNET,
         get_min_net_profit,
     )
@@ -156,6 +306,17 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")
         return None
+
+    # Check if we're in optimal trading hours
+    if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
+        # Only skip non-priority pairs during non-optimal hours
+        balance = get_cached_balance()
+        if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+            # Allow priority pairs for small accounts even in non-optimal hours
+            log(f"{symbol} Priority pair allowed during non-optimal hours", level="DEBUG")
+        else:
+            log(f"{symbol} ⏰ Skipping due to non-optimal trading hours", level="DEBUG")
+            return None
 
     utc_now = datetime.utcnow()
     balance = get_cached_balance()
@@ -177,7 +338,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     log(f"{symbol} 🔎 Step 1: Cooldown check", level="DEBUG")
     with last_trade_times_lock:
         last_time = last_trade_times.get(symbol)
-        cooldown = 30 * 60  # 30 минут
+        # Reduced cooldown for short-term trading
+        cooldown = 20 * 60 if SHORT_TERM_MODE else 30 * 60  # 20 or 30 minutes
         elapsed = utc_now.timestamp() - last_time.timestamp() if last_time else float("inf")
         if elapsed < cooldown:
             if DRY_RUN:
@@ -199,6 +361,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         )
         return None
 
+    # Adjust score requirement during optimal trading hours
+    if SHORT_TERM_MODE and is_optimal_trading_hour():
+        min_required *= 0.9  # 10% lower threshold during optimal hours
+
     if DRY_RUN:
         min_required *= 0.3
         log(f"{symbol} 🔎 Final Score: {score:.2f} / (Required: {min_required:.4f})")
@@ -218,11 +384,40 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     macd_signal_value = df["macd_signal"].iloc[-1] if not pd.isna(df["macd_signal"].iloc[-1]) else 0
     log(f"{symbol} DEBUG: MACD={macd_value}, Signal={macd_signal_value}", level="DEBUG")
 
+    # Enhanced direction determination with EMA crossover confirmation
+    ema_cross_confirmation = False
+    if "fast_ema" in df.columns and "slow_ema" in df.columns:
+        fast_cross_above = df["fast_ema"].iloc[-1] > df["slow_ema"].iloc[-1] and df["fast_ema"].iloc[-2] <= df["slow_ema"].iloc[-2]
+        fast_cross_below = df["fast_ema"].iloc[-1] < df["slow_ema"].iloc[-1] and df["fast_ema"].iloc[-2] >= df["slow_ema"].iloc[-2]
+
+        if (macd_value > macd_signal_value and fast_cross_above) or (macd_value < macd_signal_value and fast_cross_below):
+            ema_cross_confirmation = True
+            log(f"{symbol} ✅ EMA cross confirmation", level="DEBUG")
+
+    # Base direction on MACD
     direction = "BUY" if macd_value > macd_signal_value else "SELL"
+
+    # Check relative volume for confirmation
+    volume_confirmation = False
+    if "rel_volume" in df.columns and not pd.isna(df["rel_volume"].iloc[-1]):
+        rel_volume = df["rel_volume"].iloc[-1]
+        if rel_volume > VOLUME_SPIKE_THRESHOLD:
+            volume_confirmation = True
+            log(f"{symbol} ✅ Volume spike confirmation: {rel_volume:.2f}x average", level="DEBUG")
+
+    # Enhanced direction confidence
+    direction_confidence = 1.0
+    if ema_cross_confirmation:
+        direction_confidence += 0.2
+    if volume_confirmation:
+        direction_confidence += 0.2
 
     entry_price = df["close"].iloc[-1]
     stop_price = entry_price * (1 - SL_PERCENT) if direction == "BUY" else entry_price * (1 + SL_PERCENT)
-    risk_percent = get_adaptive_risk_percent(balance)
+
+    # Apply direction confidence to risk_percent for stronger signals
+    base_risk_percent = get_adaptive_risk_percent(balance)
+    risk_percent = min(base_risk_percent * direction_confidence, base_risk_percent * 1.4)  # Cap at 40% increase
 
     try:
         qty = calculate_order_quantity(entry_price, stop_price, balance, risk_percent)
@@ -259,7 +454,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             level="DEBUG",
         )
 
-    regime = get_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
+    # Use enhanced market regime detection
+    regime = get_enhanced_market_regime(symbol) if AUTO_TP_SL_ENABLED else None
     log(f"DEBUG: About to calculate TP/SL for {symbol} with regime={regime}", level="DEBUG")
 
     tp1_price, tp2_price, sl_price, qty_tp1_share, qty_tp2_share = calculate_tp_levels(entry_price, direction, regime, score, df)
