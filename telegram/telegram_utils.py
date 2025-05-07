@@ -1,6 +1,9 @@
+import os
+
+import pandas as pd
 import requests
 
-from common.config_loader import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN  # ✅ добавили
+from common.config_loader import EXPORT_PATH, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN  # ✅ добавили
 
 
 def escape_markdown_v2(text: str) -> str:
@@ -112,3 +115,30 @@ def send_telegram_image(image_path, caption=""):
                 raise Exception(f"Telegram image upload failed: {response.text}")
     except Exception as e:
         print(f"[Telegram] Failed to send image: {e}")
+
+
+def send_daily_summary():
+    """Send a daily summary of closed trades."""
+    try:
+        if not os.path.exists(EXPORT_PATH):
+            return
+
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        today = pd.Timestamp.now().normalize()
+
+        today_trades = df[df["Date"] >= today]
+
+        if today_trades.empty:
+            send_telegram_message("📋 No trades closed today.", force=True)
+            return
+
+        total_trades = len(today_trades)
+        wins = len(today_trades[today_trades["Result"].isin(["TP1", "TP2"])])
+        losses = len(today_trades[today_trades["Result"] == "SL"])
+        avg_pnl = today_trades["PnL (%)"].mean()
+
+        message = f"📈 *Daily Trading Summary*\n" f"Total Trades: {total_trades}\n" f"Wins: {wins}\n" f"Losses: {losses}\n" f"Avg PnL: {avg_pnl:.2f}%"
+
+        send_telegram_message(escape_markdown_v2(message))
+    except Exception as e:
+        send_telegram_message(escape_markdown_v2(f"⚠️ Failed to send daily summary:\n{e}"))

@@ -4,6 +4,8 @@ import threading
 import time
 from datetime import datetime
 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 from common.config_loader import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
@@ -32,7 +34,7 @@ from stats import (
 )
 from telegram.telegram_commands import _initiate_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
-from telegram.telegram_utils import send_telegram_message
+from telegram.telegram_utils import send_daily_summary, send_telegram_message
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import initialize_cache, load_state, save_state
@@ -108,10 +110,11 @@ def start_trading_loop():
             state = load_state()
 
             if state.get("stopping") or state.get("shutdown"):
-                positions = exchange.fetch_positions()
-                active_positions = [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
+                # Use get_open_positions() to check actual exchange state
+                from core.binance_api import get_open_positions
 
-                if not active_positions:
+                open_positions = get_open_positions()
+                if not open_positions:
                     msg = "[Main] Bot is stopping. No open trades. "
                     if state.get("shutdown"):
                         msg += "Shutting down..."
@@ -127,12 +130,15 @@ def start_trading_loop():
                         time.sleep(30)
                         continue
                 else:
-                    position_symbols = [pos["symbol"] for pos in active_positions]
-                    msg = f"🛑 Bot is stopping. Waiting for trades to close:\n{', '.join(position_symbols)}"
+                    # Format positions for better visibility
+                    symbols = [pos["symbol"] for pos in open_positions]
+                    symbols_str = ", ".join(symbols)
+                    msg = f"⏳ Still open positions ({len(open_positions)}): {symbols_str}. Waiting..."
                     log(msg, level="INFO")
                     send_telegram_message(msg, force=True)
 
-                    for pos in active_positions:
+                    # Actively try to close positions
+                    for pos in open_positions:
                         symbol = pos["symbol"]
                         log(f"[Stop] Closing position for {symbol}", level="INFO")
                         close_real_trade(symbol)
@@ -299,4 +305,22 @@ if __name__ == "__main__":
         target=start_report_loops,
         daemon=True,
     ).start()
-    start_trading_loop()
+
+    # Start APScheduler for periodic tasks
+    scheduler = BackgroundScheduler()
+    # Ежедневный отчёт о сделках в 23:59
+    scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
+    # Ротация торговых пар каждые 4 часа
+    scheduler.add_job(select_active_symbols, "interval", hours=4)
+    # Авто-оптимизация TP/SL каждое воскресенье в 10:00
+    scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
+    scheduler.start()
+    log("Scheduler started with daily summary, pair rotation, and TP/SL optimizer", level="INFO")
+
+    # Add proper shutdown handling
+    try:
+        start_trading_loop()
+    finally:
+        if scheduler.running:
+            scheduler.shutdown()
+            log("Scheduler shutdown completed", level="INFO")

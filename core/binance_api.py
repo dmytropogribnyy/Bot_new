@@ -174,6 +174,23 @@ def create_safe_market_order(symbol, side, amount):
         return {"success": False, "error": error_str}
 
 
+def get_open_positions():
+    """
+    Gets actually open positions with non-zero contracts from the exchange.
+    Returns a list of position objects with non-zero size.
+    """
+    try:
+        positions = exchange.fetch_positions()
+        open_positions = []
+        for pos in positions:
+            if float(pos.get("contracts", 0)) != 0:
+                open_positions.append(pos)
+        return open_positions
+    except Exception as e:
+        log(f"Error fetching open positions: {e}", level="ERROR")
+        return []
+
+
 def handle_rate_limits(func):
     """Декоратор для обработки лимитов API с повторными попытками."""
 

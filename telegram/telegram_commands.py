@@ -66,8 +66,10 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
             if DRY_RUN:
                 open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
             else:
-                positions = exchange.fetch_positions()
-                open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
+                from core.binance_api import get_open_positions
+
+                positions = get_open_positions()
+                open_details = [_format_pos_real(p) for p in positions]
 
                 # Actively try to close positions again if still open after 5 minutes
                 if open_details and time.time() - start > 300:  # 5 minutes
@@ -108,7 +110,9 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
     # Check one final time if all positions are closed
     try:
         if not DRY_RUN:
-            positions = exchange.fetch_positions()
+            from core.binance_api import get_open_positions
+
+            positions = get_open_positions()
             if not any(float(p.get("contracts", 0)) > 0 for p in positions):
                 send_telegram_message("✅ All positions closed.", force=True)
                 state["stopping"] = False
@@ -194,8 +198,11 @@ def handle_stop_command():
         if DRY_RUN:
             open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
         else:
-            positions = exchange.fetch_positions()
-            open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
+            # Use our new function to get actual exchange positions
+            from core.binance_api import get_open_positions
+
+            positions = get_open_positions()
+            open_details = [_format_pos_real(p) for p in positions]
 
             # Actively close positions in real mode
             for pos in positions:

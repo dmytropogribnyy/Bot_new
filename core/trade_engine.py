@@ -14,7 +14,9 @@ from common.config_loader import (
     ADX_FLAT_THRESHOLD,
     ADX_TREND_THRESHOLD,
     AGGRESSIVENESS_THRESHOLD,
+    AUTO_CLOSE_PROFIT_THRESHOLD,  # Added import
     AUTO_TP_SL_ENABLED,
+    BONUS_PROFIT_THRESHOLD,  # Added import
     BREAKEVEN_TRIGGER,
     BREAKOUT_DETECTION,
     DRY_RUN,
@@ -37,8 +39,6 @@ from common.config_loader import (
     TP1_PERCENT,
     TP2_PERCENT,
     USE_TESTNET,
-    AUTO_CLOSE_PROFIT_THRESHOLD,  # Added import
-    BONUS_PROFIT_THRESHOLD,  # Added import
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.binance_api import fetch_ohlcv
@@ -592,6 +592,13 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                     daemon=True,
                 ).start()
 
+            # Start auto-profit monitoring thread
+            threading.Thread(
+                target=run_auto_profit_exit,
+                args=(symbol, side, entry_price),
+                daemon=True,
+            ).start()
+
         initialize_cache()
 
     except Exception as e:
@@ -1094,6 +1101,61 @@ def open_real_trade(symbol, direction, qty, entry_price):
     except Exception as e:
         log(f"[Open Trade] Failed for {symbol}: {e}", level="ERROR")
         raise
+
+
+def run_auto_profit_exit(symbol, side, entry_price, check_interval=5):
+    """
+    Monitor position profit and automatically close when it reaches the profit threshold.
+
+    Args:
+        symbol: Trading pair symbol
+        side: Position side (buy/sell)
+        entry_price: Position entry price
+        check_interval: How often to check profit (in seconds)
+    """
+    log(f"[Auto-Profit] Starting profit monitoring for {symbol} with entry price {entry_price}", level="DEBUG")
+
+    while True:
+        try:
+            # Check if trade still exists
+            trade = trade_manager.get_trade(symbol)
+            if not trade:
+                log(f"[Auto-Profit] Trade for {symbol} no longer exists, stopping auto-profit thread", level="INFO")
+                break
+
+            # Check if position is still open
+            position = get_position_size(symbol)
+            if position <= 0:
+                log(f"[Auto-Profit] Position for {symbol} closed, stopping auto-profit thread", level="INFO")
+                break
+
+            # Get current price and calculate profit percentage
+            price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")["last"]
+
+            if side.lower() == "buy":
+                profit_percentage = ((price - entry_price) / entry_price) * 100
+            else:  # side == "sell"
+                profit_percentage = ((entry_price - price) / entry_price) * 100
+
+            log(f"[Auto-Profit] {symbol} current profit: {profit_percentage:.2f}%", level="DEBUG")
+
+            # Check against thresholds
+            if profit_percentage >= BONUS_PROFIT_THRESHOLD:
+                log(f"🎉 BONUS PROFIT! Auto-closing {symbol} at +{profit_percentage:.2f}% 🚀", level="INFO")
+                safe_close_trade(exchange, symbol, trade)
+                send_telegram_message(f"🎉 *Bonus Profit!* {symbol} closed at +{profit_percentage:.2f}% 🚀\n" f"Reason: Exceeded {BONUS_PROFIT_THRESHOLD}% profit!")
+                break
+            elif profit_percentage >= AUTO_CLOSE_PROFIT_THRESHOLD:
+                log(f"✅ Auto-closing {symbol} at +{profit_percentage:.2f}% (Threshold: {AUTO_CLOSE_PROFIT_THRESHOLD}%)", level="INFO")
+                safe_close_trade(exchange, symbol, trade)
+                send_telegram_message(f"✅ *Auto-closed* {symbol} at +{profit_percentage:.2f}% profit 🚀\n" f"Reason: Reached profit target {AUTO_CLOSE_PROFIT_THRESHOLD}%")
+                break
+
+            # Wait before checking again
+            time.sleep(check_interval)
+        except Exception as e:
+            log(f"[ERROR] Auto-profit error for {symbol}: {e}", level="ERROR")
+            break
 
 
 def handle_panic(stop_event):

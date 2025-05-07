@@ -105,3 +105,56 @@ def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score
         log(f"Ошибка при расчете конечных цен TP/SL: {e}", level="ERROR")
         # Возвращаем безопасные дефолтные значения при ошибке
         return None, None, None, TP1_SHARE, 0
+
+
+def log_trade_result(symbol, side, entry_price, exit_price, quantity, pnl, duration, reason=None, account_category=None):
+    """
+    Bridge function that properly forwards all parameters to the actual log implementation.
+    """
+    from tp_logger import log_trade_result as logger_log_trade_result
+
+    # Handle conversion of parameters to match tp_logger.py's implementation
+    return logger_log_trade_result(
+        symbol=symbol,
+        direction=side,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        qty=quantity,
+        tp1_hit=False,  # Default value, adjust as needed
+        tp2_hit=False,  # Default value, adjust as needed
+        sl_hit=(reason == "sl" if reason else False),
+        pnl_percent=pnl,
+        duration_minutes=duration,
+        htf_confirmed=False,  # Default value
+        atr=0.0,  # Default value
+        adx=0.0,  # Default value
+        bb_width=0.0,  # Default value
+        result_type=reason or "manual",
+    )
+
+
+def adjust_microprofit_exit(current_pnl_percent, balance=None, micro_profit_target=None):
+    """
+    Determines if a position should be closed with a small profit.
+    Particularly useful for small accounts to secure quick gains.
+
+    Args:
+        current_pnl_percent: Current profit percentage
+        balance: Current account balance (for adaptive targets)
+        micro_profit_target: Minimum % to trigger exit (default varies by balance)
+
+    Returns:
+        bool: True if position should be closed, False otherwise
+    """
+    # Default target if none specified
+    if micro_profit_target is None:
+        if balance is None:
+            micro_profit_target = 0.5  # Default
+        elif balance < 100:
+            micro_profit_target = 0.5  # Higher target for very small accounts
+        elif balance < 200:
+            micro_profit_target = 0.7  # Medium target
+        else:
+            micro_profit_target = 1.0  # Higher target for larger accounts
+
+    return current_pnl_percent >= micro_profit_target
