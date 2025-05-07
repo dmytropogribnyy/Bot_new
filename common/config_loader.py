@@ -88,6 +88,11 @@ SL_PERCENT = float(get_config("SL_PERCENT", 0.007))  # 0.7% (decreased from 0.9%
 TP1_SHARE = float(get_config("TP1_SHARE", 0.8))  # 80% (unchanged)
 TP2_SHARE = float(get_config("TP2_SHARE", 0.2))  # 20% (unchanged)
 
+# ========== Auto-Profit Settings ==========
+AUTO_CLOSE_PROFIT_THRESHOLD = 5.0  # Close at 5% profit
+BONUS_PROFIT_THRESHOLD = 7.0  # Special notification at 7% profit
+MICRO_PROFIT_ENABLED = True  # Enable micro-profit exits
+
 # ========== Fee Rates ==========
 TAKER_FEE_RATE = float(get_config("TAKER_FEE_RATE", 0.0005))  # 0.05%
 MAKER_FEE_RATE = float(get_config("MAKER_FEE_RATE", 0.0002))  # 0.02%

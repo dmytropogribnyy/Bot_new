@@ -37,6 +37,8 @@ from common.config_loader import (
     TP1_PERCENT,
     TP2_PERCENT,
     USE_TESTNET,
+    AUTO_CLOSE_PROFIT_THRESHOLD,  # Added import
+    BONUS_PROFIT_THRESHOLD,  # Added import
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.binance_api import fetch_ohlcv
@@ -89,6 +91,53 @@ class TradeInfoManager:
             if symbol not in self._trades:
                 self._trades[symbol] = {}
             self._trades[symbol]["last_closed_time"] = timestamp
+
+
+# New functions for safe trade closing
+def safe_close_trade(binance_client, symbol, trade_data):
+    """
+    Safely close a trade by cancelling all orders and closing the position.
+    This ensures clean exits without lingering orders.
+    """
+    try:
+        side = trade_data["side"]
+        quantity = trade_data["quantity"]
+
+        close_trade_and_cancel_orders(binance_client=binance_client, symbol=symbol, side=side, quantity=quantity)
+
+        trade_manager._trades.pop(symbol, None)
+        log(f"✅ Safe close complete for {symbol}. Position and orders cleared.", level="INFO")
+    except Exception as e:
+        log(f"❌ Error during safe close for {symbol}: {str(e)}", level="ERROR")
+
+
+def close_trade_and_cancel_orders(binance_client, symbol, side, quantity, reduce_only=True):
+    """
+    Close a position with a market order and cancel all related orders.
+
+    Args:
+        binance_client: Binance client instance
+        symbol: Trading pair symbol
+        side: Position side (BUY/SELL)
+        quantity: Position size
+        reduce_only: Whether to use reduce_only parameter
+    """
+    try:
+        close_side = "SELL" if side.upper() == "BUY" else "BUY"
+
+        # First cancel all orders to avoid conflicts
+        try:
+            binance_client.futures_cancel_all_open_orders(symbol=symbol.replace("/", ""))
+            log(f"✅ Canceled all open orders for {symbol}.", level="INFO")
+        except Exception as e:
+            log(f"❌ Error canceling orders for {symbol}: {str(e)}", level="WARNING")
+
+        # Then close the position
+        order = binance_client.futures_create_order(symbol=symbol.replace("/", ""), side=close_side, type="MARKET", quantity=quantity, reduceOnly=reduce_only)  # noqa: F841
+        log(f"✅ Closed position {symbol} — {quantity} units by MARKET.", level="INFO")
+
+    except Exception as e:
+        log(f"❌ Error while closing {symbol}: {str(e)}", level="ERROR")
 
 
 trade_manager = TradeInfoManager()
@@ -284,6 +333,36 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 level="WARNING",
             )
             send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
+            return
+
+        # Add position size limitation
+        account_balance = get_cached_balance()
+        max_allowed_position = account_balance * 0.4  # Maximum 40% of balance per trade
+
+        # Calculate notional value of the position
+        notional = adjusted_qty * entry_price
+
+        if notional > max_allowed_position:
+            # Scale down the quantity to fit the maximum allowed position size
+            old_qty = adjusted_qty
+            adjusted_qty = max_allowed_position / entry_price
+            notional = adjusted_qty * entry_price
+            log(f"[Enter Trade] Position size for {symbol} reduced from {old_qty:.6f} to {adjusted_qty:.6f} to stay under 40% balance limit", level="WARNING")
+
+        # Further protection: ensure all positions combined don't exceed 50% of balance
+        current_positions_value = 0
+        try:
+            positions = exchange.fetch_positions()
+            for pos in positions:
+                if float(pos.get("contracts", 0)) != 0:
+                    current_positions_value += abs(float(pos.get("contracts", 0)) * float(pos.get("entryPrice", 0)))
+        except Exception as e:
+            log(f"[Enter Trade] Failed to fetch current positions: {e}", level="ERROR")
+
+        # Check if this new position would exceed 50% total allocation
+        if (current_positions_value + notional) > (account_balance * 0.5):
+            log(f"[Enter Trade] Skipping {symbol} - total position value would exceed 50% of balance", level="WARNING")
+            send_telegram_message(f"⚠️ Skipping {symbol}: would exceed 50% balance limit", force=True)
             return
 
         balance = get_cached_balance()
@@ -1068,3 +1147,39 @@ def handle_panic(stop_event):
 
     stop_event.set()
     os._exit(0)
+
+
+# Add auto-profit exit logic in your position monitoring loop
+# This would typically be in the section that monitors existing positions
+# For example, in the main trading cycle:
+
+"""
+# Example of where to add the auto-profit check in your monitoring loop:
+for symbol in active_trades:
+    # Get current price and calculate PnL
+    current_price = get_current_price(symbol)
+    trade_data = active_trades[symbol]
+    entry_price = trade_data['entry']
+    side = trade_data['side']
+
+    # Calculate position PnL percentage
+    position_pnl_percentage = ((current_price - entry_price) / entry_price * 100) if side == "buy" else ((entry_price - current_price) / entry_price * 100)
+
+    # Auto-profit exit checks
+    if position_pnl_percentage >= BONUS_PROFIT_THRESHOLD:
+        log(f"🎉 BONUS PROFIT! Auto-closing {symbol} at +{position_pnl_percentage:.2f}% 🚀", level="INFO")
+        safe_close_trade(exchange, symbol, active_trades[symbol])
+        send_telegram_message(
+            f"🎉 *Bonus Profit!* {symbol} closed at +{position_pnl_percentage:.2f}% 🚀\n"
+            f"Reason: Exceeded {BONUS_PROFIT_THRESHOLD}% profit!"
+        )
+        continue
+    elif position_pnl_percentage >= AUTO_CLOSE_PROFIT_THRESHOLD:
+        log(f"✅ Auto-closing {symbol} at +{position_pnl_percentage:.2f}% (Threshold: {AUTO_CLOSE_PROFIT_THRESHOLD}%)", level="INFO")
+        safe_close_trade(exchange, symbol, active_trades[symbol])
+        send_telegram_message(
+            f"✅ *Auto-closed* {symbol} at +{position_pnl_percentage:.2f}% profit 🚀\n"
+            f"Reason: Reached profit target {AUTO_CLOSE_PROFIT_THRESHOLD}%"
+        )
+        continue
+"""
