@@ -81,12 +81,12 @@ MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
 MIN_NOTIONAL_ORDER = float(get_config("MIN_NOTIONAL_ORDER", 20))
 
 # ========== TP/SL Settings ==========
-# Modified for faster profit taking
-TP1_PERCENT = float(get_config("TP1_PERCENT", 0.006))  # 0.6% (lowered from 0.7%)
-TP2_PERCENT = float(get_config("TP2_PERCENT", 0.013))  # 1.3% (unchanged)
-SL_PERCENT = float(get_config("SL_PERCENT", 0.009))  # 0.9% (lowered from 1.0% for better risk:reward)
-TP1_SHARE = float(get_config("TP1_SHARE", 0.8))  # 80% (increased from 70%)
-TP2_SHARE = float(get_config("TP2_SHARE", 0.2))  # 20% (reduced from 30%)
+# Optimized for small deposits with better risk/reward
+TP1_PERCENT = float(get_config("TP1_PERCENT", 0.009))  # 0.9% (increased from 0.6%)
+TP2_PERCENT = float(get_config("TP2_PERCENT", 0.016))  # 1.6% (increased from 1.3%)
+SL_PERCENT = float(get_config("SL_PERCENT", 0.007))  # 0.7% (decreased from 0.9%)
+TP1_SHARE = float(get_config("TP1_SHARE", 0.8))  # 80% (unchanged)
+TP2_SHARE = float(get_config("TP2_SHARE", 0.2))  # 20% (unchanged)
 
 # ========== Fee Rates ==========
 TAKER_FEE_RATE = float(get_config("TAKER_FEE_RATE", 0.0005))  # 0.05%

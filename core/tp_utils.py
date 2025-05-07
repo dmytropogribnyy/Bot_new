@@ -43,9 +43,9 @@ def calculate_tp_levels(entry_price: float, side: str, regime: str = None, score
                 atr_pct = atr / entry_price
 
                 # ATR-зависимые расчеты с минимальными порогами
-                tp1_pct = max(atr_pct * 1.0, TP1_PERCENT)  # Минимум TP1_PERCENT
-                tp2_pct = max(atr_pct * 2.0, TP2_PERCENT)  # Минимум TP2_PERCENT
-                sl_pct = max(atr_pct * 1.5, SL_PERCENT)  # Минимум SL_PERCENT
+                tp1_pct = max(atr_pct * 1.2, TP1_PERCENT)  # 20% increase
+                tp2_pct = max(atr_pct * 2.4, TP2_PERCENT)  # 20% increase
+                sl_pct = max(atr_pct * 0.8, SL_PERCENT)  # 47% decrease
 
                 log(f"ATR-зависимый расчет TP/SL: ATR={atr:.6f}, TP1={tp1_pct:.4f}, TP2={tp2_pct:.4f}, SL={sl_pct:.4f}", level="DEBUG")
             else:
