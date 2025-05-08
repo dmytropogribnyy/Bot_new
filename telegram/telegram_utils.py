@@ -37,8 +37,7 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
 
     try:
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            log("[telegram_utils] Telegram not configured.", level="WARNING")
-            _in_telegram_send = False
+            log(f"[telegram_utils] Telegram not configured: TOKEN={'Set' if TELEGRAM_TOKEN else 'Not set'}, CHAT_ID={'Set' if TELEGRAM_CHAT_ID else 'Not set'}", level="WARNING")
             return False
 
         # Automatically switch to plain text for error and warning messages
@@ -66,6 +65,9 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
             payload["parse_mode"] = parse_mode
 
         try:
+            import time
+
+            time.sleep(0.1)  # Add rate-limiting delay
             response = requests.post(url, json=payload, timeout=10)
             if response.status_code == 200:
                 log(f"[telegram_utils] Message sent successfully: {escaped_text[:60]}...", level="DEBUG")
@@ -79,6 +81,7 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
                 payload["text"] = str(text)
                 if len(payload["text"]) > 4096:
                     payload["text"] = payload["text"][:4090] + "..."
+                time.sleep(0.1)  # Rate-limiting delay for retry
                 requests.post(url, json=payload, timeout=10)
                 log(
                     f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}",
@@ -92,6 +95,7 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
             if len(payload["text"]) > 4096:
                 payload["text"] = payload["text"][:4090] + "..."
             try:
+                time.sleep(0.1)  # Rate-limiting delay for retry
                 requests.post(url, json=payload, timeout=10)
                 log(
                     f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}",
@@ -114,7 +118,7 @@ def send_telegram_file(file_path: str, caption: str = ""):
     from utils_logging import log
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log("[telegram_utils] Telegram not configured for file sending.", level="WARNING")
+        log(f"[telegram_utils] Telegram not configured for file sending: TOKEN={'Set' if TELEGRAM_TOKEN else 'Not set'}, CHAT_ID={'Set' if TELEGRAM_CHAT_ID else 'Not set'}", level="WARNING")
         return
 
     # Telegram limits caption length to 1024 characters for documents
@@ -123,6 +127,9 @@ def send_telegram_file(file_path: str, caption: str = ""):
         log("[telegram_utils] Caption truncated to 1024 characters", level="DEBUG")
 
     try:
+        import time
+
+        time.sleep(0.1)  # Rate-limiting delay
         with open(file_path, "rb") as f:
             files = {"document": f}
             data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
@@ -148,7 +155,9 @@ def send_telegram_image(image_path: str, caption: str = ""):
     from utils_logging import log
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log("[telegram_utils] Telegram not configured for image sending.", level="WARNING")
+        log(
+            f"[telegram_utils] Telegram not configured for image sending: TOKEN={'Set' if TELEGRAM_TOKEN else 'Not set'}, CHAT_ID={'Set' if TELEGRAM_CHAT_ID else 'Not set'}", level="WARNING"
+        )
         return
 
     # Telegram limits caption length to 1024 characters for photos
@@ -157,6 +166,9 @@ def send_telegram_image(image_path: str, caption: str = ""):
         log("[telegram_utils] Caption truncated to 1024 characters", level="DEBUG")
 
     try:
+        import time
+
+        time.sleep(0.1)  # Rate-limiting delay
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         with open(image_path, "rb") as img:
             files = {"photo": img}

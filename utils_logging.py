@@ -27,10 +27,12 @@ LOG_COLORS = {
     "ERROR": Fore.RED,
 }
 
+_in_error_handling = False
+
 
 def notify_error(msg):
-    """Send error to console only - prevents infinite recursion"""
-    # We intentionally do NOT use send_telegram_message here to break recursion
+    """Send error to console only - prevents infinite recursion.
+    DO NOT call send_telegram_message here, as it risks recursive loops."""
     print(f"\nERROR: {msg}\n")
 
 
@@ -91,7 +93,13 @@ def log(message: str, important=False, level="INFO"):
         print(f"{color}{full_msg}{Style.RESET_ALL}")
         print()
         if message_level >= LOG_LEVELS["ERROR"]:
-            notify_error(message)
+            global _in_error_handling
+            if not _in_error_handling:
+                _in_error_handling = True
+                try:
+                    notify_error(message)
+                finally:
+                    _in_error_handling = False
 
 
 def get_recent_logs(n=50):
@@ -187,15 +195,11 @@ def add_log_separator():
             if not os.path.exists(LOG_FILE_PATH):
                 with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
                     f.write("--- Telegram Log ---\n")
-
             with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
                 f.write(separator_message)
-
-        # Also print to console
         print(f"\n{Fore.CYAN}{separator_line}")
         print(f"{Fore.CYAN} NEW BOT RUN - {timestamp}")
         print(f"{Fore.CYAN}{separator_line}\n{Style.RESET_ALL}")
-
     except Exception as e:
         error_msg = f"[ERROR] Failed to write separator to log file {LOG_FILE_PATH}: {e}"
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
