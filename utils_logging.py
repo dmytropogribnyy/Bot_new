@@ -36,6 +36,17 @@ def notify_error(msg):
 
 
 def log(message: str, important=False, level="INFO"):
+    # Filter SmartSwitch warnings during stopping
+    if level == "WARNING" and "[SmartSwitch]" in message and "No active trade found for" in message:
+        try:
+            from utils_core import load_state
+
+            state = load_state()
+            if state.get("stopping") or state.get("shutdown"):
+                return  # Skip logging during stop/shutdown
+        except Exception:
+            pass  # If state check fails, continue with normal logging
+
     message_level = LOG_LEVELS.get(level, LOG_LEVELS["INFO"])
     min_level = LOG_LEVELS.get(LOG_LEVEL, LOG_LEVELS["INFO"])
     if message_level < min_level:

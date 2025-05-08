@@ -117,7 +117,7 @@ def get_risk_percent_by_score(balance, score, win_streak=0, symbol=None):
 def get_required_risk_reward_ratio(score, symbol=None, balance=None):
     # Значительно снижаем базовые требования
     if score < 3.0:
-        base_rr = 1.0  # Снижено с 1.8
+        base_rr = 0.98  # Снижено с 1.8
     elif score < 3.5:
         base_rr = 0.8  # Снижено с 1.5
     elif score < 4.0:

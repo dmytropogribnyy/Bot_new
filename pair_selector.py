@@ -1,6 +1,7 @@
 # pair_selector.py
 import json
 import os
+import threading
 import time
 from datetime import datetime
 from threading import Lock
@@ -12,6 +13,9 @@ from common.config_loader import (
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
+    MISSED_OPPORTUNITIES_FILE,  # Новый параметр
+    PAIR_COOLING_PERIOD_HOURS,  # Новый параметр
+    PAIR_ROTATION_MIN_INTERVAL,  # Новый параметр
     PRIORITY_SMALL_BALANCE_PAIRS,
     TRADING_HOURS_FILTER,
     USDC_SYMBOLS,
@@ -21,13 +25,13 @@ from common.config_loader import (
 from core.binance_api import convert_symbol
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, safe_call_retry
+from utils_core import get_cached_balance, get_market_volatility_index, safe_call_retry  # Новая функция
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
 PERFORMANCE_FILE = "data/pair_performance.json"
 # Adaptive rotation interval - more frequent for small accounts and high volatility
-BASE_UPDATE_INTERVAL = 60 * 30  # 30 minutes base interval
+BASE_UPDATE_INTERVAL = 60 * 15  # 15 минут вместо 30
 symbols_file_lock = Lock()
 performance_lock = Lock()
 
@@ -300,7 +304,16 @@ def update_pair_performance(symbol, win=None, pnl=None):
 
 
 def get_performance_score(symbol):
-    """Calculate performance score for a pair based on historical results."""
+    """
+    Calculate performance score for a pair based on historical results.
+    Uses PAIR_COOLING_PERIOD_HOURS for recency calculation and cooling period.
+
+    Args:
+        symbol: Trading symbol to evaluate
+
+    Returns:
+        float: Performance score (0.0-1.0) with higher being better
+    """
     global pair_performance
 
     if symbol not in pair_performance:
@@ -309,22 +322,38 @@ def get_performance_score(symbol):
     data = pair_performance[symbol]
 
     # If fewer than 3 trades, return neutral score
-    if data["total_trades"] < 3:
+    if data.get("total_trades", 0) < 3:
         return 0
 
     # Calculate win rate
-    win_rate = data["wins"] / data["total_trades"] if data["total_trades"] > 0 else 0
+    wins = data.get("wins", 0)
+    total_trades = data.get("total_trades", 1)  # Avoid division by zero
+    win_rate = wins / total_trades if total_trades > 0 else 0
 
     # Calculate average PnL
-    avg_pnl = data["pnl"] / data["total_trades"] if data["total_trades"] > 0 else 0
+    avg_pnl = data.get("pnl", 0) / total_trades if total_trades > 0 else 0
 
-    # Calculate recency factor (higher score for recently traded pairs)
-    last_traded = datetime.fromisoformat(data["last_traded"]) if data["last_traded"] else datetime.min
-    days_since_traded = (datetime.now() - last_traded).days
-    recency_factor = max(0, 1 - (days_since_traded / 7))  # Full weight if traded within last week
+    # Calculate recency factor using PAIR_COOLING_PERIOD_HOURS
+    last_traded = datetime.fromisoformat(data.get("last_traded", datetime.min.isoformat())) if data.get("last_traded") else datetime.min
+    hours_since_traded = (datetime.now() - last_traded).total_seconds() / 3600
 
-    # Combined score (win rate has higher weight)
+    # Full weight if traded within the configured cooling period
+    recency_factor = max(0, 1 - (hours_since_traded / PAIR_COOLING_PERIOD_HOURS))
+
+    # Base score: 60% win rate, 20% profit, 20% recency
     score = (win_rate * 0.6) + (min(1, avg_pnl) * 0.2) + (recency_factor * 0.2)
+
+    # Check for cooling period (3+ consecutive losses)
+    # If the pair has had 3 or more consecutive losses, reduce its score
+    last_3_trades_were_losses = False
+    if "trade_history" in data and len(data.get("trade_history", [])) >= 3:
+        last_3 = data["trade_history"][-3:]
+        last_3_trades_were_losses = all(not trade.get("win", False) for trade in last_3)
+
+        # Check if still in cooling period based on time since last trade
+        if last_3_trades_were_losses and hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
+            log(f"{symbol} in cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="DEBUG")
+            score *= 0.5  # Reduce score by 50% during cooling period
 
     return score
 
@@ -349,6 +378,19 @@ def select_active_symbols():
     else:
         min_dyn = MIN_DYNAMIC_PAIRS
         max_dyn = MAX_DYNAMIC_PAIRS
+
+    # Adapt pair count based on market volatility
+    market_volatility = get_market_volatility_index()
+    if market_volatility > 1.5:  # High volatility - trending market
+        # Focus on fewer pairs during high volatility
+        max_dyn = min(max_dyn, 4)  # Limit to maximum 4 pairs
+        log(f"Market volatility high ({market_volatility:.2f}) - limiting to max {max_dyn} pairs", level="INFO")
+    elif market_volatility < 0.8:  # Low volatility - ranging market
+        # Increase pairs during low volatility
+        min_dyn = min(min_dyn + 2, max_dyn)
+        log(f"Market volatility low ({market_volatility:.2f}) - increasing to min {min_dyn} pairs", level="INFO")
+
+    log(f"Adaptive pair limits: min={min_dyn}, max={max_dyn}", level="INFO")
 
     # Get all available symbols
     all_symbols = fetch_all_symbols()
@@ -423,11 +465,40 @@ def select_active_symbols():
                 + data["rsi_signal"] * 0.5  # 50% weight to RSI signal
             )
 
+            # Add micro-trade suitability score based on price
+            micro_trade_suitability = 0
+            price = data["price"]
+            if price < 1:
+                micro_trade_suitability += 3  # Strong bonus for ultra-low price assets
+            elif price < 10:
+                micro_trade_suitability += 2  # Medium bonus for low price assets
+            elif price < 50:
+                micro_trade_suitability += 1  # Small bonus for medium price assets
+
+            # Add to short-term score with 50% weight
+            short_term_score += micro_trade_suitability * 0.5
+            data["micro_trade_suitability"] = micro_trade_suitability
+
             # Price factor - strongly prefer lower-priced assets
             price_factor = 1 / (data["price"] + 0.1)
 
             # Final score combines short-term signals and price factor
             final_score = short_term_score * price_factor
+
+            # Skip pairs in cooling period (3+ consecutive losses within PAIR_COOLING_PERIOD_HOURS)
+            if "trade_history" in pair_performance.get(s, {}) and len(pair_performance[s]["trade_history"]) >= 3:
+                last_3 = pair_performance[s]["trade_history"][-3:]
+                if all(not t.get("win", False) for t in last_3):
+                    # Get time since last trade
+                    last_traded = datetime.fromisoformat(pair_performance[s].get("last_traded", datetime.min.isoformat())) if pair_performance[s].get("last_traded") else datetime.min
+                    hours_since_traded = (datetime.now() - last_traded).total_seconds() / 3600
+
+                    # Check if still in cooling period
+                    if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
+                        log(f"Skipping {s} due to cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="INFO")
+                        continue
+                    else:
+                        log(f"Pair {s} had 3+ losses but cooling period ({PAIR_COOLING_PERIOD_HOURS}h) has expired", level="INFO")
 
             sorted_dyn.append((s, final_score))
 
@@ -493,6 +564,21 @@ def select_active_symbols():
                 + data["performance_score"] * 0.2  # Historical performance (20%)
             )
 
+            # Skip pairs in cooling period (3+ consecutive losses within PAIR_COOLING_PERIOD_HOURS)
+            if "trade_history" in pair_performance.get(s, {}) and len(pair_performance[s]["trade_history"]) >= 3:
+                last_3 = pair_performance[s]["trade_history"][-3:]
+                if all(not t.get("win", False) for t in last_3):
+                    # Get time since last trade
+                    last_traded = datetime.fromisoformat(pair_performance[s].get("last_traded", datetime.min.isoformat())) if pair_performance[s].get("last_traded") else datetime.min
+                    hours_since_traded = (datetime.now() - last_traded).total_seconds() / 3600
+
+                    # Check if still in cooling period
+                    if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
+                        log(f"Skipping {s} due to cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="INFO")
+                        continue
+                    else:
+                        log(f"Pair {s} had 3+ losses but cooling period ({PAIR_COOLING_PERIOD_HOURS}h) has expired", level="INFO")
+
             pairs_with_scores.append((s, composite_score))
 
         # Sort by composite score
@@ -543,7 +629,13 @@ def select_active_symbols():
         log(f"Error saving active symbols to {SYMBOLS_FILE}: {e}", level="ERROR")
 
     # Send notification
-    msg = f"🔄 Symbol rotation completed:\n" f"Total pairs: {len(active_symbols)}\n" f"Fixed: {len(fixed)}, Dynamic: {len(selected_dyn)}\n" f"Balance: {balance:.2f} USDC"
+    msg = (
+        f"🔄 Symbol rotation completed:\n"
+        f"Total pairs: {len(active_symbols)}\n"
+        f"Fixed: {len(fixed)}, Dynamic: {len(selected_dyn)}\n"
+        f"Balance: {balance:.2f} USDC\n"
+        f"Market volatility: {market_volatility:.2f}"
+    )
 
     if balance < 150 and priority_pairs:
         priority_in_selection = [p for p in priority_pairs if p in active_symbols]
@@ -551,39 +643,45 @@ def select_active_symbols():
             msg += f"\nPriority pairs included: {', '.join(priority_in_selection)}"
 
     send_telegram_message(msg, force=True)
+
+    # Track missed opportunities after rotation
+    threading.Thread(target=track_missed_opportunities, daemon=True).start()
+
     return active_symbols
 
 
 def get_update_interval():
     """
     Determine the optimal symbol rotation interval based on:
-    1. Account size (more frequent for smaller accounts)
-    2. Market volatility (more frequent during high volatility)
-    3. Trading hours (more frequent during peak hours)
+    1. Account size
+    2. Market volatility
+    3. Trading hours
     """
     balance = get_cached_balance()
     base_interval = BASE_UPDATE_INTERVAL
 
     # Adjust for account size
     if balance < 120:
-        # More frequent rotation for small accounts (25% faster)
-        account_factor = 0.75
+        account_factor = 0.75  # 25% быстрее для маленьких счетов
     elif balance < 200:
-        # Slightly more frequent rotation for medium accounts (10% faster)
-        account_factor = 0.9
+        account_factor = 0.9  # 10% быстрее для средних счетов
     else:
         account_factor = 1.0
 
     # Adjust for trading hours
-    if is_peak_trading_hour():
-        # More frequent rotation during peak hours (25% faster)
-        hour_factor = 0.75
+    hour_factor = 0.75 if is_peak_trading_hour() else 1.0  # 25% быстрее в часы пик
+
+    # Adjust for market volatility
+    market_volatility = get_market_volatility_index()
+    if market_volatility > 1.5:
+        volatility_factor = 0.7  # 30% быстрее при высокой волатильности
+    elif market_volatility > 1.2:
+        volatility_factor = 0.85  # 15% быстрее при средней волатильности
     else:
-        hour_factor = 1.0
+        volatility_factor = 1.0
 
-    # Calculate final interval (minimum 15 minutes)
-    final_interval = max(15 * 60, int(base_interval * account_factor * hour_factor))
-
+    # Ensure minimum interval from config
+    final_interval = max(PAIR_ROTATION_MIN_INTERVAL, int(base_interval * account_factor * hour_factor * volatility_factor))
     return final_interval
 
 
@@ -613,3 +711,51 @@ def start_symbol_rotation(stop_event):
             log(f"Symbol rotation error: {e}", level="ERROR")
             send_telegram_message(f"⚠️ Symbol rotation failed: {e}", force=True)
             time.sleep(60)  # Short delay before retry on error
+
+
+missed_opportunities = {}
+
+
+def track_missed_opportunities():
+    """Track pairs that were missed but performed well."""
+    global missed_opportunities
+
+    # Получить все доступные пары
+    all_pairs = fetch_all_symbols()
+
+    # Получить текущие активные пары
+    active_pairs = []
+    if os.path.exists(SYMBOLS_FILE):
+        with symbols_file_lock, open(SYMBOLS_FILE, "r") as f:
+            active_pairs = json.load(f)
+
+    # Проверить пары, которые не были выбраны
+    for pair in all_pairs:
+        if pair in active_pairs:
+            continue
+
+        # Получить данные за последние 24 часа
+        df = fetch_symbol_data(pair, timeframe="15m", limit=96)
+        if df is None:
+            continue
+
+        # Рассчитать потенциальную прибыль
+        price_24h_ago = df["close"].iloc[0]
+        price_now = df["close"].iloc[-1]
+        potential_profit = ((price_now - price_24h_ago) / price_24h_ago) * 100
+
+        # Если потенциальная прибыль высокая, отметить как упущенную возможность
+        if abs(potential_profit) > 5:  # Порог в 5%
+            if pair not in missed_opportunities:
+                missed_opportunities[pair] = {"count": 0, "profit": 0}
+
+            missed_opportunities[pair]["count"] += 1
+            missed_opportunities[pair]["profit"] += potential_profit
+
+            # Логировать значительные упущенные возможности
+            if abs(potential_profit) > 10:
+                log(f"Missed opportunity: {pair} with {potential_profit:.2f}% potential profit", level="WARNING")
+
+    # Сохранить данные
+    with open(MISSED_OPPORTUNITIES_FILE, "w") as f:
+        json.dump(missed_opportunities, f)

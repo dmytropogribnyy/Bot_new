@@ -372,6 +372,42 @@ def check_min_profit(entry_price, tp_price, qty, tp_share, side, taker_fee_rate,
     return net_profit >= min_profit, net_profit
 
 
+def get_market_volatility_index():
+    """
+    Рассчитывает индекс волатильности рынка на основе ключевых пар.
+    Возвращает значение обычно между 0.5 (низкая волатильность) и 2.0 (высокая волатильность).
+    """
+    try:
+        from core.binance_api import fetch_ohlcv
+
+        # Используем основные пары для оценки общей волатильности рынка
+        key_pairs = ["BTC/USDC", "ETH/USDC"]
+        volatilities = []
+
+        for pair in key_pairs:
+            data = fetch_ohlcv(pair, timeframe="15m", limit=24)
+            if data and len(data) >= 24:
+                closes = [candle[4] for candle in data]
+                highs = [candle[2] for candle in data]
+                lows = [candle[3] for candle in data]
+
+                # Расчет относительного диапазона цен
+                ranges = [(h - low) / c for h, low, c in zip(highs, lows, closes)]
+                avg_range = sum(ranges) / len(ranges)
+
+                # Сравнение с "нормальным" диапазоном (базовое значение 0.01 или 1%)
+                rel_volatility = avg_range / 0.01
+                volatilities.append(rel_volatility)
+
+        if volatilities:
+            return sum(volatilities) / len(volatilities)
+
+        return 1.0  # Дефолтное значение - нормальная волатильность
+    except Exception as e:
+        log(f"Error calculating market volatility index: {e}", level="ERROR")
+        return 1.0  # Дефолтное значение в случае ошибки
+
+
 def reset_state_flags():
     """Reset stop and shutdown flags in the state file."""
     state = load_state()

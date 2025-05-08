@@ -6,13 +6,18 @@ import time
 
 import pandas as pd
 
-from common.config_loader import AGGRESSIVENESS_THRESHOLD, DRY_RUN
+from common.config_loader import (
+    AGGRESSIVENESS_THRESHOLD,
+    DRY_RUN,
+    MICRO_PROFIT_ENABLED,
+)
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.entry_logger import log_entry
+from core.exchange_init import exchange
 from core.notifier import notify_dry_trade, notify_error
 from core.risk_utils import get_max_positions
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, get_cached_positions, load_state, set_leverage_for_symbols
+from utils_core import get_cached_balance, get_cached_positions, load_state, safe_call_retry, set_leverage_for_symbols
 from utils_logging import log
 
 last_trade_times = {}
@@ -24,6 +29,9 @@ last_balance_log_time = 0
 
 
 def get_smart_switch_stats():
+    """
+    Calculate the success rate of previous smart switch operations.
+    """
     try:
         if not os.path.exists("data/tp_performance.csv"):
             log(
@@ -42,6 +50,10 @@ def get_smart_switch_stats():
 
 
 def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate, aggressiveness_threshold):
+    """
+    Determine the maximum number of smart switches allowed based on
+    account balance, current position count, and historical performance.
+    """
     base_limit = 1 if balance < 50 else 2
     if active_positions == 0:
         base_limit += 1
@@ -54,7 +66,86 @@ def get_adaptive_switch_limit(balance, active_positions, recent_switch_winrate, 
     return max(1, min(base_limit, 5))
 
 
+def evaluate_position_quality(symbol, side, entry_price, current_price, duration_minutes, score=None):
+    """
+    Evaluate current position quality on a 0-10 scale.
+
+    Args:
+        symbol: Trading symbol
+        side: Position side (buy/sell)
+        entry_price: Entry price
+        current_price: Current price
+        duration_minutes: How long position has been open
+        score: Original signal score (optional)
+
+    Returns:
+        float: Quality score from 1.0 to 10.0
+    """
+    # Calculate profit percentage
+    if side.lower() == "buy":
+        profit_percent = ((current_price - entry_price) / entry_price) * 100
+    else:
+        profit_percent = ((entry_price - current_price) / entry_price) * 100
+
+    # Base score by profit
+    if profit_percent <= -0.5:
+        quality = 3.0  # Losing position
+    elif profit_percent < 0:
+        quality = 4.0  # Small loss
+    elif profit_percent < 0.3:
+        quality = 5.0  # Small profit
+    elif profit_percent < 0.7:
+        quality = 6.0  # Medium profit
+    else:
+        quality = 7.0  # Good profit
+
+    # Time penalty
+    if duration_minutes > 60:
+        quality -= 1.5  # Significant penalty for long-held positions
+    elif duration_minutes > 30:
+        quality -= 0.8  # Moderate penalty
+
+    # Original signal quality
+    if score is not None:
+        quality += (score - 3) * 0.5  # Adjust based on original signal quality
+
+    return max(1.0, min(10.0, quality))
+
+
+def should_switch_position(current_quality, new_score, balance, current_pnl=None):
+    """
+    Decide if we should close a current position for a new opportunity.
+    Includes safeguards to prevent closing losing positions.
+
+    Args:
+        current_quality: Quality score of current position (0-10)
+        new_score: Score of new trading signal (0-5)
+        balance: Current account balance
+        current_pnl: Current profit/loss percentage (optional)
+
+    Returns:
+        bool: True if switching is recommended, False otherwise
+    """
+    # Safeguard: Never switch out of a losing position
+    if current_pnl is not None and current_pnl < 0:
+        return False
+
+    # Convert new score to quality scale
+    new_quality = 5.0 + (new_score - 3) * 1.2
+
+    # More aggressive switching for small accounts
+    if balance < 150:
+        switch_threshold = 1.8  # Lower threshold = more switching
+    else:
+        switch_threshold = 2.5
+
+    return new_quality - current_quality >= switch_threshold
+
+
 def run_trading_cycle(symbols, stop_event):
+    """
+    Process trading cycle with enhanced position quality evaluation and switching.
+    """
     # Lazy imports to break circular dependencies
     from core.symbol_processor import process_symbol
     from core.trade_engine import (
@@ -62,6 +153,7 @@ def run_trading_cycle(symbols, stop_event):
         close_real_trade,
         enter_trade,
         get_position_size,
+        safe_close_trade,
         trade_manager,
     )
 
@@ -106,6 +198,32 @@ def run_trading_cycle(symbols, stop_event):
         log(f"Max positions ({max_positions}) reached. Active: {active_positions}. Skipping cycle.", level="INFO")
         return
 
+    # Evaluate current positions for potential switching
+    current_positions = []
+    if MICRO_PROFIT_ENABLED:  # Use same flag for position quality evaluation
+        for sym in symbols:
+            trade_data = trade_manager.get_trade(sym)
+            if trade_data:
+                try:
+                    current_price = safe_call_retry(exchange.fetch_ticker, sym)["last"]
+                    duration_minutes = int((time.time() - trade_data["start_time"].timestamp()) / 60)
+
+                    # Calculate current P&L
+                    side = trade_data["side"]
+                    entry = trade_data["entry"]
+                    if side.lower() == "buy":
+                        current_pnl = ((current_price - entry) / entry) * 100
+                    else:
+                        current_pnl = ((entry - current_price) / entry) * 100
+
+                    quality = evaluate_position_quality(sym, side, entry, current_price, duration_minutes, trade_data.get("score"))
+
+                    current_positions.append({"symbol": sym, "quality": quality, "duration": duration_minutes, "pnl": current_pnl})
+
+                    log(f"{sym} Position quality: {quality:.1f}/10 (duration: {duration_minutes} min, PnL: {current_pnl:.2f}%)", level="DEBUG")
+                except Exception as e:
+                    log(f"Error evaluating position {sym}: {e}", level="ERROR")
+
     recent_wr = get_smart_switch_stats()
     switch_limit = get_adaptive_switch_limit(balance, active_positions, recent_wr, AGGRESSIVENESS_THRESHOLD)
     smart_switch_count = 0
@@ -132,7 +250,23 @@ def run_trading_cycle(symbols, stop_event):
             score = trade_data["score"]
             is_reentry = trade_data["is_reentry"]
 
-            # Smart switch logic
+            # Check if we should switch positions
+            if MICRO_PROFIT_ENABLED and current_positions and score > 3.5:  # Only consider good signals
+                for pos in current_positions:
+                    if should_switch_position(pos["quality"], score, balance, pos["pnl"]):
+                        log(f"🔄 Switching {pos['symbol']} (quality: {pos['quality']:.1f}) for better opportunity {symbol} (score: {score:.1f})", level="INFO")
+                        send_telegram_message(f"🔄 Switching from {pos['symbol']} to {symbol} for better opportunity", force=True)
+
+                        # Correctly close position with safe_close_trade
+                        pos_trade_data = trade_manager.get_trade(pos["symbol"])
+                        if pos_trade_data:
+                            safe_close_trade(exchange, pos["symbol"], pos_trade_data)
+
+                        # Remove from list to avoid closing multiple positions
+                        current_positions = [p for p in current_positions if p["symbol"] != pos["symbol"]]
+                        break
+
+            # Smart switch logic for same symbol
             current_trade = trade_manager.get_trade(symbol)
             if current_trade:
                 current_score = current_trade.get("score", 0)

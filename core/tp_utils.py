@@ -133,28 +133,45 @@ def log_trade_result(symbol, side, entry_price, exit_price, quantity, pnl, durat
     )
 
 
-def adjust_microprofit_exit(current_pnl_percent, balance=None, micro_profit_target=None):
+def adjust_microprofit_exit(current_pnl_percent, balance=None, duration_minutes=None, position_percentage=None):
     """
-    Determines if a position should be closed with a small profit.
-    Particularly useful for small accounts to secure quick gains.
+    Determine if a position should be closed with a small profit.
+    Enhanced with position size and duration factors.
 
     Args:
         current_pnl_percent: Current profit percentage
-        balance: Current account balance (for adaptive targets)
-        micro_profit_target: Minimum % to trigger exit (default varies by balance)
+        balance: Current account balance
+        duration_minutes: How long the position has been open
+        position_percentage: Position size as percentage of account
 
     Returns:
         bool: True if position should be closed, False otherwise
     """
-    # Default target if none specified
-    if micro_profit_target is None:
-        if balance is None:
-            micro_profit_target = 0.5  # Default
-        elif balance < 100:
-            micro_profit_target = 0.5  # Higher target for very small accounts
-        elif balance < 200:
-            micro_profit_target = 0.7  # Medium target
-        else:
-            micro_profit_target = 1.0  # Higher target for larger accounts
+    # Базовый порог по размеру счета
+    if balance is None:
+        micro_profit_target = 0.5  # Дефолтное значение
+    elif balance < 100:
+        micro_profit_target = 0.4  # Более низкий порог для маленьких счетов
+    elif balance < 200:
+        micro_profit_target = 0.6  # Средний порог
+    else:
+        micro_profit_target = 0.8  # Более высокий порог для больших счетов
+
+    # Корректировка по размеру позиции
+    if position_percentage is not None:
+        if position_percentage < 0.1:  # Очень маленькая позиция
+            micro_profit_target *= 0.7  # На 30% ниже порог
+        elif position_percentage < 0.15:  # Маленькая позиция
+            micro_profit_target *= 0.8  # На 20% ниже порог
+
+    # Корректировка по времени удержания
+    if duration_minutes is not None:
+        if duration_minutes > 60:  # Более часа
+            micro_profit_target *= 0.7  # На 30% ниже порог
+        elif duration_minutes > 30:  # Более 30 минут
+            micro_profit_target *= 0.8  # На 20% ниже порог
+
+    # Убедиться, что порог не слишком низкий
+    micro_profit_target = max(0.2, micro_profit_target)
 
     return current_pnl_percent >= micro_profit_target

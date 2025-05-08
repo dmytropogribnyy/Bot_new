@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from threading import Lock, Thread
 
@@ -8,6 +9,7 @@ from common.config_loader import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP, trade_stats
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
 from core.trade_engine import close_real_trade, trade_manager
+from main import stop_event
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
@@ -59,6 +61,8 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
     """Monitor stop process with timeout warning and improved cleanup"""
     start = time.time()
     check_interval = 60  # 60 seconds between checks
+    last_notification_time = 0  # Track last notification time
+    notification_interval = 30  # Only send updates every 30 seconds
 
     while state.get("stopping") and time.time() - start < timeout_minutes * 60:
         try:
@@ -81,27 +85,38 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
                             except Exception as e:
                                 log(f"[Stop] Failed to close position: {e}", level="ERROR")
 
-            # Handle timeout warning
-            if time.time() - start >= timeout_minutes * 60:
-                if open_details:
-                    msg = (
-                        "⏰ *Stop timeout warning*.\n"
-                        f"{len(open_details)} positions still open after {int((time.time() - start) // 60)} minutes:\n" + "\n".join(open_details) + "\nUse /panic YES to force close."
-                    )
-                    send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                    log(
-                        f"[Stop] Timeout warning sent after {int((time.time() - start) // 60)} minutes",
-                        level="INFO",
-                    )
-                else:
-                    send_telegram_message(
-                        f"🛑 *{reason}*.\nAll positions closed. Bot will exit shortly.",
-                        force=True,
-                        parse_mode="MarkdownV2",
-                    )
-                    state["stopping"] = False
-                    save_state(state)
-                    break
+            current_time = time.time()
+            if current_time - last_notification_time >= notification_interval:
+                # Handle timeout warning with throttled notifications
+                if time.time() - start >= timeout_minutes * 60:
+                    if open_details:
+                        msg = (
+                            "⏰ *Stop timeout warning*.\n"
+                            f"{len(open_details)} positions still open after {int((time.time() - start) // 60)} minutes:\n" + "\n".join(open_details) + "\nUse /panic YES to force close."
+                        )
+                        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+                        log(
+                            f"[Stop] Timeout warning sent after {int((time.time() - start) // 60)} minutes",
+                            level="INFO",
+                        )
+                    else:
+                        send_telegram_message(
+                            f"🛑 *{reason}*.\nAll positions closed. Bot will exit shortly.",
+                            force=True,
+                            parse_mode="MarkdownV2",
+                        )
+                        state["stopping"] = False
+                        save_state(state)
+                        break
+                elif open_details:
+                    # Simplified message for regular updates
+                    symbols = [p.split("(")[0].strip() for p in open_details]
+                    msg = f"⏳ Still waiting on {len(open_details)} positions: {', '.join(symbols)}"
+                    send_telegram_message(msg, force=True)
+
+                # Update notification timestamp
+                last_notification_time = current_time
+
         except Exception as e:
             log(f"[Stop Monitor] Error: {e}", level="ERROR")
 
@@ -229,73 +244,161 @@ def handle_stop_command():
     log("[Stop] Stop command processed.", level="INFO")
 
 
-def handle_panic_command(message, state):
-    """Enhanced panic command with verification"""
-    text = message.get("text", "").strip().lower()
+def handle_panic(message, state):
+    """Emergency force closure of all positions and orders with timeout."""
 
-    if text == "/panic":
-        try:
-            if DRY_RUN:
-                open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
-            else:
-                positions = exchange.fetch_positions()
-                open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
+    # Log panic initiation
+    log("[Panic] Panic command received! Forcing closure of all positions and orders.", level="WARNING", important=True)
 
-            state["last_command"] = "/panic"
-            save_state(state)
+    # Set stopping flag
+    state["stopping"] = True
+    state["panic_mode"] = True  # Add special panic flag
+    save_state(state)
 
-            if not open_details:
-                msg = "⚠️ No open positions to close."
-                state["last_command"] = None
-                save_state(state)
-            else:
-                msg = "⚠️ Confirm *PANIC CLOSE* by replying `YES`...\n" f"Positions to close ({len(open_details)}):\n" + ("\n".join(open_details) if open_details else "None")
+    # Set stop event
+    if stop_event:
+        stop_event.set()
 
-            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-            log("Panic command initiated, awaiting YES confirmation.", level="INFO")
-        except Exception as e:
-            send_telegram_message(f"❌ Error checking positions: {e}", force=True)
-            log(f"Panic init error: {e}", level="ERROR")
-            state["last_command"] = None
-            save_state(state)
-        return
+    send_telegram_message("🚨 PANIC MODE ACTIVATED! Forcing immediate closure of all positions...", force=True)
 
-    if text.upper() == "YES" and state.get("last_command") == "/panic":
-        try:
-            from core.trade_engine import handle_panic
-            from main import stop_event
+    # Set a hard exit timeout (force exit after 30 seconds)
+    def force_exit():
+        log("[Panic] Timeout reached - forcing exit", level="WARNING", important=True)
+        send_telegram_message("⚠️ Panic timeout reached - forcing exit", force=True)
+        os._exit(1)
 
-            send_telegram_message("🚨 EXECUTING PANIC CLOSE - Closing all positions forcefully", force=True)
-            handle_panic(stop_event)
+    # Start the timeout timer
+    timeout_timer = threading.Timer(30, force_exit)
+    timeout_timer.daemon = True
+    timeout_timer.start()
 
-            # Verify positions are actually closed
-            positions = exchange.fetch_positions()
-            active_positions = [pos for pos in positions if float(pos.get("contracts", 0)) > 0]
+    try:
+        # Get ALL positions directly from exchange
+        positions = exchange.fetch_positions()
+        active_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
 
-            if active_positions:
-                # Try once more if positions remain
-                send_telegram_message(f"⚠️ {len(active_positions)} positions still open - forcing close again", force=True)
-                for pos in active_positions:
-                    symbol = pos["symbol"]
-                    qty = float(pos["contracts"])
-                    side = "sell" if pos["side"] == "long" else "buy"
-                    try:
-                        exchange.create_market_order(symbol, side, qty)
-                        log(f"Force closed position for {symbol}: qty={qty}", level="INFO")
-                    except Exception as e:
-                        log(f"Error in force close for {symbol}: {e}", level="ERROR")
+        if not active_positions:
+            log("[Panic] No active positions found", level="INFO")
+            send_telegram_message("✅ No active positions found", force=True)
+            # Cancel the timeout
+            timeout_timer.cancel()
+            os._exit(0)
+            return
 
-            log("Panic close executed.", level="INFO")
-            send_telegram_message("✅ Panic mode executed - positions closed", force=True)
-        except Exception as e:
-            send_telegram_message(f"❌ Panic failed: {e}", force=True)
-            log(f"Panic error: {e}", level="ERROR")
-        finally:
-            state["last_command"] = None
-            save_state(state)
+        # Log active positions
+        symbols = [p["symbol"] for p in active_positions]
+        log(f"[Panic] Found {len(active_positions)} active positions: {', '.join(symbols)}", level="INFO")
+
+        # First attempt: cancel all orders for all symbols
+        for symbol in set(symbols):
+            try:
+                # Cancel all orders
+                exchange.futures_cancel_all_open_orders(symbol=symbol.replace("/", ""))
+                log(f"[Panic] Cancelled all orders for {symbol}", level="INFO")
+            except Exception as e:
+                log(f"[Panic] Failed to cancel orders for {symbol}: {e}", level="ERROR")
+
+        # Second attempt: force close all positions with market orders
+        for position in active_positions:
+            symbol = position["symbol"]
+            side = "sell" if position["side"] == "long" else "buy"
+            qty = float(position["contracts"])
+
+            try:
+                # Force market order with reduceOnly
+                exchange.create_market_order(symbol, side, qty, params={"reduceOnly": True})
+                log(f"[Panic] Force closed position for {symbol}: {qty} {position['side']}", level="INFO")
+            except Exception as e:
+                log(f"[Panic] Failed to close position for {symbol}: {e}", level="ERROR")
+                send_telegram_message(f"⚠️ Failed to close {symbol}: {e}", force=True)
+
+        # Final verification
+        positions = exchange.fetch_positions()
+        remaining = [p for p in positions if float(p.get("contracts", 0)) > 0]
+
+        if remaining:
+            remaining_symbols = [p["symbol"] for p in remaining]
+            log(f"[Panic] {len(remaining)} positions still open after panic: {', '.join(remaining_symbols)}", level="WARNING")
+            send_telegram_message(f"⚠️ {len(remaining)} positions still open after panic. Force exiting.", force=True)
+        else:
+            log("[Panic] All positions successfully closed", level="INFO")
+            send_telegram_message("✅ All positions closed successfully. Force exiting.", force=True)
+
+        # Cancel the timeout since we're done
+        timeout_timer.cancel()
+
+        # Clean exit
+        os._exit(0)
+
+    except Exception as e:
+        log(f"[Panic] Critical error during panic: {e}", level="ERROR")
+        send_telegram_message(f"❌ Critical error during panic: {e}", force=True)
+        # Don't cancel timeout - let it force exit
 
 
 # -----------------------------------------------------------------------
+def handle_shutdown(message, state):
+    """Gracefully shutdown bot with proper position and order closure."""
+    # Import necessary components
+    import common.config_loader as config_loader
+
+    # Log shutdown initiation
+    log("[Shutdown] Shutdown command received. Initiating shutdown process...", level="INFO", important=True)
+
+    config_loader.RUNNING = False
+
+    state["shutdown"] = True
+    state["stopping"] = True
+    save_state(state)
+
+    # Set the global stop event
+    if stop_event:
+        stop_event.set()
+        log("[Shutdown] Setting global stop_event for shutdown command", level="INFO", important=True)
+
+    try:
+        # Get all symbols with active positions
+        active_symbols = set()
+        try:
+            positions = exchange.fetch_positions()
+            for pos in positions:
+                if float(pos.get("contracts", 0)) > 0:
+                    active_symbols.add(pos["symbol"])
+        except Exception as e:
+            log(f"[Shutdown] Failed to fetch positions: {e}", level="ERROR")
+            # Fallback to trade manager symbols
+            active_symbols = set(trade_manager._trades.keys())
+
+        if DRY_RUN:
+            open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+        else:
+            positions = exchange.fetch_positions()
+            open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
+
+            # Actively close positions in real mode
+            for pos in positions:
+                if float(pos.get("contracts", 0)) > 0:
+                    try:
+                        close_real_trade(pos["symbol"])
+                        log(f"[Shutdown] Closing position for {pos['symbol']}", level="INFO")
+                    except Exception as e:
+                        log(f"[Shutdown] Failed to close position: {e}", level="ERROR")
+
+        if open_details:
+            msg = "🛑 *Shutdown initiated*.\n" "Waiting for these positions to close:\n" + "\n".join(open_details) + "\nBot will exit after closure."
+            Thread(target=_monitor_stop_timeout, args=("Shutdown", state, 15), daemon=True).start()
+        else:
+            msg = "🛑 *Shutdown initiated*.\nNo open positions. Bot will exit shortly."
+            # No positions to close, can exit immediately
+            log("[Shutdown] No open positions - exiting immediately", level="INFO", important=True)
+            send_telegram_message("✅ Shutdown complete. No open trades. Exiting...", force=True)
+            os._exit(0)
+
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("[Shutdown] Shutdown process in progress - waiting for positions to close", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to initiate shutdown: {e}", force=True)
+        log(f"Shutdown error: {e}", level="ERROR")
 
 
 def handle_telegram_command(message, state):
@@ -381,80 +484,9 @@ def handle_telegram_command(message, state):
         elif text == "/stop":
             handle_stop_command()
         elif text in ("/panic", "yes"):
-            handle_panic_command(message, state)
+            handle_panic(message, state)
         elif text == "/shutdown":
-            # Import necessary components
-            import common.config_loader as config_loader
-            from main import stop_event
-
-            # Log shutdown initiation
-            log("[Shutdown] Shutdown command received. Initiating shutdown process...", level="INFO", important=True)
-
-            config_loader.RUNNING = False
-
-            state["shutdown"] = True
-            state["stopping"] = True
-            save_state(state)
-
-            # Set the global stop event
-            if stop_event:
-                stop_event.set()
-                log("[Shutdown] Setting global stop_event for shutdown command", level="INFO", important=True)
-
-            try:
-                if DRY_RUN:
-                    open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
-                else:
-                    positions = exchange.fetch_positions()
-                    open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-
-                    # Actively close positions in real mode
-                    for pos in positions:
-                        if float(pos.get("contracts", 0)) > 0:
-                            try:
-                                close_real_trade(pos["symbol"])
-                                log(f"[Shutdown] Closing position for {pos['symbol']}", level="INFO")
-                            except Exception as e:
-                                log(f"[Shutdown] Failed to close position: {e}", level="ERROR")
-
-                if open_details:
-                    msg = "🛑 *Shutdown initiated*.\n" "Waiting for these positions to close:\n" + "\n".join(open_details) + "\nBot will exit after closure."
-                    Thread(target=_monitor_stop_timeout, args=("Shutdown", state, 15), daemon=True).start()
-                else:
-                    msg = "🛑 *Shutdown initiated*.\nNo open positions. Bot will exit shortly."
-                    # No positions to close, can exit immediately
-                    log("[Shutdown] No open positions - exiting immediately", level="INFO", important=True)
-                    send_telegram_message("✅ Shutdown complete. No open trades. Exiting...", force=True)
-                    os._exit(0)
-
-                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                log("[Shutdown] Shutdown process in progress - waiting for positions to close", level="INFO")
-            except Exception as e:
-                send_telegram_message(f"❌ Failed to initiate shutdown: {e}", force=True)
-                log(f"Shutdown error: {e}", level="ERROR")
-        elif text == "/cancel_stop":
-            state = load_state()
-            if not state.get("stopping"):
-                send_telegram_message("ℹ️ Stop flag is not active.", force=True)
-                return
-
-            if state.get("shutdown"):
-                send_telegram_message("⚠️ Cannot cancel shutdown process.", force=True)
-                return
-
-            state["stopping"] = False
-            save_state(state)
-
-            try:
-                positions = exchange.fetch_positions() if not DRY_RUN else []
-                open_syms = [p["symbol"] for p in positions if float(p.get("contracts", 0)) > 0]
-                trade_info = f"\nOpen trades: {', '.join(open_syms)}" if open_syms else "\nNo open trades."
-            except Exception as e:
-                trade_info = f"\n⚠️ Could not fetch open trades: {str(e)}"
-                log(f"[Cancel Stop] Failed to fetch positions: {e}", level="ERROR")
-
-            send_telegram_message(f"✅ Stop process cancelled. Bot will continue.{trade_info}", force=True)
-            log("Stop process cancelled.", level="INFO")
+            handle_shutdown(message, state)
         elif text == "/resume_after_ip":
             state = load_state()
             if DRY_RUN:

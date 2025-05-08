@@ -103,9 +103,7 @@ SOFT_EXIT_THRESHOLD = 0.8
 if USE_TESTNET:
     FILTER_THRESHOLDS = {"BTCUSDT": {"atr": 0.0001, "adx": 7, "bb": 0.0015}}
 else:
-    FILTER_THRESHOLDS = {
-        sym.replace("/", ""): {"atr": 0.00002, "adx": 0.1, "bb": 0.0002} for sym in USDC_SYMBOLS
-    }
+    FILTER_THRESHOLDS = {sym.replace("/", ""): {"atr": 0.00002, "adx": 0.1, "bb": 0.0002} for sym in USDC_SYMBOLS}
 
 # Volatility Filter
 VOLATILITY_SKIP_ENABLED = False

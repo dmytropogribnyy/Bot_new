@@ -6,6 +6,7 @@ from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import telegram.telegram_commands as telegram_commands  # ✅ исправленный импорт
 from common.config_loader import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
@@ -21,7 +22,7 @@ from core.exchange_init import exchange
 from core.trade_engine import close_real_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
-from pair_selector import select_active_symbols, start_symbol_rotation
+from pair_selector import select_active_symbols, start_symbol_rotation, track_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import (
     generate_daily_report,
@@ -32,13 +33,12 @@ from stats import (
     send_yearly_report,
     should_run_optimizer,
 )
-from telegram.telegram_commands import _initiate_stop, handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import send_daily_summary, send_telegram_message
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import initialize_cache, load_state, save_state
-from utils_logging import log
+from utils_logging import add_log_separator, log
 
 # Initialize RISK_PERCENT after imports to avoid circular import issues
 initialize_risk_percent()
@@ -46,7 +46,6 @@ initialize_risk_percent()
 stop_event = threading.Event()
 
 
-# Rest of the file remains unchanged
 def load_symbols():
     symbols = select_active_symbols()
     if not symbols:
@@ -63,10 +62,7 @@ def start_trading_loop():
     positions = exchange.fetch_positions()
     active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
     if active_positions > MAX_POSITIONS:
-        log(
-            f"[Startup] Found {active_positions} positions, but MAX_POSITIONS is {MAX_POSITIONS}. Closing excess positions...",
-            level="INFO",
-        )
+        log(f"[Startup] Found {active_positions} positions, but MAX_POSITIONS is {MAX_POSITIONS}. Closing excess positions...", level="INFO")
         for pos in positions:
             if float(pos.get("contracts", 0)) != 0:
                 symbol = pos["symbol"]
@@ -93,7 +89,7 @@ def start_trading_loop():
     else:
         bias = "🧊 LOW"
 
-    message = f"Bot started in {mode} mode\n" f"Strategy Bias: {bias} ({score})\n" f"DRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
+    message = f"Bot started in {mode} mode\nStrategy Bias: {bias} ({score})\nDRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     send_telegram_message(message, force=True, parse_mode="")
 
     symbols = load_symbols()
@@ -110,7 +106,6 @@ def start_trading_loop():
             state = load_state()
 
             if state.get("stopping") or state.get("shutdown"):
-                # Use get_open_positions() to check actual exchange state
                 from core.binance_api import get_open_positions
 
                 open_positions = get_open_positions()
@@ -130,14 +125,12 @@ def start_trading_loop():
                         time.sleep(30)
                         continue
                 else:
-                    # Format positions for better visibility
                     symbols = [pos["symbol"] for pos in open_positions]
                     symbols_str = ", ".join(symbols)
                     msg = f"⏳ Still open positions ({len(open_positions)}): {symbols_str}. Waiting..."
                     log(msg, level="INFO")
                     send_telegram_message(msg, force=True)
 
-                    # Actively try to close positions
                     for pos in open_positions:
                         symbol = pos["symbol"]
                         log(f"[Stop] Closing position for {symbol}", level="INFO")
@@ -151,17 +144,11 @@ def start_trading_loop():
                 positions = exchange.fetch_positions()
                 active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
                 if active_positions >= MAX_POSITIONS:
-                    log(
-                        f"[Main] Max open positions ({MAX_POSITIONS}) reached. Active: {active_positions}. Skipping cycle...",
-                        level="INFO",
-                    )
+                    log(f"[Main] Max open positions ({MAX_POSITIONS}) reached. Active: {active_positions}. Skipping cycle...", level="INFO")
                     time.sleep(30)
                     continue
                 if active_positions > 0 and not trade_manager._trades:
-                    log(
-                        f"[Main] State mismatch: {active_positions} positions on exchange, but trade_manager empty. Forcing sync...",
-                        level="WARNING",
-                    )
+                    log(f"[Main] State mismatch: {active_positions} positions on exchange, but trade_manager empty. Forcing sync...", level="WARNING")
                     for pos in positions:
                         if float(pos.get("contracts", 0)) != 0:
                             close_real_trade(pos["symbol"])
@@ -183,11 +170,7 @@ def start_trading_loop():
             time.sleep(10)
 
         if not stop_event.is_set():
-            log(
-                "[Main] RUNNING = False detected. Graceful shutdown triggered.",
-                important=True,
-                level="INFO",
-            )
+            log("[Main] RUNNING = False detected. Graceful shutdown triggered.", important=True, level="INFO")
             send_telegram_message("🛑 Bot stopped via graceful shutdown.", force=True, parse_mode="")
 
     except KeyboardInterrupt:
@@ -234,10 +217,7 @@ def start_report_loops():
                     run_tp_optimizer()
                     analyze_and_optimize_tp()
                 else:
-                    send_telegram_message(
-                        "Not enough recent trades to optimize (min: 20)",
-                        force=True,
-                    )
+                    send_telegram_message("Not enough recent trades to optimize (min: 20)", force=True)
                 time.sleep(60)
             time.sleep(10)
 
@@ -268,17 +248,13 @@ def start_report_loops():
 if __name__ == "__main__":
     import time
 
-    from utils_core import reset_state_flags  # Add this import
+    from utils_core import reset_state_flags
     from utils_logging import add_log_separator, log
 
-    # Add visual separator in log before starting
     add_log_separator()
-
-    # Reset state flags at startup to ensure clean state
     reset_state_flags()
     log("State flags reset at startup", level="INFO")
 
-    # Create and save session start time
     state = load_state()
     current_time = time.time()
     state["session_start_time"] = current_time
@@ -290,11 +266,11 @@ if __name__ == "__main__":
     ensure_log_exists()
 
     threading.Thread(
-        target=lambda: process_telegram_commands(state, handle_telegram_command),
+        target=lambda: process_telegram_commands(state, telegram_commands.handle_telegram_command),
         daemon=True,
     ).start()
     threading.Thread(
-        target=lambda: start_ip_monitor(_initiate_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
+        target=lambda: start_ip_monitor(telegram_commands._initiate_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
         daemon=True,
     ).start()
     threading.Thread(
@@ -306,18 +282,14 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
-    # Start APScheduler for periodic tasks
     scheduler = BackgroundScheduler()
-    # Ежедневный отчёт о сделках в 23:59
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
-    # Ротация торговых пар каждые 4 часа
     scheduler.add_job(select_active_symbols, "interval", hours=4)
-    # Авто-оптимизация TP/SL каждое воскресенье в 10:00
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
+    scheduler.add_job(track_missed_opportunities, "interval", hours=6)
     scheduler.start()
-    log("Scheduler started with daily summary, pair rotation, and TP/SL optimizer", level="INFO")
+    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, and missed opportunities tracking", level="INFO")
 
-    # Add proper shutdown handling
     try:
         start_trading_loop()
     finally:

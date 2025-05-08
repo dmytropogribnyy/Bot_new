@@ -27,6 +27,10 @@ from common.config_loader import (
     MAX_MARGIN_PERCENT,
     MAX_OPEN_ORDERS,
     MAX_POSITIONS,
+    MICRO_PROFIT_ENABLED,
+    MICRO_PROFIT_THRESHOLD,
+    MICRO_TRADE_SIZE_THRESHOLD,
+    MICRO_TRADE_TIMEOUT_MINUTES,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
     PRIORITY_SMALL_BALANCE_PAIRS,
@@ -599,6 +603,15 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 daemon=True,
             ).start()
 
+            # Start micro-trade monitoring thread
+            if MICRO_PROFIT_ENABLED:
+                threading.Thread(
+                    target=run_micro_trade_monitor,
+                    args=(symbol, side, entry_price, qty, start_time),
+                    daemon=True,
+                ).start()
+                log(f"[DEBUG] Started micro-trade monitor for {symbol}", level="DEBUG")
+
         initialize_cache()
 
     except Exception as e:
@@ -1019,9 +1032,14 @@ def close_dry_trade(symbol):
 
 
 def close_real_trade(symbol):
+    # Load state to check if bot is stopping
+    state = load_state()
     trade = trade_manager.get_trade(symbol)
+
+    # Skip warning if in stopping mode
     if not trade:
-        log(f"[SmartSwitch] No active trade found for {symbol}", level="WARNING")
+        if not state.get("stopping") and not state.get("shutdown"):
+            log(f"[SmartSwitch] No active trade found for {symbol}", level="WARNING")
         return
 
     try:
@@ -1155,6 +1173,68 @@ def run_auto_profit_exit(symbol, side, entry_price, check_interval=5):
             time.sleep(check_interval)
         except Exception as e:
             log(f"[ERROR] Auto-profit error for {symbol}: {e}", level="ERROR")
+            break
+
+
+def run_micro_trade_monitor(symbol, side, entry_price, qty, start_time, check_interval=10):
+    """Monitor micro-trades for time-based exits."""
+
+    if not MICRO_PROFIT_ENABLED:
+        return
+
+    # Проверить, является ли позиция микро-сделкой
+    balance = get_cached_balance()
+    position_value = qty * entry_price
+    position_percentage = position_value / balance if balance > 0 else 0
+
+    if position_percentage >= MICRO_TRADE_SIZE_THRESHOLD:
+        log(f"{symbol} Not a micro-trade ({position_percentage:.2%} of balance)", level="DEBUG")
+        return
+
+    log(f"{symbol} 🔍 Starting micro-trade monitor (timeout: {MICRO_TRADE_TIMEOUT_MINUTES}min)", level="INFO")
+
+    while True:
+        try:
+            # Проверить, существует ли еще позиция
+            position_size = get_position_size(symbol)
+            if position_size <= 0:
+                break
+
+            # Проверить прошедшее время
+            current_time = time.time()
+            elapsed_minutes = (current_time - start_time.timestamp()) / 60
+
+            if elapsed_minutes >= MICRO_TRADE_TIMEOUT_MINUTES:
+                # Получить текущую цену и рассчитать прибыль
+                price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"micro_trade_monitor {symbol}")
+
+                if not price:
+                    log(f"Failed to fetch price for {symbol} during micro-trade monitor", level="WARNING")
+                    break
+
+                current_price = price["last"]
+
+                if side.lower() == "buy":
+                    profit_percent = ((current_price - entry_price) / entry_price) * 100
+                else:
+                    profit_percent = ((entry_price - current_price) / entry_price) * 100
+
+                # Закрыть только если достигнут минимальный профит
+                if profit_percent >= MICRO_PROFIT_THRESHOLD:
+                    log(f"{symbol} 🕒 Micro-trade timeout reached with {profit_percent:.2f}% profit", level="INFO")
+
+                    # Использовать safe_close_trade вместо create_market_order
+                    trade_data = trade_manager.get_trade(symbol)
+                    if trade_data:
+                        safe_close_trade(exchange, symbol, trade_data)
+
+                    send_telegram_message(f"⏰ Micro-trade timeout: {symbol} closed at +{profit_percent:.2f}%", force=True)
+                    break
+
+            time.sleep(check_interval)
+
+        except Exception as e:
+            log(f"[ERROR] Micro-trade monitor error for {symbol}: {e}", level="ERROR")
             break
 
 
