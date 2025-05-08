@@ -4,11 +4,11 @@ import re
 
 import pandas as pd
 
-from common.config_loader import EXPORT_PATH, TP1_PERCENT, TP2_PERCENT  # ✅ добавляем сюда
+from common.config_loader import CONFIG_FILE, EXPORT_PATH, TP1_PERCENT, TP2_PERCENT  # ✅ добавляем сюда
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import backup_config
 
-CONFIG_PATH = "config.py"
+CONFIG_PATH = CONFIG_FILE
 BACKUP_PATH = "data/thresholds_backup.json"
 STATUS_PATH = "data/pair_status.json"
 
@@ -30,9 +30,7 @@ def evaluate_best_config(days=7):
         df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=days)]
 
         if df.empty:
-            send_telegram_message(
-                escape_markdown_v2("ℹ️ No recent trades for TP analysis."), force=True
-            )
+            send_telegram_message(escape_markdown_v2("ℹ️ No recent trades for TP analysis."), force=True)
             return
 
         total = len(df)
@@ -61,16 +59,11 @@ def evaluate_best_config(days=7):
         new_tp1 = max(0.004, min(new_tp1, 0.02))
         new_tp2 = max(0.007, min(new_tp2, 0.035))
 
-        if (
-            abs(new_tp1 - TP1_PERCENT) / TP1_PERCENT > UPDATE_THRESHOLD
-            or abs(new_tp2 - TP2_PERCENT) / TP2_PERCENT > UPDATE_THRESHOLD
-        ):
+        if abs(new_tp1 - TP1_PERCENT) / TP1_PERCENT > UPDATE_THRESHOLD or abs(new_tp2 - TP2_PERCENT) / TP2_PERCENT > UPDATE_THRESHOLD:
             backup_config()
             _update_config_tp(new_tp1, new_tp2)
             send_telegram_message(
-                escape_markdown_v2(
-                    f"✅ TP1/TP2 auto-updated:\nTP1: {round(new_tp1 * 100, 2)}%\nTP2: {round(new_tp2 * 100, 2)}%"
-                ),
+                escape_markdown_v2(f"✅ TP1/TP2 auto-updated:\nTP1: {round(new_tp1 * 100, 2)}%\nTP2: {round(new_tp2 * 100, 2)}%"),
                 force=True,
             )
 
@@ -129,9 +122,7 @@ def _update_filter_thresholds(new_thresholds: dict):
             report = "📊 Filter thresholds updated:\n" + "\n".join(changes)
             send_telegram_message(escape_markdown_v2(report), force=True)
         else:
-            send_telegram_message(
-                escape_markdown_v2("ℹ️ No significant filter changes."), force=True
-            )
+            send_telegram_message(escape_markdown_v2("ℹ️ No significant filter changes."), force=True)
 
     except Exception as e:
         send_telegram_message(escape_markdown_v2(f"⚠️ Failed to update config.py: {e}"), force=True)
@@ -190,9 +181,7 @@ def _analyze_symbol_stats():
                 messages.append(f"⏸ {symbol} disabled – poor stats (winrate {round(winrate, 1)}%)")
             elif winrate > 70 and avg_pnl > 1.0:
                 status[symbol] = "priority"
-                messages.append(
-                    f"⭐️ {symbol} boosted – winrate {round(winrate, 1)}%, avg PnL {round(avg_pnl, 2)}%"
-                )
+                messages.append(f"⭐️ {symbol} boosted – winrate {round(winrate, 1)}%, avg PnL {round(avg_pnl, 2)}%")
 
         if status:
             os.makedirs("data", exist_ok=True)
@@ -206,9 +195,7 @@ def _analyze_symbol_stats():
             )
 
     except Exception as e:
-        send_telegram_message(
-            escape_markdown_v2(f"⚠️ Symbol status analysis failed: {e}"), force=True
-        )
+        send_telegram_message(escape_markdown_v2(f"⚠️ Symbol status analysis failed: {e}"), force=True)
 
 
 def run_tp_optimizer():

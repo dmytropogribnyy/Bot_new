@@ -20,7 +20,6 @@ from common.config_loader import (
     RUNNING,
     USE_TESTNET,
     VERBOSE,
-    get_cached_balance,
     initialize_risk_percent,
     set_bot_status,
 )
@@ -47,7 +46,7 @@ from telegram.telegram_utils import send_daily_summary, send_telegram_message
 from tp_logger import ensure_log_exists
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
-from utils_core import initialize_cache, load_state, reset_state_flags, save_state
+from utils_core import get_cached_balance, initialize_cache, load_state, reset_state_flags, save_state
 from utils_logging import add_log_separator, log
 
 # Initialize RISK_PERCENT after imports to avoid circular import issues

@@ -6,7 +6,6 @@ from datetime import datetime
 from colorama import Fore, Style, init
 from filelock import FileLock
 
-from common.config_loader import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 
 init(autoreset=True)
@@ -30,13 +29,15 @@ LOG_COLORS = {
 
 
 def notify_error(msg):
-    from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-
-    send_telegram_message(f"❌ {escape_markdown_v2(str(msg))}", force=True)
+    """Send error to console only - prevents infinite recursion"""
+    # We intentionally do NOT use send_telegram_message here to break recursion
+    print(f"\nERROR: {msg}\n")
 
 
 def log(message: str, important=False, level="INFO"):
     # Filter SmartSwitch warnings during stopping
+    from common.config_loader import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL
+
     if level == "WARNING" and "[SmartSwitch]" in message and "No active trade found for" in message:
         try:
             from utils_core import load_state
@@ -94,6 +95,8 @@ def log(message: str, important=False, level="INFO"):
 
 
 def get_recent_logs(n=50):
+    from common.config_loader import LOG_FILE_PATH
+
     if not os.path.exists(LOG_FILE_PATH):
         log(f"Log file {LOG_FILE_PATH} not found.", level="WARNING")
         return "Log file not found."
@@ -168,6 +171,8 @@ def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
 
 def add_log_separator():
     """Adds a clear visual separator to the log file between different bot runs."""
+    from common.config_loader import LOG_FILE_PATH
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     separator_line = "=" * 80
     separator_message = f"\n\n{separator_line}\n NEW BOT RUN - {timestamp}\n{separator_line}\n\n"

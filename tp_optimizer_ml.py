@@ -29,7 +29,7 @@ def rewrite_config_param(param, value):
                     f.write(f"{param} = {value}\n")
                 else:
                     f.write(line)
-        log(f"Updated {param} to {value} in config.py")
+        log(f"Updated {param} to {value} in {CONFIG_FILE}")
     except Exception as e:
         log(f"Failed to update {param} in config.py: {e}", level="ERROR")
 
@@ -70,11 +70,7 @@ def analyze_and_optimize_tp():
 
         auto_adapt_thresholds(df)  # 🔁 адаптируем глобальные пороги
 
-        min_trades_required = (
-            TP_ML_MIN_TRADES_INITIAL
-            if total_trades < TP_ML_SWITCH_THRESHOLD
-            else TP_ML_MIN_TRADES_FULL
-        )
+        min_trades_required = TP_ML_MIN_TRADES_INITIAL if total_trades < TP_ML_SWITCH_THRESHOLD else TP_ML_MIN_TRADES_FULL
 
         report_lines = [
             "🤖 *TP Optimizer ML Report*",
@@ -124,9 +120,7 @@ def analyze_and_optimize_tp():
             _backup_config()
             send_telegram_message(escape_markdown_v2("\n\n".join(report_lines)))
         else:
-            send_telegram_message(
-                escape_markdown_v2("No symbols met the criteria for TP ML optimization.")
-            )
+            send_telegram_message(escape_markdown_v2("No symbols met the criteria for TP ML optimization."))
 
     except Exception as e:
         log(f"TP Optimizer ML failed: {str(e)}", level="ERROR")

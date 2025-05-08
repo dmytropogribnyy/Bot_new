@@ -8,8 +8,7 @@ import os
 import pandas as pd
 import requests
 
-from common.config_loader import EXPORT_PATH, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
-from utils_logging import log
+_in_telegram_send = False
 
 
 def escape_markdown_v2(text: str) -> str:
@@ -24,70 +23,96 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
     """
     Send a message to Telegram with automatic fallback to plain text for errors
     """
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log("[telegram_utils] Telegram not configured.", level="WARNING")
-        return
+    from common.config_loader import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+    from utils_logging import log
 
-    # Automatically switch to plain text for error and warning messages
-    if any(marker in text for marker in ["⚠️", "❌", "Error", "error", "[ERROR]", "cannot import", "failed", "Failed"]):
-        parse_mode = ""  # Use plain text for error messages
-        log("[telegram_utils] Switched to plain text mode for error message", level="DEBUG")
+    # Anti-recursion protection
+    global _in_telegram_send
+    if _in_telegram_send:
+        # We're already inside this function, don't recurse
+        print(f"[PREVENTED RECURSION] Telegram message: {text[:50]}...")
+        return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    if parse_mode == "MarkdownV2":
-        escaped_text = escape_markdown_v2(text)
-    else:
-        escaped_text = text
-
-    if len(escaped_text) > 4096:
-        escaped_text = escaped_text[:4090] + "..."
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": escaped_text if isinstance(escaped_text, str) else str(escaped_text),
-        "disable_notification": not force,
-    }
-
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    else:
-        payload["parse_mode"] = ""
+    _in_telegram_send = True
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            log(f"[telegram_utils] Message sent successfully: {escaped_text[:60]}...", level="DEBUG")
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+            log("[telegram_utils] Telegram not configured.", level="WARNING")
+            _in_telegram_send = False
+            return False
+
+        # Automatically switch to plain text for error and warning messages
+        if any(marker in text for marker in ["⚠️", "❌", "Error", "error", "[ERROR]", "cannot import", "failed", "Failed"]):
+            parse_mode = ""  # Use plain text for error messages
+            log("[telegram_utils] Switched to plain text mode for error message", level="DEBUG")
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+        if parse_mode == "MarkdownV2":
+            escaped_text = escape_markdown_v2(text)
         else:
-            log(
-                f"[telegram_utils] Telegram response {response.status_code}: {response.text}",
-                level="ERROR",
-            )
+            escaped_text = text
+
+        if len(escaped_text) > 4096:
+            escaped_text = escaped_text[:4090] + "..."
+
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": escaped_text if isinstance(escaped_text, str) else str(escaped_text),
+            "disable_notification": not force,
+        }
+
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                log(f"[telegram_utils] Message sent successfully: {escaped_text[:60]}...", level="DEBUG")
+            else:
+                log(
+                    f"[telegram_utils] Telegram response {response.status_code}: {response.text}",
+                    level="ERROR",
+                )
+                # Fallback to plain text
+                payload["parse_mode"] = ""
+                payload["text"] = str(text)
+                if len(payload["text"]) > 4096:
+                    payload["text"] = payload["text"][:4090] + "..."
+                requests.post(url, json=payload, timeout=10)
+                log(
+                    f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}",
+                    level="INFO",
+                )
+        except Exception as e:
+            log(f"[telegram_utils] Telegram send error: {e}", level="ERROR")
             # Fallback to plain text
             payload["parse_mode"] = ""
             payload["text"] = str(text)
             if len(payload["text"]) > 4096:
                 payload["text"] = payload["text"][:4090] + "..."
-            requests.post(url, json=payload, timeout=10)
-            log(
-                f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}",
-                level="INFO",
-            )
-    except Exception as e:
-        log(f"[telegram_utils] Telegram send error: {e}", level="ERROR")
-        # Fallback to plain text
-        payload["parse_mode"] = ""
-        payload["text"] = str(text)
-        if len(payload["text"]) > 4096:
-            payload["text"] = payload["text"][:4090] + "..."
-        requests.post(url, json=payload, timeout=10)
-        log(f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}", level="INFO")
+            try:
+                requests.post(url, json=payload, timeout=10)
+                log(
+                    f"[telegram_utils] Sent as plain text (forced): {payload['text'][:60]}",
+                    level="INFO",
+                )
+            except Exception as e2:
+                log(f"[telegram_utils] Final attempt failed: {e2}", level="ERROR")
+
+        return True
+    finally:
+        # Always reset the recursion flag, even if there's an exception
+        _in_telegram_send = False
 
 
 def send_telegram_file(file_path: str, caption: str = ""):
     """
     Send a file to Telegram
     """
+    from common.config_loader import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+    from utils_logging import log
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log("[telegram_utils] Telegram not configured for file sending.", level="WARNING")
         return
@@ -119,6 +144,9 @@ def send_telegram_image(image_path: str, caption: str = ""):
     """
     Send image to Telegram via sendPhoto (inline preview)
     """
+    from common.config_loader import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+    from utils_logging import log
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log("[telegram_utils] Telegram not configured for image sending.", level="WARNING")
         return
@@ -147,6 +175,9 @@ def send_telegram_image(image_path: str, caption: str = ""):
 
 
 def send_daily_summary():
+    from common.config_loader import EXPORT_PATH
+    from utils_logging import log
+
     try:
         if not os.path.exists(EXPORT_PATH):
             log(f"[telegram_utils] Export file not found: {EXPORT_PATH}", level="WARNING")
