@@ -94,7 +94,7 @@ PAIR_ROTATION_MIN_INTERVAL = int(get_config("PAIR_ROTATION_MIN_INTERVAL", 600))
 
 # ========== Risk Management ==========
 RISK_PERCENT = None  # Will be set dynamically
-MAX_POSITIONS = int(get_config("MAX_POSITIONS", 3))
+MAX_POSITIONS = int(get_config("MAX_POSITIONS", 3))  # Deprecated, use get_max_positions
 MAX_OPEN_ORDERS = int(get_config("MAX_OPEN_ORDERS", 5))
 MAX_MARGIN_PERCENT = float(get_config("MAX_MARGIN_PERCENT", 0.2))
 MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
@@ -271,18 +271,6 @@ def get_adaptive_risk_percent(balance, win_streak=0):
 
         # Cap final risk percentage
         return min(base_risk + win_streak_boost, 0.05)
-
-
-def get_max_positions(balance):
-    """Return maximum number of positions based on account size."""
-    if balance < 100:
-        return 2
-    elif balance < 150:
-        return 2  # Updated: Limit to 2 positions for <150 USDC
-    elif balance < 300:
-        return 3  # Limited to 3 for better risk management
-    else:
-        return 4  # Limited to 4 for better risk management
 
 
 def initialize_risk_percent():
@@ -482,30 +470,6 @@ def set_bot_status(status):
         return True
     except Exception as e:
         log(f"Error setting bot status: {e}", level="ERROR")
-        return False
-
-
-def set_max_risk(risk):
-    """Set the current maximum risk value"""
-    try:
-        import json
-        import os
-        from datetime import datetime
-
-        # Ensure risk is capped between 1% and 5%
-        risk = max(0.01, min(0.05, risk))
-
-        # Create directory if it doesn't exist
-        os.makedirs("data", exist_ok=True)
-
-        # Write to risk settings file
-        with open("data/risk_settings.json", "w") as f:
-            json.dump({"max_risk": risk, "updated_at": datetime.now().isoformat()}, f)
-
-        log(f"Maximum risk updated to {risk*100:.1f}%", level="INFO")
-        return True
-    except Exception as e:
-        log(f"Error setting max risk: {e}", level="ERROR")
         return False
 
 

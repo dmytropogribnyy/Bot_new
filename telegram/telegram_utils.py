@@ -1,25 +1,34 @@
+# telegram_utils.py
+"""
+Utilities for sending Telegram messages, files, and images
+"""
+
 import os
 
 import pandas as pd
 import requests
 
-from common.config_loader import EXPORT_PATH, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN  # ✅ добавили
+from common.config_loader import EXPORT_PATH, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+from utils_logging import log
 
 
 def escape_markdown_v2(text: str) -> str:
-    """Escape special characters for Telegram MarkdownV2, preserving emojis and formatting."""
+    """
+    Escape special characters for Telegram MarkdownV2, preserving emojis and formatting
+    """
     escape_chars = r"_*[]()~`>#+-=|{}.! "  # Включаем пробел
     return "".join("\\" + char if char in escape_chars else char for char in str(text))
 
 
 def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
-    from utils_logging import log  # Импорт внутри функции
-
+    """
+    Send a message to Telegram with automatic fallback to plain text for errors
+    """
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log("[telegram_utils] Telegram not configured.", level="WARNING")
         return
 
-    # NEW: Automatically switch to plain text for error and warning messages
+    # Automatically switch to plain text for error and warning messages
     if any(marker in text for marker in ["⚠️", "❌", "Error", "error", "[ERROR]", "cannot import", "failed", "Failed"]):
         parse_mode = ""  # Use plain text for error messages
         log("[telegram_utils] Switched to plain text mode for error message", level="DEBUG")
@@ -76,10 +85,18 @@ def send_telegram_message(text: str, force=False, parse_mode="MarkdownV2"):
 
 
 def send_telegram_file(file_path: str, caption: str = ""):
-    """Send a file to Telegram."""
+    """
+    Send a file to Telegram
+    """
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[telegram_utils] Telegram not configured for file sending.")
+        log("[telegram_utils] Telegram not configured for file sending.", level="WARNING")
         return
+
+    # Telegram limits caption length to 1024 characters for documents
+    if len(caption) > 1024:
+        caption = caption[:1018] + "..."
+        log("[telegram_utils] Caption truncated to 1024 characters", level="DEBUG")
+
     try:
         with open(file_path, "rb") as f:
             files = {"document": f}
@@ -91,15 +108,25 @@ def send_telegram_file(file_path: str, caption: str = ""):
                 timeout=15,
             )
         if response.status_code == 200:
-            print(f"[telegram_utils] File sent successfully: {file_path}")
+            log(f"[telegram_utils] File sent successfully: {file_path}", level="INFO")
         else:
-            print(f"[telegram_utils] Failed to send file {file_path}: {response.text}")
+            log(f"[telegram_utils] Failed to send file {file_path}: {response.text}", level="ERROR")
     except Exception as e:
-        print(f"[telegram_utils] Telegram file send error for {file_path}: {e}")
+        log(f"[telegram_utils] Telegram file send error for {file_path}: {e}", level="ERROR")
 
 
-def send_telegram_image(image_path, caption=""):
-    """Send image to Telegram via sendPhoto (inline preview)."""
+def send_telegram_image(image_path: str, caption: str = ""):
+    """
+    Send image to Telegram via sendPhoto (inline preview)
+    """
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log("[telegram_utils] Telegram not configured for image sending.", level="WARNING")
+        return
+
+    # Telegram limits caption length to 1024 characters for photos
+    if len(caption) > 1024:
+        caption = caption[:1018] + "..."
+        log("[telegram_utils] Caption truncated to 1024 characters", level="DEBUG")
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
@@ -110,17 +137,19 @@ def send_telegram_image(image_path, caption=""):
                 "caption": caption,
                 "parse_mode": "MarkdownV2",
             }
-            response = requests.post(url, data=data, files=files)
-            if not response.ok:
+            response = requests.post(url, data=data, files=files, timeout=15)
+            if response.ok:
+                log(f"[telegram_utils] Image sent successfully: {image_path}", level="INFO")
+            else:
                 raise Exception(f"Telegram image upload failed: {response.text}")
     except Exception as e:
-        print(f"[Telegram] Failed to send image: {e}")
+        log(f"[telegram_utils] Failed to send image: {e}", level="ERROR")
 
 
 def send_daily_summary():
-    """Send a daily summary of closed trades."""
     try:
         if not os.path.exists(EXPORT_PATH):
+            log(f"[telegram_utils] Export file not found: {EXPORT_PATH}", level="WARNING")
             return
 
         df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])

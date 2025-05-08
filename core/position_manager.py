@@ -6,6 +6,7 @@ Controls position limits, size calculations, and validates new position requests
 
 # Import from project modules
 from common.config_loader import get_cached_balance, get_max_positions
+from core.risk_utils import calculate_position_value_limit
 from utils_core import safe_call_retry
 from utils_logging import log
 
@@ -87,7 +88,6 @@ def can_increase_position(symbol, additional_qty):
         bool: True if position can be increased, False otherwise
     """
     from core.exchange_init import exchange
-    from core.risk_utils import get_adaptive_risk_percent, get_max_position_value
 
     try:
         # Get current balance and position
@@ -102,9 +102,8 @@ def can_increase_position(symbol, additional_qty):
         current_price = float(position.get("entryPrice", 0))
         additional_value = additional_qty * current_price
 
-        # Calculate maximum allowed position value
-        max_risk = get_adaptive_risk_percent(balance)
-        max_position_value = get_max_position_value(balance, max_risk)
+        # Calculate maximum allowed position value using the correct function
+        max_position_value = calculate_position_value_limit(balance)
 
         # Check if new total would exceed maximum allowed
         return (current_value + additional_value) <= max_position_value

@@ -14,9 +14,9 @@ from common.config_loader import (
     ADX_FLAT_THRESHOLD,
     ADX_TREND_THRESHOLD,
     AGGRESSIVENESS_THRESHOLD,
-    AUTO_CLOSE_PROFIT_THRESHOLD,  # Added import
+    AUTO_CLOSE_PROFIT_THRESHOLD,
     AUTO_TP_SL_ENABLED,
-    BONUS_PROFIT_THRESHOLD,  # Added import
+    BONUS_PROFIT_THRESHOLD,
     BREAKEVEN_TRIGGER,
     BREAKOUT_DETECTION,
     DRY_RUN,
@@ -47,6 +47,9 @@ from common.config_loader import (
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
+
+# Import updates for trade_engine.py - add at the top with other imports
+from core.risk_utils import get_adaptive_risk_percent
 from core.tp_utils import calculate_tp_levels
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import log_trade_result
@@ -166,7 +169,31 @@ def is_optimal_trading_hour():
     return hour_utc in HIGH_ACTIVITY_HOURS
 
 
-def calculate_risk_amount(balance, risk_percent):
+def calculate_risk_amount(balance, risk_percent=None, symbol=None, atr_percent=None, volume_usdc=None, score=0):
+    """
+    Enhanced risk amount calculation using the optimized risk parameters
+
+    Args:
+        balance (float): Current account balance
+        risk_percent (float, optional): Risk percentage override
+        symbol (str, optional): Trading pair symbol
+        atr_percent (float, optional): ATR percentage of the pair
+        volume_usdc (float, optional): 24h volume in USDC
+        score (float, optional): Signal quality score
+
+    Returns:
+        float: Risk amount in USDC
+    """
+    # Get win streak from trade stats
+    from common.config_loader import trade_stats
+
+    win_streak = trade_stats.get("streak_win", 0)
+
+    # If risk_percent is not provided, calculate it adaptively
+    if risk_percent is None:
+        risk_percent = get_adaptive_risk_percent(balance, atr_percent=atr_percent, volume_usdc=volume_usdc, win_streak=win_streak, score=score)
+
+    log(f"Using risk percentage: {risk_percent*100:.2f}% for balance: {balance:.2f} USDC", level="DEBUG")
     return balance * risk_percent
 
 
@@ -268,8 +295,12 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             send_telegram_message(f"⏰ Skipping {symbol}: non-optimal trading hours", force=True)
             return
 
-    if len(trade_manager._trades) >= MAX_POSITIONS:
-        log(f"[Skip] Trade limit reached ({MAX_POSITIONS})", level="INFO")
+    # Check position limits based on account size
+    from core.position_manager import can_open_new_position
+
+    balance = get_cached_balance()
+    if not can_open_new_position(balance):
+        log(f"[Skip] Position limit reached for account balance: {balance:.2f} USDC", level="INFO")
         return
 
     try:
@@ -571,6 +602,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             "commission": commission,  # Store commission for reference
             "net_profit_tp1": net_profit_tp1,  # Store expected profit for reference
             "market_regime": regime,  # Store market regime for reference
+            "quantity": qty,  # Add quantity field for safe_close_trade
         }
         trade_manager.add_trade(symbol, trade_data)
 
@@ -603,14 +635,22 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 daemon=True,
             ).start()
 
-            # Start micro-trade monitoring thread
+            # Start micro-profit monitoring thread
             if MICRO_PROFIT_ENABLED:
                 threading.Thread(
-                    target=run_micro_trade_monitor,
+                    target=run_micro_profit_optimizer,
                     args=(symbol, side, entry_price, qty, start_time),
                     daemon=True,
                 ).start()
-                log(f"[DEBUG] Started micro-trade monitor for {symbol}", level="DEBUG")
+                log(f"[DEBUG] Started micro-profit monitor for {symbol}", level="DEBUG")
+
+            # Start dynamic position management thread
+            threading.Thread(
+                target=monitor_active_position,
+                args=(symbol, side, entry_price, qty, start_time),
+                daemon=True,
+            ).start()
+            log(f"[DEBUG] Started dynamic position management for {symbol}", level="DEBUG")
 
         initialize_cache()
 
@@ -637,10 +677,10 @@ def track_stop_loss(symbol, side, entry_price, qty, opened_at):
 
 def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
     """
-    Run break-even monitoring with earlier trigger (0.4 instead of 0.5).
+    Run break-even monitoring with earlier trigger (0.3 instead of 0.4).
     """
     target = entry_price * (1 + tp_percent) if side == "buy" else entry_price * (1 - tp_percent)
-    # Using BREAKEVEN_TRIGGER (already set to 0.4 in config_loader)
+    # Using BREAKEVEN_TRIGGER (updated to 0.30 in config_loader)
     trigger = entry_price + (target - entry_price) * BREAKEVEN_TRIGGER if side == "buy" else entry_price - (entry_price - target) * BREAKEVEN_TRIGGER
     log(
         f"[DEBUG] Break-even for {symbol}: entry={entry_price}, target={target}, trigger={trigger}",
@@ -714,7 +754,7 @@ def run_break_even(symbol, side, entry_price, tp_percent, check_interval=5):
 
 def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
     """
-    Enhanced trailing stop with breakout mode support.
+    Enhanced trailing stop with breakout mode support and empty position protection.
     """
     try:
         # Fetch trade data to get market regime
@@ -776,8 +816,25 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
     while True:
         try:
+            # Empty position protection - check if position exists
+            position = None
+            try:
+                positions = get_cached_positions()
+                for pos in positions:
+                    if pos["symbol"] == symbol:
+                        position = pos
+                        break
+            except Exception as e:
+                log(f"[ERROR] Failed to fetch position for {symbol} in trailing stop: {e}", level="ERROR")
+
+            # Check if position exists and has non-zero size
+            if not position or float(position.get("positionAmt", 0)) == 0 or float(position.get("contracts", 0)) == 0:
+                log(f"{symbol} ⚠️ Trailing cancelled: No open position or zero size.", level="DEBUG")
+                break
+
             price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")["last"]
             if side == "buy":
+                # Trailing for long positions
                 if price > highest:
                     highest = price
                     # For very profitable trades, tighten the trailing stop
@@ -788,6 +845,10 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
                 if price <= highest - trailing_distance:
                     size = get_position_size(symbol)
+                    if size <= 0:
+                        log(f"{symbol} ⚠️ Trailing sell cancelled: Position already closed.", level="DEBUG")
+                        break
+
                     safe_call_retry(
                         exchange.create_market_sell_order,
                         symbol,
@@ -798,6 +859,7 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
                     record_trade_result(symbol, side, entry_price, price, "trailing")
                     break
             else:
+                # Trailing for short positions
                 if price < lowest:
                     lowest = price
                     # For very profitable trades, tighten the trailing stop
@@ -808,6 +870,10 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
                 if price >= lowest + trailing_distance:
                     size = get_position_size(symbol)
+                    if size <= 0:
+                        log(f"{symbol} ⚠️ Trailing buy cancelled: Position already closed.", level="DEBUG")
+                        break
+
                     safe_call_retry(
                         exchange.create_market_buy_order,
                         symbol,
@@ -1176,66 +1242,286 @@ def run_auto_profit_exit(symbol, side, entry_price, check_interval=5):
             break
 
 
-def run_micro_trade_monitor(symbol, side, entry_price, qty, start_time, check_interval=10):
-    """Monitor micro-trades for time-based exits."""
-
+def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check_interval=5):
     if not MICRO_PROFIT_ENABLED:
         return
 
-    # Проверить, является ли позиция микро-сделкой
+    # Calculate position size percentage of account balance
     balance = get_cached_balance()
     position_value = qty * entry_price
     position_percentage = position_value / balance if balance > 0 else 0
 
+    # Skip if not a micro-trade
     if position_percentage >= MICRO_TRADE_SIZE_THRESHOLD:
         log(f"{symbol} Not a micro-trade ({position_percentage:.2%} of balance)", level="DEBUG")
         return
 
-    log(f"{symbol} 🔍 Starting micro-trade monitor (timeout: {MICRO_TRADE_TIMEOUT_MINUTES}min)", level="INFO")
+    # Используем MICRO_PROFIT_THRESHOLD как базовое значение
+    base_threshold = MICRO_PROFIT_THRESHOLD  # 0.3% по умолчанию
+    if position_percentage < 0.15:  # Very small position
+        profit_threshold = base_threshold  # Оставляем как есть (0.3%)
+    elif position_percentage < 0.25:
+        profit_threshold = base_threshold * 1.33  # Увеличиваем до ~0.4%
+    else:
+        profit_threshold = base_threshold * 1.67  # Увеличиваем до ~0.5%
+
+    log(f"{symbol} 🔍 Starting micro-profit optimizer with {profit_threshold:.1f}% threshold", level="INFO")
 
     while True:
         try:
-            # Проверить, существует ли еще позиция
+            # Check if position still exists
             position_size = get_position_size(symbol)
             if position_size <= 0:
+                log(f"{symbol} Position closed, ending micro-profit optimizer", level="DEBUG")
                 break
 
-            # Проверить прошедшее время
+            # Check elapsed time
             current_time = time.time()
             elapsed_minutes = (current_time - start_time.timestamp()) / 60
 
             if elapsed_minutes >= MICRO_TRADE_TIMEOUT_MINUTES:
-                # Получить текущую цену и рассчитать прибыль
-                price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"micro_trade_monitor {symbol}")
-
+                # Get current price and calculate profit
+                price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"micro_profit_optimizer {symbol}")
                 if not price:
-                    log(f"Failed to fetch price for {symbol} during micro-trade monitor", level="WARNING")
+                    log(f"Failed to fetch price for {symbol} during micro-profit optimization", level="WARNING")
                     break
 
                 current_price = price["last"]
 
+                # Calculate profit percentage
                 if side.lower() == "buy":
                     profit_percent = ((current_price - entry_price) / entry_price) * 100
                 else:
                     profit_percent = ((entry_price - current_price) / entry_price) * 100
 
-                # Закрыть только если достигнут минимальный профит
-                if profit_percent >= MICRO_PROFIT_THRESHOLD:
+                # Close if profit threshold reached
+                if profit_percent >= profit_threshold:
                     log(f"{symbol} 🕒 Micro-trade timeout reached with {profit_percent:.2f}% profit", level="INFO")
 
-                    # Использовать safe_close_trade вместо create_market_order
+                    # Get trade data and use safe_close_trade
                     trade_data = trade_manager.get_trade(symbol)
                     if trade_data:
                         safe_close_trade(exchange, symbol, trade_data)
-
-                    send_telegram_message(f"⏰ Micro-trade timeout: {symbol} closed at +{profit_percent:.2f}%", force=True)
+                        send_telegram_message(f"⏰ Micro-profit target: {symbol} closed at +{profit_percent:.2f}%", force=True)
                     break
 
             time.sleep(check_interval)
+        except Exception as e:
+            log(f"[ERROR] Micro-profit optimizer error for {symbol}: {e}", level="ERROR")
+            break
+
+
+def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
+    """
+    Real-time position management for active trades.
+    Adjusts parameters based on price action and market conditions.
+
+    Args:
+        symbol: Trading pair symbol
+        side: Position side (buy/sell)
+        entry_price: Entry price
+        initial_qty: Initial position quantity
+        start_time: Trade start time
+    """
+    last_check_time = time.time()
+    position_increased = False
+    position_reduced = False
+
+    while True:
+        try:
+            # Check if position still exists
+            current_position = get_position_size(symbol)
+            if current_position <= 0:
+                log(f"{symbol} Position closed, ending dynamic position monitoring", level="DEBUG")
+                break
+
+            current_time = time.time()
+            # Only check every 15 seconds to avoid excessive API calls
+            if current_time - last_check_time < 15:
+                time.sleep(0.5)
+                continue
+
+            last_check_time = current_time
+
+            # Get current price and calculate profit
+            price_data = safe_call_retry(exchange.fetch_ticker, symbol)
+            if not price_data:
+                log(f"Failed to fetch price for {symbol} during position monitoring", level="WARNING")
+                time.sleep(5)
+                continue
+
+            current_price = price_data["last"]
+
+            # Calculate profit percentage
+            if side.lower() == "buy":
+                profit_percent = ((current_price - entry_price) / entry_price) * 100
+            else:
+                profit_percent = ((entry_price - current_price) / entry_price) * 100
+
+            # Get current market conditions
+            # We need to determine if momentum is increasing and volume is increasing
+            try:
+                ohlcv = fetch_ohlcv(symbol, timeframe="5m", limit=12)
+                recent_closes = [c[4] for c in ohlcv[-6:]]
+                recent_volumes = [c[5] for c in ohlcv[-6:]]
+
+                # Check momentum direction
+                momentum_increasing = False
+                if side.lower() == "buy":
+                    if recent_closes[-1] > recent_closes[-2] > recent_closes[-3]:
+                        momentum_increasing = True
+                else:
+                    if recent_closes[-1] < recent_closes[-2] < recent_closes[-3]:
+                        momentum_increasing = True
+
+                # Check volume trend
+                recent_avg_volume = sum(recent_volumes[-6:-1]) / 5  # Last 5 candles except current
+                current_volume = recent_volumes[-1]
+                volume_increasing = current_volume > recent_avg_volume * 1.2  # 20% higher volume
+            except Exception as e:
+                log(f"Error analyzing market data for {symbol}: {e}", level="ERROR")
+                momentum_increasing = False
+                volume_increasing = False
+
+            # 1. Dynamic position sizing - add to winning position
+            if profit_percent > 1.2 and momentum_increasing and volume_increasing and not position_increased:
+                # Add to winning position (max 30% of initial size)
+                additional_qty = initial_qty * 0.3
+
+                # Check if we have margin for increase
+                try:
+                    # Calculate if we have enough margin
+                    balance = get_cached_balance()
+                    available_margin = balance * 0.92 - current_position * current_price * 0.5
+                    additional_margin_needed = additional_qty * current_price * 0.2  # Assuming 5x leverage
+
+                    if available_margin > additional_margin_needed:
+                        # Execute the order
+                        safe_call_retry(exchange.create_market_order, symbol, side.lower(), additional_qty)
+                        position_increased = True
+                        log(f"{symbol} 📈 Position increased by 30% due to strong momentum at +{profit_percent:.2f}%", level="INFO")
+                        send_telegram_message(f"📈 Added to winning position {symbol} at +{profit_percent:.2f}%")
+                except Exception as e:
+                    log(f"Error increasing position for {symbol}: {e}", level="ERROR")
+
+            # 2. Dynamic profit taking - take partial profits if momentum weakens
+            elif profit_percent > 0.6 and not momentum_increasing and not position_reduced:
+                # Close part of position early if momentum weakens
+                reduction_qty = current_position * 0.4  # Close 40% of current position
+
+                try:
+                    # Execute the partial close
+                    safe_call_retry(exchange.create_market_order, symbol, "sell" if side.lower() == "buy" else "buy", reduction_qty, {"reduceOnly": True})
+                    position_reduced = True
+                    log(f"{symbol} 🔒 Partial profit taken (40%) at +{profit_percent:.2f}% due to weakening momentum", level="INFO")
+                    send_telegram_message(f"🔒 Partial profit taken on {symbol} at +{profit_percent:.2f}%")
+                except Exception as e:
+                    log(f"Error taking partial profits for {symbol}: {e}", level="ERROR")
+
+            # 3. Dynamic TP adjustment - extend TP for strong momentum
+            elif profit_percent > 1.8 and momentum_increasing:
+                try:
+                    # Look for TP2 orders
+                    open_orders = exchange.fetch_open_orders(symbol)
+                    tp_orders = [o for o in open_orders if o["type"].upper() == "LIMIT" and o["side"].upper() == ("SELL" if side.lower() == "buy" else "BUY")]
+
+                    if tp_orders:
+                        # Cancel existing TP order
+                        for order in tp_orders:
+                            exchange.cancel_order(order["id"], symbol)
+
+                        # Calculate new extended TP price
+                        new_tp_price = current_price * 1.007 if side.lower() == "buy" else current_price * 0.993
+
+                        # Create new TP order
+                        safe_call_retry(exchange.create_limit_order, symbol, "sell" if side.lower() == "buy" else "buy", current_position, new_tp_price, {"reduceOnly": True})
+
+                        log(f"{symbol} 🎯 TP extended due to strong momentum at +{profit_percent:.2f}%", level="INFO")
+                        send_telegram_message(f"🎯 Extended TP for {symbol} at +{profit_percent:.2f}%")
+                except Exception as e:
+                    log(f"Error adjusting TP for {symbol}: {e}", level="ERROR")
+
+            time.sleep(1)  # Small delay to prevent excessive CPU usage
 
         except Exception as e:
-            log(f"[ERROR] Micro-trade monitor error for {symbol}: {e}", level="ERROR")
-            break
+            log(f"Error in position monitoring for {symbol}: {e}", level="ERROR")
+            time.sleep(5)  # Longer delay on error
+
+
+def check_micro_profit_exit(symbol, trade_data):
+    """
+    Automatically close trade if small profit percentage exceeds MICRO_PROFIT_THRESHOLD (in %)
+    """
+    if not MICRO_PROFIT_ENABLED or DRY_RUN:
+        return
+
+    try:
+        ticker = safe_call_retry(exchange.fetch_ticker, symbol)
+        if not ticker:
+            return
+
+        entry = trade_data.get("entry_price")
+        side = trade_data.get("side")
+        qty = trade_data.get("quantity")
+
+        # Проверяем данные
+        if not entry or not side or not qty or entry <= 0:
+            log(f"[Micro-Profit] Invalid trade data for {symbol}: entry={entry}, side={side}, qty={qty}", level="WARNING")
+            return
+
+        current_price = ticker["last"]
+        if current_price <= 0:
+            log(f"[Micro-Profit] Invalid current price for {symbol}: {current_price}", level="WARNING")
+            return
+
+        if side.lower() == "buy":
+            profit_percent = ((current_price - entry) / entry) * 100
+            absolute_profit = (current_price - entry) * qty
+        else:
+            profit_percent = ((entry - current_price) / entry) * 100
+            absolute_profit = (entry - current_price) * qty
+
+        if profit_percent >= MICRO_PROFIT_THRESHOLD:
+            log(f"{symbol} 💰 Micro-profit hit: +{profit_percent:.2f}% (+{absolute_profit:.2f} USDC) — closing early", level="INFO")
+            send_telegram_message(f"💰 {symbol}: Early close on micro-profit +{profit_percent:.2f}% (+{absolute_profit:.2f} USDC)", force=True)
+            safe_close_trade(exchange, symbol, trade_data)
+
+    except Exception as e:
+        log(f"[Micro-Profit] Error for {symbol}: {e}", level="ERROR")
+
+
+def check_stagnant_trade_exit(symbol, trade_data):
+    """
+    Exit trades that haven't moved beyond breakeven after timeout
+    """
+    try:
+        open_time = trade_data.get("start_time")
+        if not open_time or DRY_RUN:
+            return
+
+        elapsed_minutes = (datetime.utcnow() - open_time).total_seconds() / 60
+        if elapsed_minutes >= MICRO_TRADE_TIMEOUT_MINUTES:
+            log(f"{symbol} 💤 Trade stagnant for {elapsed_minutes:.1f} min — closing", level="INFO")
+            send_telegram_message(f"💤 {symbol}: Stagnant trade auto-exit after {int(elapsed_minutes)}m", force=True)
+            safe_close_trade(exchange, symbol, trade_data)
+    except Exception as e:
+        log(f"[Stagnant Exit] Error for {symbol}: {e}", level="ERROR")
+
+
+def monitor_active_trades():
+    """
+    Periodically monitor open trades for micro-profit or timeout exit
+    """
+    while True:
+        try:
+            trades = trade_manager._trades.copy()
+            for symbol, trade_data in trades.items():
+                check_micro_profit_exit(symbol, trade_data)
+                check_stagnant_trade_exit(symbol, trade_data)
+        except Exception as e:
+            log(f"[Monitor Trades] Error: {e}", level="ERROR")
+
+        time.sleep(30)  # Adjust as needed
 
 
 def handle_panic(stop_event):
@@ -1289,39 +1575,3 @@ def handle_panic(stop_event):
 
     stop_event.set()
     os._exit(0)
-
-
-# Add auto-profit exit logic in your position monitoring loop
-# This would typically be in the section that monitors existing positions
-# For example, in the main trading cycle:
-
-"""
-# Example of where to add the auto-profit check in your monitoring loop:
-for symbol in active_trades:
-    # Get current price and calculate PnL
-    current_price = get_current_price(symbol)
-    trade_data = active_trades[symbol]
-    entry_price = trade_data['entry']
-    side = trade_data['side']
-
-    # Calculate position PnL percentage
-    position_pnl_percentage = ((current_price - entry_price) / entry_price * 100) if side == "buy" else ((entry_price - current_price) / entry_price * 100)
-
-    # Auto-profit exit checks
-    if position_pnl_percentage >= BONUS_PROFIT_THRESHOLD:
-        log(f"🎉 BONUS PROFIT! Auto-closing {symbol} at +{position_pnl_percentage:.2f}% 🚀", level="INFO")
-        safe_close_trade(exchange, symbol, active_trades[symbol])
-        send_telegram_message(
-            f"🎉 *Bonus Profit!* {symbol} closed at +{position_pnl_percentage:.2f}% 🚀\n"
-            f"Reason: Exceeded {BONUS_PROFIT_THRESHOLD}% profit!"
-        )
-        continue
-    elif position_pnl_percentage >= AUTO_CLOSE_PROFIT_THRESHOLD:
-        log(f"✅ Auto-closing {symbol} at +{position_pnl_percentage:.2f}% (Threshold: {AUTO_CLOSE_PROFIT_THRESHOLD}%)", level="INFO")
-        safe_close_trade(exchange, symbol, active_trades[symbol])
-        send_telegram_message(
-            f"✅ *Auto-closed* {symbol} at +{position_pnl_percentage:.2f}% profit 🚀\n"
-            f"Reason: Reached profit target {AUTO_CLOSE_PROFIT_THRESHOLD}%"
-        )
-        continue
-"""

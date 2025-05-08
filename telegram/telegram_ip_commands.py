@@ -1,6 +1,11 @@
+# telegram_ip_commands.py
+"""
+IP-related and miscellaneous Telegram command handlers for BinanceBot
+"""
+
 import json
 
-from common.config_loader import DRY_RUN, FIXED_PAIRS  # ✅ добавили
+from common.config_loader import DRY_RUN, FIXED_PAIRS
 from core.trade_engine import close_dry_trade, trade_manager
 from ip_monitor import (
     cancel_router_reboot_mode,
@@ -14,7 +19,9 @@ from utils_logging import get_recent_logs, log
 
 
 def handle_ip_and_misc_commands(text, handle_stop):
-    """Handle IP-related, pair-related, and miscellaneous Telegram commands."""
+    """
+    Handle IP-related, pair-related, and miscellaneous Telegram commands
+    """
     if text == "/router_reboot":
         enable_router_reboot_mode()
         log("Router reboot mode enabled via /router_reboot command.", level="INFO")
@@ -68,7 +75,7 @@ def handle_ip_and_misc_commands(text, handle_stop):
                 else:
                     if len(text.split()) == 1:
                         symbols = [t["symbol"] for t in open_trades]
-                        msg = "Open DRY trades:\n" + "\n".join(symbols)
+                        msg = "*Open DRY trades:*\n" + "\n".join(symbols)
                         msg += "\n\nSend `/close_dry <symbol>` or `/close_dry all`"
                         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
                     else:
@@ -87,6 +94,8 @@ def handle_ip_and_misc_commands(text, handle_stop):
         if DRY_RUN:
             logs = get_recent_logs()
             msg = f"Debug Log (last {len(logs.splitlines())} lines):\n\n{logs[:4000]}"
+            if len(logs) > 4000:
+                msg += "... (truncated)"
             send_telegram_message(msg, force=True, parse_mode="")
             log("Sent debug log via /debuglog command.", level="INFO")
         else:

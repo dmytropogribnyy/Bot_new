@@ -1,3 +1,10 @@
+# telegram_commands.py
+"""
+Telegram command handlers for BinanceBot
+Processes user commands and provides bot control
+"""
+
+import json
 import os
 import threading
 import time
@@ -5,7 +12,7 @@ from threading import Lock, Thread
 
 import pandas as pd
 
-from common.config_loader import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP, trade_stats
+from common.config_loader import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
 from core.trade_engine import close_real_trade, trade_manager
@@ -14,15 +21,17 @@ from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance, get_last_signal_time, load_state, save_state
-from utils_logging import log, now
+from utils_core import get_cached_balance, load_state, save_state
+from utils_logging import log
 
 command_lock = Lock()
 
 
 # --- Helpers ------------------------------------------------------------
 def _format_pos_real(p):
-    """Format real position for Telegram display with enhanced error handling"""
+    """
+    Format real position for Telegram display with enhanced error handling
+    """
     try:
         symbol = escape_markdown_v2(p.get("symbol", ""))
         qty = float(p.get("contracts", 0))
@@ -40,7 +49,9 @@ def _format_pos_real(p):
 
 
 def _format_pos_dry(t):
-    """Format dry-run position for Telegram display with enhanced error handling"""
+    """
+    Format dry-run position for Telegram display with enhanced error handling
+    """
     try:
         symbol = escape_markdown_v2(t.get("symbol", ""))
         side = t.get("side", "").upper()
@@ -58,7 +69,9 @@ def _format_pos_dry(t):
 
 
 def _monitor_stop_timeout(reason, state, timeout_minutes=30):
-    """Monitor stop process with timeout warning and improved cleanup"""
+    """
+    Monitor stop process with timeout warning and improved cleanup
+    """
     start = time.time()
     check_interval = 60  # 60 seconds between checks
     last_notification_time = 0  # Track last notification time
@@ -138,7 +151,9 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
 
 
 def _initiate_stop(reason):
-    """Initiate stop process with enhanced position handling"""
+    """
+    Initiate stop process with enhanced position handling
+    """
     # Import the global stop_event
     from main import stop_event
 
@@ -186,8 +201,96 @@ def _initiate_stop(reason):
     return True
 
 
+# --- Command Handlers ---------------------------------------------------
+def handle_goals_command():
+    """
+    Show progress towards daily/weekly profit goals
+    """
+    try:
+        from common.config_loader import DAILY_PROFIT_TARGET, WEEKLY_PROFIT_TARGET
+
+        # Fetch today's and week's profit from stats
+        from stats import get_trades_for_past_days
+
+        today_trades = get_trades_for_past_days(1)
+        today_profit = today_trades["PnL (%)"].sum() if not today_trades.empty else 0
+        week_trades = get_trades_for_past_days(7)
+        week_profit = week_trades["PnL (%)"].sum() if not week_trades.empty else 0
+
+        # Calculate progress
+        daily_progress = (today_profit / DAILY_PROFIT_TARGET) * 100 if DAILY_PROFIT_TARGET else 0
+        weekly_progress = (week_profit / WEEKLY_PROFIT_TARGET) * 100 if WEEKLY_PROFIT_TARGET else 0
+
+        msg = (
+            f"🎯 *Profit Goals Progress*\n"
+            f"Daily Target: {DAILY_PROFIT_TARGET:.2f} USDC\n"
+            f"Today's Profit: {today_profit:.2f} USDC ({daily_progress:.1f}%)\n"
+            f"Weekly Target: {WEEKLY_PROFIT_TARGET:.2f} USDC\n"
+            f"This Week's Profit: {week_profit:.2f} USDC ({weekly_progress:.1f}%)"
+        )
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("Sent profit goals progress via /goals command.", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to fetch goals: {e}", force=True)
+        log(f"Goals command error: {e}", level="ERROR")
+
+
+def handle_risk_command(message):
+    """
+    Adjust risk level (e.g., /risk 0.02)
+    """
+    try:
+        from core.risk_utils import get_max_risk, set_max_risk
+
+        parts = message.get("text", "").strip().split()
+        if len(parts) == 1:
+            current_risk = get_max_risk()
+            msg = f"Current Risk Level: {current_risk*100:.1f}%\n" "Use /risk <value> to set new risk (e.g., /risk 0.02 for 2%)"
+            send_telegram_message(msg, force=True)
+        else:
+            new_risk = float(parts[1])
+            if new_risk < 0.01 or new_risk > 0.05:
+                send_telegram_message("❌ Risk must be between 0.01 (1%) and 0.05 (5%)", force=True)
+            else:
+                set_max_risk(new_risk)
+                send_telegram_message(f"✅ Risk level set to {new_risk*100:.1f}%", force=True)
+                log(f"Risk level set to {new_risk*100:.1f}% via /risk command", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to set risk: {e}", force=True)
+        log(f"Risk command error: {e}", level="ERROR")
+
+
+def handle_filters_command(message):
+    """
+    Adjust pair filters (e.g., /filters 0.19 16000)
+    """
+    try:
+        from common.config_loader import set_filter_thresholds
+
+        parts = message.get("text", "").strip().split()
+        if len(parts) == 1:
+            try:
+                with open("data/filter_settings.json", "r") as f:
+                    filters = json.load(f)
+                msg = f"Current Filters:\nATR: {filters['atr_percent']*100:.2f}%\nVolume: {filters['volume_usdc']:,.0f} USDC\n" "Use /filters <atr_percent> <volume_usdc> to set new filters"
+            except Exception:
+                msg = "No filters set. Use /filters <atr_percent> <volume_usdc> to set new filters"
+            send_telegram_message(msg, force=True)
+        else:
+            atr_percent = float(parts[1])
+            volume_usdc = float(parts[2])
+            set_filter_thresholds(atr_percent, volume_usdc)
+            send_telegram_message(f"✅ Filters updated: ATR={atr_percent*100:.2f}%, Volume={volume_usdc:,.0f} USDC", force=True)
+            log(f"Filters updated via /filters command: ATR={atr_percent*100:.2f}%, Volume={volume_usdc:,.0f} USDC", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to set filters: {e}", force=True)
+        log(f"Filters command error: {e}", level="ERROR")
+
+
 def handle_stop_command():
-    """Enhanced stop command with active position closing and stop_event triggering"""
+    """
+    Enhanced stop command with active position closing and stop_event triggering
+    """
     # Import the global stop_event
     from main import stop_event
 
@@ -245,8 +348,9 @@ def handle_stop_command():
 
 
 def handle_panic(message, state):
-    """Emergency force closure of all positions and orders with timeout."""
-
+    """
+    Emergency force closure of all positions and orders with timeout
+    """
     # Log panic initiation
     log("[Panic] Panic command received! Forcing closure of all positions and orders.", level="WARNING", important=True)
 
@@ -338,7 +442,9 @@ def handle_panic(message, state):
 
 # -----------------------------------------------------------------------
 def handle_shutdown(message, state):
-    """Gracefully shutdown bot with proper position and order closure."""
+    """
+    Gracefully shutdown bot with proper position and order closure
+    """
     # Import necessary components
     import common.config_loader as config_loader
 
@@ -402,7 +508,9 @@ def handle_shutdown(message, state):
 
 
 def handle_telegram_command(message, state):
-    """Main Telegram command handler with thread safety and enhanced reliability"""
+    """
+    Main Telegram command handler with thread safety and enhanced reliability
+    """
     # Get message timestamp (Telegram provides this in UTC seconds)
     message_date = message.get("date", 0)
     session_start_time = state.get("session_start_time", 0)
@@ -430,6 +538,12 @@ def handle_telegram_command(message, state):
         ] or text.startswith("/close_dry"):
             handle_ip_and_misc_commands(text, _initiate_stop)
             return
+        elif text == "/goals":
+            handle_goals_command()
+        elif text.startswith("/risk"):
+            handle_risk_command(message)
+        elif text.startswith("/filters"):
+            handle_filters_command(message)
         elif text == "/help":
             help_msg = (
                 "🤖 Available Commands:\n\n"
@@ -439,6 +553,7 @@ def handle_telegram_command(message, state):
                 "🔒 /close_dry - Close a DRY position (e.g., /close_dry BTC/USDC)\n"
                 "🧾 /debuglog - Show last 50 logs\n"
                 "📡 /forceipcheck - Force immediate IP check\n"
+                "🎯 /goals - Show progress towards daily/weekly profit goals\n"
                 "📊 /heatmap - Generate 7-day score heatmap\n"
                 "📖 /help - Show this message\n"
                 "🌐 /ipstatus - Show current/previous IP + router mode\n"
@@ -447,13 +562,15 @@ def handle_telegram_command(message, state):
                 "⚖️ /mode - Show strategy bias and score\n"
                 "📈 /open - Show open positions\n"
                 "🔄 /restart - Restart bot after closing positions\n"
+                "⚠️ /risk - Adjust risk level (e.g., /risk 0.02)\n"
                 "🔄 /router_reboot - Plan router reboot\n"
                 "▶️ /resume_after_ip - Resume after IP change\n"
                 "🚪 /shutdown - Exit bot after positions close\n"
                 "🛑 /stop - Stop after all positions close\n"
                 "🚨 /panic - Force close all trades (confirmation)\n"
                 "🔍 /status - Show bot status\n"
-                "📊 /summary - Show performance summary"
+                "📊 /summary - Show performance summary\n"
+                "⚙️ /filters - Adjust pair filters (e.g., /filters 0.19 16000)"
             )
             send_telegram_message(help_msg, force=True, parse_mode="")
             log("Sent help message.", level="INFO")
@@ -560,60 +677,6 @@ def handle_telegram_command(message, state):
             except Exception as e:
                 send_telegram_message(f"❌ Failed to fetch balance: {e}", force=True)
                 log(f"Balance error: {e}", level="ERROR")
-        elif text == "/status":
-            try:
-                current = now()
-                last_sig = get_last_signal_time()
-                idle = f"{(current - last_sig).seconds//60} min ago" if last_sig else "N/A"
-                balance = round(float(get_cached_balance()), 2)
-                score = round(get_aggressiveness_score(), 2)
-                mode = "🔥 HIGH" if score >= 3.5 else "⚡ MODERATE" if score >= 2.5 else "🧊 LOW"
-
-                # Risk percent based on balance (for small deposit awareness)
-                from common.config_loader import get_adaptive_risk_percent
-
-                risk = get_adaptive_risk_percent(balance) * 100
-
-                if state.get("shutdown"):
-                    status = "🔌 Shutdown in progress"
-                elif state.get("stopping"):
-                    try:
-                        positions = exchange.fetch_positions() if not DRY_RUN else []
-                        open_syms = [p["symbol"] for p in positions if float(p.get("contracts", 0)) > 0]
-                        status = f"🛑 Stopping after trades ({len(open_syms)} open)" if open_syms else "🛑 Stopping — no open trades"
-                    except Exception as e:
-                        status = "🛑 Stopping — error fetching trades"
-                        log(f"[Status] Failed to fetch positions for status: {e}", level="ERROR")
-                else:
-                    status = "✅ Running"
-
-                if DRY_RUN:
-                    open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
-                else:
-                    try:
-                        positions = exchange.fetch_positions()
-                        open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-                    except Exception as e:
-                        log(f"[Status] Failed fetch: {e}", level="ERROR")
-                        send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
-                        open_details = []
-
-                # Enhanced status with risk info
-                msg = (
-                    "<b>Bot Status</b>\n"
-                    f"- Balance: {balance} USDC\n"
-                    f"- Risk Level: {risk:.1f}%\n"
-                    f"- Aggressiveness: {mode} ({score})\n"
-                    f"- API Errors: {trade_stats.get('api_errors',0)}\n"
-                    f"- Last Signal: {idle}\n"
-                    f"- Status: {status}\n"
-                    f"- Open Positions:\n" + ("\n".join(open_details) if open_details else "None")
-                )
-                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                log("Sent /status.", level="INFO")
-            except Exception as e:
-                send_telegram_message(f"❌ Status error: {e}", force=True)
-                log(f"Status error: {e}", level="ERROR")
         elif text == "/restart":
             state["stopping"] = True
             state["restart_pending"] = True

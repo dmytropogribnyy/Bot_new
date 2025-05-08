@@ -1,22 +1,28 @@
-# stats.py (обновлённый с расширенными отчётами)
+# stats.py (обновлённый с расширенными отчётами, системой защиты и улучшениями)
 
 import os
 from datetime import datetime, timedelta
+from math import ceil
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
 from common.config_loader import (
     AGGRESSIVENESS_THRESHOLD,
+    DAILY_PROFIT_TARGET,
+    DAILY_TRADE_TARGET,
     EXPORT_PATH,
     LOG_LEVEL,
     TIMEZONE,
+    WEEKLY_PROFIT_TARGET,
     trade_stats,
     trade_stats_lock,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
+from core.risk_utils import get_max_risk, set_max_risk
 from core.volatility_controller import get_filter_relax_factor
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_core import get_cached_balance
 from utils_logging import log
 
 
@@ -140,6 +146,8 @@ def send_weekly_report(parse_mode="MarkdownV2"):
         msg = escape_markdown_v2(msg)
 
     send_telegram_message(msg, force=True, parse_mode=parse_mode)
+    # Generate and send a graph for the weekly period
+    generate_pnl_graph(days=7)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent weekly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
@@ -149,6 +157,8 @@ def send_monthly_report():
     start = (end - timedelta(days=30)).strftime("%d.%m")
     msg = build_performance_report("Monthly Performance Summary", f"{start}-{end.strftime('%d.%m')}")
     send_telegram_message(escape_markdown_v2(msg), force=True)
+    # Generate and send a graph for the monthly period
+    generate_pnl_graph(days=30)
     if LOG_LEVEL == "DEBUG":
         log(f"Sent monthly report for {start}-{end.strftime('%d.%m')}.", level="DEBUG")
 
@@ -216,7 +226,7 @@ def generate_daily_report(days=1):
     """
     Generates a daily report and sends it to Telegram.
     Includes trade statistics, winrate, PnL, commission impact,
-    and priority pair performance for small accounts.
+    priority pair performance for small accounts, and performance by relax factor.
 
     Args:
         days (int): Period for analysis (default 1 day).
@@ -245,12 +255,8 @@ def generate_daily_report(days=1):
         # Total number of trades
         total_trades = len(df)
 
-        # Winning trades count (TP1, TP2, SOFT_EXIT with profit)
-        win_trades = len(df[df["Result"].isin(["TP1", "TP2"])])
-        if "Net PnL (%)" in df.columns:
-            # If we have net PnL column, use that for more accurate win counting
-            win_trades = len(df[df["Net PnL (%)"] > 0])
-
+        # Winning trades count (based on Net PnL > 0)
+        win_trades = len(df[df["PnL (%)"] > 0])
         winrate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
 
         # Total PnL
@@ -294,7 +300,7 @@ def generate_daily_report(days=1):
             priority_pairs = ["XRP/USDC", "DOGE/USDC", "ADA/USDC", "SOL/USDC"]
             priority_df = df[df["Symbol"].isin(priority_pairs)]
             if not priority_df.empty:
-                priority_winrate = len(priority_df[priority_df["Result"].isin(["TP1", "TP2"])]) / len(priority_df) * 100
+                priority_winrate = len(priority_df[priority_df["PnL (%)"] > 0]) / len(priority_df) * 100
                 report_message += "\n\n🔍 Priority Pairs Performance:\n"
                 report_message += f"Trades: {len(priority_df)}\n"
                 report_message += f"Winrate: {priority_winrate:.2f}%"
@@ -303,11 +309,37 @@ def generate_daily_report(days=1):
                     report_message += f"\nProfit: {priority_profit:.6f} USDC"
                     report_message += f"\n% of Total Profit: {(priority_profit/total_abs_profit)*100:.2f}%" if total_abs_profit != 0 else ""
 
+        # Add performance by relax factor (market regime analysis)
+        if "Relax Factor" in df.columns:
+            high_relax_df = df[df["Relax Factor"] > 0.8]
+            low_relax_df = df[df["Relax Factor"] < 0.5]
+
+            report_message += "\n\n📉 Performance by Market Regime:\n"
+            if not high_relax_df.empty:
+                high_relax_winrate = len(high_relax_df[high_relax_df["PnL (%)"] > 0]) / len(high_relax_df) * 100
+                high_relax_pnl = high_relax_df["PnL (%)"].sum()
+                report_message += "High Volatility (Relax > 0.8):\n"
+                report_message += f"Trades: {len(high_relax_df)}\n"
+                report_message += f"Winrate: {high_relax_winrate:.2f}%\n"
+                report_message += f"PnL: {high_relax_pnl:.2f}%\n"
+            else:
+                report_message += "High Volatility (Relax > 0.8): No trades\n"
+
+            if not low_relax_df.empty:
+                low_relax_winrate = len(low_relax_df[low_relax_df["PnL (%)"] > 0]) / len(low_relax_df) * 100
+                low_relax_pnl = low_relax_df["PnL (%)"].sum()
+                report_message += "Low Volatility (Relax < 0.5):\n"
+                report_message += f"Trades: {len(low_relax_df)}\n"
+                report_message += f"Winrate: {low_relax_winrate:.2f}%\n"
+                report_message += f"PnL: {low_relax_pnl:.2f}%\n"
+            else:
+                report_message += "Low Volatility (Relax < 0.5): No trades\n"
+
         # Add account growth information
         if "Absolute Profit" in df.columns:
             growth_pct = (total_abs_profit / balance) * 100
             daily_growth = growth_pct / days
-            report_message += "\n\n📈 Account Growth:\n"
+            report_message += "\n📈 Account Growth:\n"
             report_message += f"Growth: {growth_pct:.2f}% over {days} day(s)\n"
             report_message += f"Daily Growth Rate: {daily_growth:.2f}%"
 
@@ -317,3 +349,303 @@ def generate_daily_report(days=1):
     except Exception as e:
         log(f"[ERROR] Failed to generate daily report: {e}", level="ERROR")
         send_telegram_message(f"⚠️ Failed to generate daily report: {str(e)}", force=True, parse_mode="")
+
+
+# ========== Performance Circuit Breaker and Trade Target Tracking ==========
+
+
+def get_recent_trades(num_trades=20):
+    """
+    Get the most recent trades for performance analysis
+
+    Args:
+        num_trades (int): Number of most recent trades to analyze
+
+    Returns:
+        list: Trade records as dictionaries
+    """
+    try:
+        if not os.path.exists(EXPORT_PATH):
+            log(f"TP log file not found at: {EXPORT_PATH}", level="WARNING")
+            return []
+
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        # Sort by date (newest first) and take the most recent trades
+        df = df.sort_values(by="Date", ascending=False).head(num_trades)
+        return df.to_dict("records")
+    except Exception as e:
+        log(f"Error retrieving recent trades: {e}", level="ERROR")
+        return []
+
+
+def get_recent_performance_stats(num_trades=20):
+    """
+    Get performance statistics for the most recent trades
+
+    Args:
+        num_trades (int): Number of most recent trades to analyze
+
+    Returns:
+        dict: Performance statistics
+    """
+    trades = get_recent_trades(num_trades)
+
+    # Default stats dictionary
+    stats = {"num_trades": len(trades), "win_rate": 0.0, "profit_factor": 0.0, "avg_profit": 0.0, "profit_sum": 0.0, "loss_sum": 0.0, "wins": 0, "losses": 0}
+
+    if not trades:
+        return stats
+
+    # Calculate wins, losses, and profit sums
+    wins = sum(1 for t in trades if t.get("PnL (%)", 0) > 0)
+    losses = sum(1 for t in trades if t.get("PnL (%)", 0) < 0)
+    profit_sum = sum(t.get("PnL (%)", 0) for t in trades if t.get("PnL (%)", 0) > 0)
+    loss_sum = abs(sum(t.get("PnL (%)", 0) for t in trades if t.get("PnL (%)", 0) < 0))
+
+    # Calculate stats
+    stats["win_rate"] = wins / len(trades) if len(trades) > 0 else 0.0
+    stats["profit_factor"] = profit_sum / loss_sum if loss_sum > 0 else profit_sum if profit_sum > 0 else 0.0
+    stats["avg_profit"] = sum(t.get("PnL (%)", 0) for t in trades) / len(trades) if len(trades) > 0 else 0.0
+    stats["profit_sum"] = profit_sum
+    stats["loss_sum"] = loss_sum
+    stats["wins"] = wins
+    stats["losses"] = losses
+
+    return stats
+
+
+def get_trades_for_today():
+    """
+    Get all trades for the current day
+
+    Returns:
+        list: Trade records for today
+    """
+    try:
+        if not os.path.exists(EXPORT_PATH):
+            return []
+
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        today = pd.Timestamp.now().normalize()
+        df_today = df[df["Date"].dt.normalize() == today]
+        return df_today.to_dict("records")
+    except Exception as e:
+        log(f"Error retrieving today's trades: {e}", level="ERROR")
+        return []
+
+
+def get_trades_for_past_days(days=7):
+    """
+    Get all trades for the past N days
+
+    Args:
+        days (int): Number of past days to include
+
+    Returns:
+        list: Trade records for the specified period
+    """
+    try:
+        if not os.path.exists(EXPORT_PATH):
+            return []
+
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        start_date = pd.Timestamp.now().normalize() - pd.Timedelta(days=days)
+        df_period = df[df["Date"].dt.normalize() >= start_date]
+        return df_period.to_dict("records")
+    except Exception as e:
+        log(f"Error retrieving trades for past {days} days: {e}", level="ERROR")
+        return []
+
+
+def get_performance_stats():
+    """
+    Get overall performance statistics
+
+    Returns:
+        dict: Performance statistics
+    """
+    try:
+        # Get all trades from log file
+        if not os.path.exists(EXPORT_PATH):
+            return {"win_rate": 0.0, "profit_factor": 0.0, "total_trades": 0, "wins": 0, "losses": 0}
+
+        df = pd.read_csv(EXPORT_PATH)
+        if df.empty:
+            return {"win_rate": 0.0, "profit_factor": 0.0, "total_trades": 0, "wins": 0, "losses": 0}
+
+        # Calculate wins, losses, and profit sums
+        wins = len(df[df["PnL (%)"] > 0])
+        losses = len(df[df["PnL (%)"] < 0])
+        profit_sum = df[df["PnL (%)"] > 0]["PnL (%)"].sum()
+        loss_sum = abs(df[df["PnL (%)"] < 0]["PnL (%)"].sum())
+
+        # Calculate stats
+        win_rate = wins / len(df) if len(df) > 0 else 0.0
+        profit_factor = profit_sum / loss_sum if loss_sum > 0 else profit_sum if profit_sum > 0 else 0.0
+
+        return {"win_rate": win_rate, "profit_factor": profit_factor, "total_trades": len(df), "wins": wins, "losses": losses}
+    except Exception as e:
+        log(f"Error calculating performance stats: {e}", level="ERROR")
+        return {"win_rate": 0.0, "profit_factor": 0.0, "total_trades": 0, "wins": 0, "losses": 0}
+
+
+def check_performance_circuit_breaker():
+    """
+    Monitors performance metrics and triggers protection if needed
+
+    Returns:
+        dict: Status information including any protective actions taken
+    """
+    # Get recent performance (last 20 trades)
+    recent_stats = get_recent_performance_stats(20)
+
+    if recent_stats["num_trades"] < 10:
+        log("Insufficient data for performance circuit breaker (need at least 10 recent trades)", level="DEBUG")
+        return {"status": "insufficient_data"}
+
+    log(
+        f"Performance circuit breaker: Win rate {recent_stats['win_rate']*100:.1f}%, PF {recent_stats['profit_factor']:.2f}, Wins {recent_stats['wins']}, Losses {recent_stats['losses']}",
+        level="DEBUG",
+    )
+
+    # Check for poor performance conditions
+    if recent_stats["win_rate"] < 0.50 and recent_stats["profit_factor"] < 1.0:
+        # Poor performance detected - reduce risk by 40%
+        current_max_risk = get_max_risk()
+        new_max_risk = current_max_risk * 0.6
+        set_max_risk(new_max_risk)
+
+        message = (
+            f"⚠️ PERFORMANCE ALERT: Win rate {recent_stats['win_rate']*100:.1f}%, PF {recent_stats['profit_factor']:.2f}.\n"
+            f"Risk reduced to {new_max_risk*100:.1f}%. Please review strategy."
+        )
+
+        log(message, level="WARNING")
+        send_telegram_message(message, force=True)
+
+        return {"status": "protection_activated", "win_rate": recent_stats["win_rate"], "profit_factor": recent_stats["profit_factor"], "new_risk": new_max_risk}
+
+    # Check for recovery condition to restore risk
+    if recent_stats["win_rate"] > 0.60 and recent_stats["profit_factor"] > 1.5:
+        current_max_risk = get_max_risk()
+        # Assuming initial max risk is 0.03 (3%), restore to that level
+        if current_max_risk < 0.03:
+            set_max_risk(0.03)
+            message = f"✅ PERFORMANCE RECOVERY: Win rate {recent_stats['win_rate']*100:.1f}%, PF {recent_stats['profit_factor']:.2f}.\n" f"Risk restored to 3.0%."
+            log(message, level="INFO")
+            send_telegram_message(message, force=True)
+            return {"status": "risk_restored", "win_rate": recent_stats["win_rate"], "profit_factor": recent_stats["profit_factor"], "new_risk": 0.03}
+
+    return {"status": "normal"}
+
+
+def track_daily_trade_target():
+    """
+    Tracks progress toward daily trade target (8-11 trades)
+
+    Returns:
+        dict: Progress metrics and status information
+    """
+    # Get today's trades
+    today_trades = get_trades_for_today()
+    trades_count = len(today_trades)
+
+    # Calculate today's profit
+    today_profit = 0.0
+    if today_trades and "Absolute Profit" in today_trades[0]:
+        # Use absolute profit if available
+        today_profit = sum(trade.get("Absolute Profit", 0) for trade in today_trades)
+    else:
+        # Estimate from PnL percentage and balance at entry
+        today_profit = 0.0
+        for trade in today_trades:
+            balance_at_entry = trade.get("Balance at Entry", get_cached_balance())
+            pnl_percent = trade.get("PnL (%)", 0)
+            trade_profit = (pnl_percent / 100) * balance_at_entry
+            today_profit += trade_profit
+
+    # Get weekly stats
+    weekly_trades = get_trades_for_past_days(7)
+    weekly_profit = 0.0
+    if weekly_trades and "Absolute Profit" in weekly_trades[0]:
+        weekly_profit = sum(trade.get("Absolute Profit", 0) for trade in weekly_trades)
+    else:
+        weekly_profit = 0.0
+        for trade in weekly_trades:
+            balance_at_entry = trade.get("Balance at Entry", get_cached_balance())
+            pnl_percent = trade.get("PnL (%)", 0)
+            trade_profit = (pnl_percent / 100) * balance_at_entry
+            weekly_profit += trade_profit
+
+    # Calculate progress percentages
+    daily_trade_progress = (trades_count / DAILY_TRADE_TARGET) * 100 if DAILY_TRADE_TARGET > 0 else 0
+    daily_profit_progress = (today_profit / DAILY_PROFIT_TARGET) * 100 if DAILY_PROFIT_TARGET > 0 else 0
+    weekly_profit_progress = (weekly_profit / WEEKLY_PROFIT_TARGET) * 100 if WEEKLY_PROFIT_TARGET > 0 else 0
+
+    # Notify if daily profit target is reached
+    if today_profit >= DAILY_PROFIT_TARGET:
+        message = f"✅ Daily profit target reached! Achieved ${today_profit:.2f} of ${DAILY_PROFIT_TARGET:.2f}."
+        log(message, level="INFO")
+        send_telegram_message(message, force=True)
+
+    # Alert if trade count is too low relative to time of day
+    current_hour = datetime.now().hour
+    trading_hours_elapsed = max(1, min(current_hour - 9, 12))  # Assume 9AM-9PM trading day
+    expected_trades_by_now = (trading_hours_elapsed / 12) * DAILY_TRADE_TARGET
+
+    if trades_count < expected_trades_by_now * 0.7 and current_hour >= 12:
+        message = f"⚠️ TRADE ALERT: Only {trades_count} trades so far today. Need {DAILY_TRADE_TARGET - trades_count} more to reach target."
+        log(message, level="WARNING")
+        send_telegram_message(message, force=True)
+
+    # Log daily progress
+    log(
+        f"Daily target progress: {trades_count}/{DAILY_TRADE_TARGET} trades ({daily_trade_progress:.1f}%), "
+        f"${today_profit:.2f}/${DAILY_PROFIT_TARGET:.2f} profit ({daily_profit_progress:.1f}%)",
+        level="INFO",
+    )
+
+    return {
+        "trades_today": trades_count,
+        "target_trades": DAILY_TRADE_TARGET,
+        "daily_profit": today_profit,
+        "daily_profit_target": DAILY_PROFIT_TARGET,
+        "weekly_profit": weekly_profit,
+        "weekly_profit_target": WEEKLY_PROFIT_TARGET,
+        "daily_trade_progress": daily_trade_progress,
+        "daily_profit_progress": daily_profit_progress,
+        "weekly_profit_progress": weekly_profit_progress,
+    }
+
+
+def handle_goal_command(params=None):
+    """
+    Show progress toward daily and weekly goals
+
+    Args:
+        params (list, optional): Command parameters
+
+    Returns:
+        str: Formatted message with goal progress information
+    """
+    metrics = track_daily_trade_target()
+
+    message = (
+        f"📊 *Goal Progress*\n\n"
+        f"Today's Trades: {metrics['trades_today']}/{metrics['target_trades']} ({metrics['daily_trade_progress']:.1f}%)\n"
+        f"Today's Profit: ${metrics['daily_profit']:.2f}/${metrics['daily_profit_target']:.2f} ({metrics['daily_profit_progress']:.1f}%)\n\n"
+        f"Weekly Profit: ${metrics['weekly_profit']:.2f}/${metrics['weekly_profit_target']:.2f} ({metrics['weekly_profit_progress']:.1f}%)\n"
+    )
+
+    # Add average profit per trade
+    if metrics["trades_today"] > 0:
+        avg_profit = metrics["daily_profit"] / metrics["trades_today"]
+        trades_needed = ceil((metrics["daily_profit_target"] - metrics["daily_profit"]) / avg_profit) if avg_profit > 0 else "N/A"
+
+        message += "\n📈 Stats:\n"
+        message += f"Avg Profit/Trade: ${avg_profit:.2f}\n"
+
+        if trades_needed != "N/A":
+            message += f"Est. Trades Needed: {trades_needed} more\n"
+
+    return message
