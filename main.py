@@ -30,6 +30,7 @@ from core.risk_utils import check_drawdown_protection
 from core.trade_engine import close_real_trade, enter_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
+from missed_tracker import flush_best_missed_opportunities
 from pair_selector import select_active_symbols, start_symbol_rotation, track_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import (
@@ -249,8 +250,11 @@ def start_trading_loop():
 
     # Загрузка символов
     symbols = load_symbols()
-    log(f"[Refactor] Loaded symbols: {symbols}", important=True, level="INFO")
-    if not symbols:
+    if symbols:
+        symbols_str = ", ".join(symbols)
+        log(f"[Refactor] Loaded {len(symbols)} active symbols: {symbols_str}", important=True, level="INFO")
+    else:
+        log("[Refactor] No active symbols loaded, exiting bot.", important=True, level="ERROR")
         return  # Exit if no symbols loaded
 
     # Группировка символов
@@ -410,7 +414,9 @@ if __name__ == "__main__":
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
     scheduler.add_job(select_active_symbols, "interval", hours=4)
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
-    scheduler.add_job(track_missed_opportunities, "interval", hours=6)
+    scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
+    scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
+
     scheduler.start()
     log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, and missed opportunities tracking", level="INFO")
 

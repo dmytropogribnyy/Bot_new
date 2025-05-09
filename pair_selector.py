@@ -40,6 +40,9 @@ DRY_RUN_FALLBACK_SYMBOLS = USDT_SYMBOLS if USE_TESTNET else USDC_SYMBOLS
 # Historical performance tracking
 pair_performance = {}
 
+# Добавить глобальную переменную
+_last_logged_hour = None
+
 
 def fetch_all_symbols():
     """
@@ -236,22 +239,35 @@ def calculate_correlation(price_data):
 def is_peak_trading_hour():
     """
     Check if current time is during peak trading hours.
-    Returns True during high market activity hours.
+    Log only once per hour to avoid spam.
     """
+    global _last_logged_hour
+
     if not TRADING_HOURS_FILTER:
         return True
 
     now = datetime.utcnow()
     hour_utc = now.hour
 
-    # Weekend check (Saturday=5, Sunday=6)
-    if now.weekday() >= 5:
-        return False
+    # Log only if hour changed
+    if _last_logged_hour != hour_utc:
+        _last_logged_hour = hour_utc
 
-    # Peak hours: European/US overlap and Asian open
-    peak_hours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]
+        # Weekend check (Saturday=5, Sunday=6)
+        if now.weekday() >= 5:
+            log(f"[Time Check] Current UTC hour: {hour_utc} — Weekend (inactive)", level="INFO")
+            return False
 
-    return hour_utc in peak_hours
+        # Peak hours: European/US overlap and Asian open
+        peak_hours = [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]
+
+        if hour_utc in peak_hours:
+            log(f"[Time Check] Current UTC hour: {hour_utc} — Trading active (peak hour)", level="INFO")
+        else:
+            log(f"[Time Check] Current UTC hour: {hour_utc} — Trading inactive (off-peak)", level="INFO")
+
+    # Реальная проверка
+    return hour_utc in [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]
 
 
 def load_pair_performance():
@@ -720,42 +736,53 @@ def track_missed_opportunities():
     """Track pairs that were missed but performed well."""
     global missed_opportunities
 
-    # Получить все доступные пары
     all_pairs = fetch_all_symbols()
 
-    # Получить текущие активные пары
     active_pairs = []
     if os.path.exists(SYMBOLS_FILE):
         with symbols_file_lock, open(SYMBOLS_FILE, "r") as f:
             active_pairs = json.load(f)
 
-    # Проверить пары, которые не были выбраны
+    missed_opportunities = {}
+    missed_logs = []  # Новый список для аккуратного сбора логов
+
     for pair in all_pairs:
         if pair in active_pairs:
             continue
 
-        # Получить данные за последние 24 часа
         df = fetch_symbol_data(pair, timeframe="15m", limit=96)
-        if df is None:
+        if df is None or len(df) < 20:
             continue
 
-        # Рассчитать потенциальную прибыль
         price_24h_ago = df["close"].iloc[0]
         price_now = df["close"].iloc[-1]
         potential_profit = ((price_now - price_24h_ago) / price_24h_ago) * 100
 
-        # Если потенциальная прибыль высокая, отметить как упущенную возможность
-        if abs(potential_profit) > 5:  # Порог в 5%
-            if pair not in missed_opportunities:
-                missed_opportunities[pair] = {"count": 0, "profit": 0}
+        if abs(potential_profit) > 5:
+            metrics = calculate_short_term_metrics(df)
+            atr_vol = calculate_atr_volatility(df)
+            avg_volume = df["volume"].mean()
 
-            missed_opportunities[pair]["count"] += 1
-            missed_opportunities[pair]["profit"] += potential_profit
+            missed_opportunities[pair] = {
+                "count": missed_opportunities.get(pair, {}).get("count", 0) + 1,
+                "profit": missed_opportunities.get(pair, {}).get("profit", 0) + potential_profit,
+                "momentum": metrics.get("momentum", 0),
+                "atr_volatility": atr_vol,
+                "avg_volume": avg_volume,
+            }
 
-            # Логировать значительные упущенные возможности
             if abs(potential_profit) > 10:
-                log(f"Missed opportunity: {pair} with {potential_profit:.2f}% potential profit", level="WARNING")
+                # Вместо логирования сразу — добавляем в список
+                missed_logs.append(f"- {pair} ({potential_profit:.2f}% profit, Momentum: {metrics.get('momentum', 0):.2f}%, " f"ATR vol: {atr_vol:.4f}, Avg volume: {avg_volume:,.0f})")
 
-    # Сохранить данные
-    with open(MISSED_OPPORTUNITIES_FILE, "w") as f:
-        json.dump(missed_opportunities, f)
+    # Групповое логирование одним сообщением
+    if missed_logs:
+        log("[Missed Opportunities]\n" + "\n".join(missed_logs), level="WARNING")
+
+    # Сохраняем файл
+    try:
+        with open(MISSED_OPPORTUNITIES_FILE, "w") as f:
+            json.dump(missed_opportunities, f, indent=2)
+        log(f"Saved missed opportunities to {MISSED_OPPORTUNITIES_FILE}", level="INFO")
+    except Exception as e:
+        log(f"Error saving missed opportunities: {e}", level="ERROR")
