@@ -13,9 +13,9 @@ from common.config_loader import (
     FIXED_PAIRS,
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
-    MISSED_OPPORTUNITIES_FILE,  # Новый параметр
-    PAIR_COOLING_PERIOD_HOURS,  # Новый параметр
-    PAIR_ROTATION_MIN_INTERVAL,  # Новый параметр
+    MISSED_OPPORTUNITIES_FILE,
+    PAIR_COOLING_PERIOD_HOURS,
+    PAIR_ROTATION_MIN_INTERVAL,
     PRIORITY_SMALL_BALANCE_PAIRS,
     TRADING_HOURS_FILTER,
     USDC_SYMBOLS,
@@ -24,8 +24,10 @@ from common.config_loader import (
 )
 from core.binance_api import convert_symbol
 from core.exchange_init import exchange
+from core.fail_stats_tracker import FAIL_STATS_FILE
+from symbol_activity_tracker import SIGNAL_ACTIVITY_FILE
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, get_market_volatility_index, safe_call_retry  # Новая функция
+from utils_core import get_cached_balance, get_market_volatility_index, safe_call_retry
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
@@ -42,6 +44,22 @@ pair_performance = {}
 
 # Добавить глобальную переменную
 _last_logged_hour = None
+
+
+def load_json_file(filepath):
+    try:
+        with open(filepath, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def load_failure_stats():
+    try:
+        with open(FAIL_STATS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def fetch_all_symbols():
@@ -382,6 +400,15 @@ def select_active_symbols():
     # Load performance data
     load_pair_performance()
 
+    # Load failure statistics
+    failure_stats = load_failure_stats()
+    MAX_FAILURES_PER_SYMBOL = 6
+    FAILURE_PENALTY = 0.2
+
+    # Load missed opportunities and symbol activity data
+    missed_data = load_json_file(MISSED_OPPORTUNITIES_FILE)
+    activity_data = load_json_file(SIGNAL_ACTIVITY_FILE)
+
     # Determine pair limits based on account size
     balance = get_cached_balance()
 
@@ -463,6 +490,30 @@ def select_active_symbols():
             "price_trend": st_metrics["price_trend"],
             "performance_score": perf_score,
         }
+
+        # 🔼 Boost for missed opportunities
+        if s in missed_data and missed_data[s].get("count", 0) >= 2:
+            bonus = 0.2
+            dynamic_data[s]["performance_score"] += bonus
+            dynamic_data[s]["missed_bonus"] = bonus
+            log(f"{s} ⬆️ Missed bonus applied: +{bonus}", level="DEBUG")
+
+        # 🔼 Boost for symbol activity
+        activity_count = activity_data.get(s, 0)
+        if activity_count >= 10:
+            activity_bonus = 0.1 + min(activity_count / 100, 0.2)  # capped at +0.2
+            dynamic_data[s]["performance_score"] += activity_bonus
+            dynamic_data[s]["activity_bonus"] = round(activity_bonus, 3)
+            log(f"{s} ⬆️ Activity bonus applied: +{activity_bonus:.2f} (activity: {activity_count})", level="DEBUG")
+
+        # Adjust score for failure penalties
+        failures = failure_stats.get(s, {})
+        total_failures = sum(failures.values())
+        if total_failures >= MAX_FAILURES_PER_SYMBOL:
+            penalty = FAILURE_PENALTY * (total_failures / MAX_FAILURES_PER_SYMBOL)
+            dynamic_data[s]["failure_penalty"] = round(penalty, 3)
+            dynamic_data[s]["performance_score"] = max(dynamic_data[s]["performance_score"] - penalty, 0)
+            log(f"{s} ⚠️ Failure penalty applied: -{penalty:.2f} (failures: {total_failures})", level="DEBUG")
 
     # Calculate correlation matrix if we have enough pairs
     corr_matrix = calculate_correlation(price_data) if len(price_data) > 1 else None

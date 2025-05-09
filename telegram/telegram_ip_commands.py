@@ -6,6 +6,7 @@ IP-related and miscellaneous Telegram command handlers for BinanceBot
 import json
 
 from common.config_loader import DRY_RUN, FIXED_PAIRS
+from core.fail_stats_tracker import get_signal_failure_stats
 from core.trade_engine import close_dry_trade, trade_manager
 from ip_monitor import (
     cancel_router_reboot_mode,
@@ -14,7 +15,8 @@ from ip_monitor import (
     get_ip_status_message,
 )
 from stats import send_daily_report
-from telegram.telegram_utils import send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_core import get_runtime_config
 from utils_logging import get_recent_logs, log
 
 
@@ -103,5 +105,31 @@ def handle_ip_and_misc_commands(text, handle_stop):
             log("Debug log request denied: not in DRY_RUN mode.", level="INFO")
 
     elif text == "/log":
-        send_daily_report(parse_mode="")  # Use plain text mode to avoid markdown parsing errors
+        send_daily_report(parse_mode="")
         log("Sent daily report via /log command.", level="INFO")
+
+    elif text == "/runtime":
+        cfg = get_runtime_config()
+        if not cfg:
+            send_telegram_message("⚠️ Runtime config is empty or unavailable.", force=True)
+            return
+        msg = "*📊 Runtime Config:*\n"
+        for key, value in cfg.items():
+            msg += f"`{escape_markdown_v2(str(key))}`: `{escape_markdown_v2(str(value))}`\n"
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("Sent /runtime config values", level="INFO")
+
+    elif text == "/signalblocks":
+        send_telegram_message("*🧱 Signal Blocking:* Currently not active.", force=True, parse_mode="MarkdownV2")
+        log("Signal blocks check (placeholder)", level="INFO")
+
+    elif text == "/reasons":
+        stats = get_signal_failure_stats()
+        if not stats:
+            send_telegram_message("ℹ️ No signal failures recorded recently.", force=True)
+            return
+        msg = "*❌ Signal Failure Reasons:*\n"
+        for reason, count in stats.items():
+            msg += f"`{escape_markdown_v2(reason)}`: `{count}`\n"
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("Sent signal failure stats via /reasons", level="INFO")

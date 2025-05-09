@@ -16,9 +16,6 @@ UPDATE_FILE = "data/last_update.txt"
 
 
 def load_last_update_id():
-    """
-    Load the last processed update ID from file
-    """
     if os.path.exists(UPDATE_FILE):
         with open(UPDATE_FILE, "r") as f:
             return int(f.read().strip())
@@ -26,20 +23,14 @@ def load_last_update_id():
 
 
 def save_last_update_id(update_id: int):
-    """
-    Save the last processed update ID to file
-    """
     with open(UPDATE_FILE, "w") as f:
         f.write(str(update_id))
 
 
 def get_latest_update_id():
-    """
-    Fetch the latest update ID from Telegram API
-    """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=30)
         data = response.json()
         if data.get("ok") and data.get("result"):
             return data["result"][-1]["update_id"]
@@ -60,8 +51,12 @@ def process_telegram_commands(state: dict, handler_fn):
     global last_update_id
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_update_id}"
-            response = requests.get(url, timeout=10)
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            params = {
+                "offset": last_update_id,
+                "timeout": 30,  # Long polling: Telegram сервер ждёт до 30 сек
+            }
+            response = requests.get(url, params=params, timeout=35)  # HTTP таймаут немного выше
             r = response.json()
 
             if not r.get("ok"):

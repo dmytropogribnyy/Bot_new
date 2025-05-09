@@ -24,9 +24,11 @@ from common.config_loader import (
     set_bot_status,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
-from core.candle_analyzer import evaluate_entry_quality
 from core.exchange_init import exchange
+from core.failure_logger import log_failure
 from core.risk_utils import check_drawdown_protection
+from core.signal_feedback_loop import analyze_tp2_winrate, initialize_runtime_adaptive_config
+from core.strategy import last_trade_times, last_trade_times_lock, should_enter_trade
 from core.trade_engine import close_real_trade, enter_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
@@ -75,6 +77,7 @@ def get_trading_signal(symbol):
         ohlcv = fetch_ohlcv(symbol, timeframe="15m", limit=50)
         if not ohlcv or len(ohlcv) < 10:
             log(f"[Signal] Insufficient data for {symbol}: {len(ohlcv) if ohlcv else 0} candles", level="WARNING")
+            log_failure(symbol, ["insufficient_data"])
             return None
 
         # Convert to DataFrame
@@ -83,41 +86,47 @@ def get_trading_signal(symbol):
         df.set_index("timestamp", inplace=True)
         df = df.astype(float)
 
-        # Evaluate entry quality for buy and sell
-        buy_valid, buy_score = evaluate_entry_quality(df, direction="buy")
-        sell_valid, sell_score = evaluate_entry_quality(df, direction="sell")
+        # Process both buy and sell directions separately to preserve original logic
+        buy_signal, buy_failures = should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock)
+        sell_signal, sell_failures = should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock)
 
-        # Determine signal based on scores
-        if buy_valid and buy_score > sell_score:
-            # Calculate position size
-            balance = get_cached_balance()
-            from common.config_loader import get_adaptive_risk_percent
-            from core.trade_engine import calculate_position_size
+        # If neither direction is valid, log combined failures
+        if buy_signal is None and sell_signal is None:
+            all_failures = list(set(buy_failures + sell_failures))
+            log_failure(symbol, all_failures)
+            return None
 
-            risk_percent = get_adaptive_risk_percent(balance)
-            risk_amount = balance * risk_percent
-            entry_price = df["close"].iloc[-1]
-            stop_price = entry_price * (1 - 0.007)  # Assuming 0.7% stop loss
-            qty = calculate_position_size(entry_price, stop_price, risk_amount)
+        # Determine the best direction based on score comparison (preserving original logic)
+        if buy_signal and sell_signal:
+            buy_direction, buy_score, buy_reentry = buy_signal
+            sell_direction, sell_score, sell_reentry = sell_signal
 
-            return {"side": "buy", "qty": qty, "score": buy_score}
-        elif sell_valid and sell_score > buy_score:
-            # Calculate position size
-            balance = get_cached_balance()
-            from common.config_loader import get_adaptive_risk_percent
-            from core.trade_engine import calculate_position_size
+            if buy_score > sell_score:
+                direction, score, is_reentry = buy_signal
+            else:
+                direction, score, is_reentry = sell_signal
+        elif buy_signal:
+            direction, score, is_reentry = buy_signal
+        elif sell_signal:
+            direction, score, is_reentry = sell_signal
+        else:
+            return None
 
-            risk_percent = get_adaptive_risk_percent(balance)
-            risk_amount = balance * risk_percent
-            entry_price = df["close"].iloc[-1]
-            stop_price = entry_price * (1 + 0.007)  # Assuming 0.7% stop loss
-            qty = calculate_position_size(entry_price, stop_price, risk_amount)
+        # Calculate position size
+        balance = get_cached_balance()
+        from common.config_loader import get_adaptive_risk_percent
+        from core.trade_engine import calculate_position_size
 
-            return {"side": "sell", "qty": qty, "score": sell_score}
+        risk_percent = get_adaptive_risk_percent(balance)
+        risk_amount = balance * risk_percent
+        entry_price = df["close"].iloc[-1]
+        stop_price = entry_price * (1 - 0.007) if direction == "buy" else entry_price * (1 + 0.007)
+        qty = calculate_position_size(entry_price, stop_price, risk_amount)
 
-        return None
+        return {"side": direction, "qty": qty, "score": score}
     except Exception as e:
         log(f"[Signal] Error generating signal for {symbol}: {e}", level="ERROR")
+        log_failure(symbol, ["exception", str(e)])
         return None
 
 
@@ -384,6 +393,13 @@ if __name__ == "__main__":
     reset_state_flags()
     log("State flags reset at startup", level="INFO")
 
+    initialize_runtime_adaptive_config()
+    log("✅ Adaptive config initialized based on current balance", level="INFO")
+
+    # Add TP2 winrate analysis at startup
+    analyze_tp2_winrate()
+    log("✅ TP2 winrate analysis initialized", level="INFO")
+
     state = load_state()
     current_time = time.time()
     state["session_start_time"] = current_time
@@ -416,9 +432,11 @@ if __name__ == "__main__":
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
+    # Add TP2 winrate periodic analysis
+    scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
 
     scheduler.start()
-    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, and missed opportunities tracking", level="INFO")
+    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, and TP2 risk feedback", level="INFO")
 
     try:
         start_trading_loop()

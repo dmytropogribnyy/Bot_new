@@ -243,37 +243,50 @@ trade_stats = {
 
 # ========== Risk Management Functions ==========
 # Note: The enhanced version will be in risk_utils.py, but maintaining compatibility here
-def get_adaptive_risk_percent(balance, win_streak=0):
-    """Return appropriate risk percentage based on account size and recent performance.
-    Optimized for small deposits with a progressive scale.
+def get_deposit_tier():
+    from utils_core import get_cached_balance
 
-    Note: This is the legacy version. The enhanced version is in risk_utils.py.
-    """
-    log("Using legacy get_adaptive_risk_percent. Consider using the enhanced version in risk_utils.py", level="DEBUG")
+    balance = get_cached_balance()
+    if balance >= 1000:
+        return "1000+"
+    elif balance >= 500:
+        return "500–999"
+    elif balance >= 250:
+        return "250–499"
+    elif balance >= 120:
+        return "120–249"
+    else:
+        return "0–119"
 
-    # Import the enhanced version from risk_utils
-    try:
-        from core.risk_utils import get_adaptive_risk_percent as enhanced_risk_calc
 
-        return enhanced_risk_calc(balance, win_streak=win_streak)
-    except ImportError as e:
-        log(f"Could not import enhanced risk calculator: {e}", level="DEBUG")
-        # Fall back to legacy implementation
-        # Base risk based on account size
-        if balance < 100:
-            base_risk = 0.018
-        elif balance < 150:
-            base_risk = 0.022
-        elif balance < 300:
-            base_risk = 0.028
-        else:
-            base_risk = 0.038
+def get_adaptive_score_threshold(tier):
+    return {
+        "0–119": 2.0,
+        "120–249": 2.3,
+        "250–499": 2.6,
+        "500–999": 3.0,
+        "1000+": 3.2,
+    }.get(tier, 2.5)
 
-        # Adjust based on recent performance
-        win_streak_boost = min(win_streak * 0.002, 0.01)
 
-        # Cap final risk percentage
-        return min(base_risk + win_streak_boost, 0.05)
+def get_adaptive_pair_limit(tier):
+    return {
+        "0–119": 5,
+        "120–249": 7,
+        "250–499": 10,
+        "500–999": 15,
+        "1000+": 20,
+    }.get(tier, 7)
+
+
+def get_adaptive_risk_percent(tier):
+    return {
+        "0–119": 3.5,
+        "120–249": 2.8,
+        "250–499": 2.5,
+        "500–999": 2.2,
+        "1000+": 2.0,
+    }.get(tier, 2.5)
 
 
 def initialize_risk_percent():
@@ -304,27 +317,6 @@ def get_min_net_profit(balance):
         return 0.25
     else:
         return 0.4
-
-
-def get_adaptive_score_threshold(balance, market_volatility="normal"):
-    """Get minimum signal score threshold based on account size and market conditions."""
-    # Base thresholds by account size
-    if balance < 100:
-        base_threshold = 2.7
-    elif balance < 150:
-        base_threshold = 3.0
-    elif balance < 300:
-        base_threshold = 3.2
-    else:
-        base_threshold = 3.5
-
-    # Adjust for market volatility
-    if market_volatility == "high":
-        return max(base_threshold - 0.3, 2.3)
-    elif market_volatility == "low":
-        return base_threshold + 0.2
-
-    return base_threshold
 
 
 def get_priority_pairs(balance):

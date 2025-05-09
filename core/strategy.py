@@ -2,24 +2,51 @@
 import threading
 from datetime import datetime
 
+# Third-party imports
 import pandas as pd
 import pytz
 import ta
 
+# Configuration imports
 from common.config_loader import (
+    AUTO_TP_SL_ENABLED,
     BREAKOUT_DETECTION,
+    DRY_RUN,
     HIGH_ACTIVITY_HOURS,
+    LEVERAGE_MAP,
+    MIN_NOTIONAL_OPEN,
+    MIN_NOTIONAL_ORDER,
+    MIN_TRADE_SCORE,
     MOMENTUM_LOOKBACK,
+    PRIORITY_SMALL_BALANCE_PAIRS,
     SHORT_TERM_MODE,
+    SL_PERCENT,
+    TAKER_FEE_RATE,
+    TP2_SHARE,
     TRADING_HOURS_FILTER,
+    USE_TESTNET,
     VOLUME_SPIKE_THRESHOLD,
     WEEKEND_TRADING,
 )
+
+# Core module imports
+from core.order_utils import calculate_order_quantity
+from core.risk_utils import get_adaptive_risk_percent
+from core.score_evaluator import calculate_score
+from core.score_logger import log_score_history
+from core.tp_utils import calculate_tp_levels
 from core.trade_engine import get_position_size, trade_manager
 from core.volatility_controller import get_volatility_filters
+
+# Utility imports
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
-from utils_core import get_cached_balance
+from utils_core import get_cached_balance, get_min_net_profit, get_runtime_config
+from utils_logging import log
+
+# Module-level variables
+last_trade_times = {}
+last_trade_times_lock = threading.Lock()
 
 last_trade_times = {}
 last_trade_times_lock = threading.Lock()
@@ -281,31 +308,25 @@ def passes_filters(df, symbol):
 
 
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
-    from common.config_loader import (
-        AUTO_TP_SL_ENABLED,
-        DRY_RUN,
-        LEVERAGE_MAP,
-        MIN_NOTIONAL_OPEN,
-        MIN_NOTIONAL_ORDER,
-        MIN_TRADE_SCORE,
-        PRIORITY_SMALL_BALANCE_PAIRS,
-        SL_PERCENT,
-        TAKER_FEE_RATE,
-        TP2_SHARE,
-        TRADING_HOURS_FILTER,
-        USE_TESTNET,
-        get_min_net_profit,
-    )
-    from core.order_utils import calculate_order_quantity
-    from core.risk_utils import get_adaptive_risk_percent
-    from core.score_evaluator import calculate_score
-    from core.score_logger import log_score_history
-    from core.tp_utils import calculate_tp_levels
-    from utils_logging import log
+    """
+    Evaluate trading signal and determine whether to enter a trade.
+
+    Args:
+        symbol: Trading pair symbol
+        df: DataFrame with OHLCV data
+        exchange: Exchange client instance
+        last_trade_times: Dict with last trade times by symbol
+        last_trade_times_lock: Lock for thread-safety
+
+    Returns:
+        tuple: (Signal data or None, list of failure reasons)
+    """
+    failure_reasons = []  # Initialize failure reasons list
 
     if df is None:
         log(f"Skipping {symbol} due to data fetch error", level="WARNING")
-        return None
+        failure_reasons.append("data_fetch_error")
+        return None, failure_reasons
 
     # Check if we're in optimal trading hours
     if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
@@ -316,7 +337,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             log(f"{symbol} Priority pair allowed during non-optimal hours", level="DEBUG")
         else:
             log(f"{symbol} ⏰ Skipping due to non-optimal trading hours", level="DEBUG")
-            return None
+            failure_reasons.append("non_optimal_hours")
+            return None, failure_reasons
 
     utc_now = datetime.utcnow()
     balance = get_cached_balance()
@@ -333,7 +355,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             f"⚠️ Skipping {symbol} — no available margin (total: {total_margin_balance:.2f}, positions: {position_initial_margin:.2f}, orders: {open_order_initial_margin:.2f})",
             level="ERROR",
         )
-        return None
+        failure_reasons.append("insufficient_margin")
+        return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 1: Cooldown check", level="DEBUG")
     with last_trade_times_lock:
@@ -344,22 +367,48 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         if elapsed < cooldown:
             if DRY_RUN:
                 log(f"{symbol} ⏳ Ignored due to cooldown")
-            return None
+            failure_reasons.append("cooldown_active")
+            return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 2: Filter check", level="DEBUG")
     if not passes_filters(df, symbol):
-        return None
+        failure_reasons.append("filter_reject")
+        return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 3: Scoring check", level="DEBUG")
     trade_count, winrate = get_trade_stats()
     score = calculate_score(df, symbol, trade_count, winrate)
-    min_required = MIN_TRADE_SCORE
-    if MIN_TRADE_SCORE is not None and score < MIN_TRADE_SCORE:
+
+    # Apply HTF confidence adjustment
+    htf_confidence = get_runtime_config().get("HTF_CONFIDENCE", 0.5)
+    original_score = score
+    score *= 1 + (htf_confidence - 0.5) * 0.4  # +/-20% impact based on HTF confidence
+    score = round(score, 2)
+    log(f"{symbol} ⚙️ HTF confidence applied: {htf_confidence:.2f} → score adjustment: {original_score:.2f} to {score:.2f}", level="DEBUG")
+
+    from open_interest_tracker import fetch_open_interest
+    from utils_core import get_cached_symbol_open_interest, update_cached_symbol_open_interest
+
+    previous_oi = get_cached_symbol_open_interest(symbol)
+    current_oi = fetch_open_interest(symbol)
+
+    if previous_oi > 0 and current_oi > previous_oi * 1.2:
+        score += 0.2
+        log(f"[Signal Boost] {symbol} OI +20% → score +0.2", level="INFO")
+
+    update_cached_symbol_open_interest(symbol, current_oi)
+
+    # Use dynamic threshold from runtime_config
+    min_required = get_runtime_config().get("score_threshold", MIN_TRADE_SCORE)
+    log(f"{symbol} Using score threshold from runtime config: {min_required}", level="DEBUG")
+
+    if MIN_TRADE_SCORE is not None and score < min_required:
         log(
-            f"{symbol} ⛔️ Rejected: score {score:.2f} < MIN_TRADE_SCORE {MIN_TRADE_SCORE}",
+            f"{symbol} ⛔️ Rejected: score {score:.2f} < score threshold {min_required}",
             level="DEBUG",
         )
-        return None
+        failure_reasons.append("low_score")
+        return None, failure_reasons
 
     # Adjust score requirement during optimal trading hours
     if SHORT_TERM_MODE and is_optimal_trading_hour():
@@ -372,13 +421,15 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     if score < min_required:
         if DRY_RUN:
             log(f"{symbol} ❌ No entry: insufficient score\n" f"Final Score: {score:.2f} / (Required: {min_required:.4f})")
-        return None
+        failure_reasons.append("insufficient_score")
+        return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 4: Direction determination", level="DEBUG")
     # Ensure MACD values are not None
     if "macd" not in df.columns or "macd_signal" not in df.columns:
         log(f"{symbol} ⚠️ MACD columns missing from DataFrame", level="ERROR")
-        return None
+        failure_reasons.append("missing_indicators")
+        return None, failure_reasons
 
     macd_value = df["macd"].iloc[-1] if not pd.isna(df["macd"].iloc[-1]) else 0
     macd_signal_value = df["macd_signal"].iloc[-1] if not pd.isna(df["macd_signal"].iloc[-1]) else 0
@@ -417,6 +468,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     # Apply direction confidence to risk_percent for stronger signals
     base_risk_percent = get_adaptive_risk_percent(balance)
+    risk_multiplier = get_runtime_config().get("risk_multiplier", 1.0)
+    base_risk_percent *= risk_multiplier
+    log(f"{symbol} Applied risk multiplier {risk_multiplier} from TP2 winrate analysis", level="DEBUG")
+
     risk_percent = min(base_risk_percent * direction_confidence, base_risk_percent * 1.4)  # Cap at 40% increase
 
     try:
@@ -426,7 +481,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             qty = MIN_NOTIONAL_OPEN / entry_price
     except Exception as e:
         log(f"{symbol} ⚠️ Error calculating quantity: {e}", level="WARNING")
-        return None
+        failure_reasons.append("quantity_calculation_error")
+        return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 5: Notional check", level="DEBUG")
     leverage_key = symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")
@@ -435,14 +491,16 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     # Verify all values before multiplication
     if None in (balance, leverage):
         log(f"{symbol} ⚠️ Invalid values: balance={balance}, leverage={leverage}", level="ERROR")
-        return None
+        failure_reasons.append("invalid_values")
+        return None, failure_reasons
 
     max_notional = balance * leverage
 
     # Verify qty before multiplication
     if qty is None:
         log(f"{symbol} ⚠️ Invalid quantity: None", level="ERROR")
-        return None
+        failure_reasons.append("invalid_quantity")
+        return None, failure_reasons
 
     notional = qty * entry_price
 
@@ -465,7 +523,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     if tp1_price is None or sl_price is None:
         log(f"⚠️ Skipping {symbol} — invalid TP/SL values: tp1={tp1_price}, sl={sl_price}", level="ERROR")
-        return None
+        failure_reasons.append("invalid_tp_sl")
+        return None, failure_reasons
 
     if notional < MIN_NOTIONAL_OPEN:
         qty = MIN_NOTIONAL_OPEN / entry_price
@@ -479,7 +538,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
                 f"{symbol} ⛔️ Cannot meet minimum notional {MIN_NOTIONAL_OPEN:.2f} without exceeding max_notional {max_notional:.2f}",
                 level="WARNING",
             )
-            return None
+            failure_reasons.append("notional_conflict")
+            return None, failure_reasons
 
     # Handle TP2 calculations only if tp2_price is not None
     if tp2_price is not None:
@@ -499,7 +559,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
                     f"{symbol} ⛔️ Cannot meet minimum TP2 notional {MIN_NOTIONAL_ORDER:.2f} without exceeding max_notional {max_notional:.2f}",
                     level="WARNING",
                 )
-                return None
+                failure_reasons.append("tp2_notional_conflict")
+                return None, failure_reasons
     else:
         # Handle the case when tp2_price is None (for weak signals)
         log(f"{symbol} ℹ️ No TP2 price set (likely due to weak signal), using TP1 only", level="DEBUG")
@@ -508,7 +569,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     log(f"{symbol} 🔎 Step 6: TP1 share check", level="DEBUG")
     if qty_tp1_share == 0:
         log(f"{symbol} ⛔️ Rejected: qty_tp1_share is 0", level="DEBUG")
-        return None
+        failure_reasons.append("zero_tp1_share")
+        return None, failure_reasons
 
     qty_tp1 = qty * qty_tp1_share
     gross_profit_tp1 = qty_tp1 * abs(tp1_price - entry_price)
@@ -526,7 +588,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             f"⚠️ Skipping {symbol} — expected PnL ${net_profit_tp1:.2f} < min ${min_target_pnl:.2f}",
             level="DEBUG",
         )
-        return None
+        failure_reasons.append("insufficient_profit")
+        return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 8: Smart re-entry logic", level="DEBUG")
     with last_trade_times_lock:
@@ -541,7 +604,8 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         if (elapsed < cooldown or closed_elapsed < cooldown) and position_size == 0:
             if score <= 4:
                 log(f"Skipping {symbol}: cooldown active, score {score:.2f} <= 4", level="DEBUG")
-                return None
+                failure_reasons.append("cooldown_score_too_low")
+                return None, failure_reasons
 
             # Use safe MACD check
             direction = "BUY" if macd_value > macd_signal_value else "SELL"
@@ -557,7 +621,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             else:
                 msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{score:.2f}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
-            return ("buy" if direction == "BUY" else "sell", score, True)
+            return ("buy" if direction == "BUY" else "sell", score, True), []
 
         if last_score and score - last_score >= 1.5 and position_size == 0:
             # Use safe MACD check
@@ -574,7 +638,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             else:
                 msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{score:.2f}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
-            return ("buy" if direction == "BUY" else "sell", score, True)
+            return ("buy" if direction == "BUY" else "sell", score, True), []
 
     log(f"{symbol} 🔎 Step 9: Final return", level="DEBUG")
     with last_trade_times_lock:
@@ -594,4 +658,4 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{score:.2f}-of-5"
         send_telegram_message(msg, force=True, parse_mode="")
 
-    return ("buy" if direction == "BUY" else "sell", score, False)
+    return ("buy" if direction == "BUY" else "sell", score, False), []

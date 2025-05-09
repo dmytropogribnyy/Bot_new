@@ -17,11 +17,13 @@ from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
 from core.trade_engine import close_real_trade, trade_manager
 from main import stop_event
+from missed_tracker import flush_best_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
+from symbol_activity_tracker import get_most_active_symbols
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance, load_state, save_state
+from utils_core import get_cached_balance, get_runtime_config, load_state, save_state
 from utils_logging import log
 
 command_lock = Lock()
@@ -507,6 +509,22 @@ def handle_shutdown(message, state):
         log(f"Shutdown error: {e}", level="ERROR")
 
 
+def handle_runtime_command():
+    try:
+        config = get_runtime_config()
+        if not config:
+            send_telegram_message("⚠️ Runtime config is empty or not found.", force=True)
+            return
+
+        msg = "⚙️ *Current Runtime Config:*\n"
+        for key, value in config.items():
+            msg += f"`{key}`: *{value}*\n"
+
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+    except Exception as e:
+        send_telegram_message(f"❌ Error fetching runtime config: {e}", force=True)
+
+
 def handle_telegram_command(message, state):
     """
     Main Telegram command handler with thread safety and enhanced reliability
@@ -535,6 +553,9 @@ def handle_telegram_command(message, state):
             "/pairstoday",
             "/debuglog",
             "/log",
+            "/runtime",
+            "/signalblocks",
+            "/reasons",
         ] or text.startswith("/close_dry"):
             handle_ip_and_misc_commands(text, _initiate_stop)
             return
@@ -551,7 +572,7 @@ def handle_telegram_command(message, state):
                 "❌ /cancel_reboot - Cancel router reboot mode\n"
                 "⛔ /cancel_stop - Cancel stop process if pending\n"
                 "🔒 /close_dry - Close a DRY position (e.g., /close_dry BTC/USDC)\n"
-                "🧾 /debuglog - Show last 50 logs\n"
+                "🧾 /debuglog - Show last 50 logs (DRY_RUN only)\n"
                 "📡 /forceipcheck - Force immediate IP check\n"
                 "🎯 /goals - Show progress towards daily/weekly profit goals\n"
                 "📊 /heatmap - Generate 7-day score heatmap\n"
@@ -570,8 +591,14 @@ def handle_telegram_command(message, state):
                 "🚨 /panic - Force close all trades (confirmation)\n"
                 "🔍 /status - Show bot status\n"
                 "📊 /summary - Show performance summary\n"
-                "⚙️ /filters - Adjust pair filters (e.g., /filters 0.19 16000)"
+                "⚙️ /filters - Adjust pair filters (e.g., /filters 0.19 16000)\n"
+                "🔧 /runtime - Show current runtime config\n"
+                "🧱 /signalblocks - Show blocked signals (if any)\n"
+                "❌ /reasons - Show signal rejection reasons\n"
+                "📈 /pairstoday - Show today's selected pairs"
+                "🧠 /runtime - Show current runtime config (risk, score, etc)"
             )
+
             send_telegram_message(help_msg, force=True, parse_mode="")
             log("Sent help message.", level="INFO")
         elif text == "/summary":
@@ -677,6 +704,24 @@ def handle_telegram_command(message, state):
             except Exception as e:
                 send_telegram_message(f"❌ Failed to fetch balance: {e}", force=True)
                 log(f"Balance error: {e}", level="ERROR")
+        elif text == "/hot":
+            top = get_most_active_symbols(top_n=5)
+            msg = "*Top 5 Active Symbols (Last Hour):*\n" + "\n".join(f"- {s}" for s in top)
+            send_telegram_message(msg)
+
+        elif text == "/missedlog":
+            flush_best_missed_opportunities(top_n=5)
+
+        elif text == "/signalconfig":
+            config = get_runtime_config()
+
+            msg = "*Current Adaptive Signal Config:*\n" + "\n".join(f"`{k}` = `{v}`" for k, v in config.items())
+            send_telegram_message(msg)
+
+        elif text == "/runtime":
+            handle_runtime_command()
+            log("Handled /runtime command.", level="INFO")
+
         elif text == "/restart":
             state["stopping"] = True
             state["restart_pending"] = True

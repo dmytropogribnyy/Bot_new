@@ -1,6 +1,10 @@
-BinanceBot — Master Plan for Small Deposit Optimization (May 2025)
+✅ BinanceBot — Master Plan for Small Deposit Optimization (May 2025)
 📋 Project Structure & Architecture
 BINANCEBOT/
+
+bash
+Copy
+Edit
 ├── backup_before_refactor/ # Бэкапы перед оптимизациями
 ├── common/ # Централизованные конфиги
 │ └── config_loader.py
@@ -14,12 +18,15 @@ BINANCEBOT/
 │ ├── entry_logger.py
 │ ├── exchange_init.py
 │ ├── notifier.py
+│ ├── open_interest_tracker.py # Усиление сигнала по open interest
 │ ├── order_utils.py
 │ ├── position_manager.py
 │ ├── risk_utils.py
 │ ├── score_evaluator.py
 │ ├── score_logger.py
+│ ├── signal_feedback_loop.py # Адаптация стратегии по результатам
 │ ├── strategy.py
+│ ├── symbol_activity_tracker.py # Трекинг активности символов
 │ ├── symbol_processor.py
 │ ├── tp_utils.py
 │ ├── trade_engine.py
@@ -42,220 +49,262 @@ BINANCEBOT/
 │ ├── Mini_Hints.md
 │ ├── Syntax_and_Markdown_Guide.md
 │ └── PracticalGuideStrategyAndCode.md
-├── logs/ # Логи работы
+├── logs/
 │ └── main.log
-├── telegram/ # Модули для Telegram-бота
+├── telegram/
 │ ├── telegram_commands.py
 │ ├── telegram_handler.py
 │ ├── telegram_ip_commands.py
 │ └── telegram_utils.py
-├── .env, config.py, README.md # Корневые конфиги и описание
-├── htf_optimizer.py # Оптимизация по старшему тренду
-├── ip_monitor.py # Мониторинг внешнего IP
-├── main.py # Точка входа
-├── pair_selector.py # Выбор торговых пар
-├── score_heatmap.py # Генерация теплокарты сигналов
-├── stats.py # Генерация отчётов
-├── tp_logger.py # Логирование сделок
-├── tp_optimizer.py # Оптимизация TP/SL
-├── tp_optimizer_ml.py # ML-поддержка TP оптимизации
-├── utils_core.py # Кэширование и утилиты
-└── utils_logging.py # Логирование и уведомления
+├── .env, config.py, README.md
+├── htf_optimizer.py
+├── ip_monitor.py
+├── main.py
+├── missed_tracker.py
+├── pair_selector.py
+── open_interest_tracker.py # Усиление сигнала по open interest
+── symbol_activity_tracker.py # Трекинг активности символов
 
-# Comprehensive Analysis of BinanceBot Implementation
+├── score_heatmap.py
+├── stats.py
+├── tp_logger.py
+├── tp_optimizer.py
+├── tp_optimizer_ml.py
+├── utils_core.py
+└── utils_logging.py
+📊 Comprehensive Implementation Overview
+✅ Overall Assessment
+BinanceBot — надёжный, адаптивный и безопасный бот, оптимизированный под фьючерсную торговлю с малыми депозитами. Архитектура модульная, гибкая, готова к масштабированию.
 
-Overall Assessment
-The BinanceBot project is a highly sophisticated, well-structured automated trading system specifically optimized for trading cryptocurrency futures on Binance with small deposits (around 120 USDC). After thorough examination of all provided source files, I can confirm that the system is exceptionally well-implemented with comprehensive functionality addressing all major aspects needed for effective automated trading.
-Implementation Quality
-The codebase demonstrates professional-level software development practices:
+🧩 Implementation Quality
+Модульная архитектура, изоляция DRY_RUN
 
-Modular architecture with clear separation of concerns
-Comprehensive documentation throughout the codebase
-Robust error handling for network issues, API failures, and unexpected conditions
-Thread safety with proper lock implementation for shared resources
-Extensive logging with multiple verbosity levels
-Configuration centralization through config_loader.py
-State persistence between bot restarts
-Adaptive parameters that adjust based on market conditions and account size
+Централизованный конфиг, runtime_config
 
-Key Strengths
-Small Deposit Optimization
-The system excels at optimizing trading for small deposits:
+Безопасная остановка и восстановление
 
-Calibrated risk parameters for accounts under 150 USDC
-Priority trading pairs focused on low-price, high-volatility assets
-Commission impact tracking critical for small accounts where fees significantly impact profits
-Micro-profit optimization to capture small gains efficiently
-Position size limits preventing overleveraging on small balances
+Telegram-интерфейс с расширенными командами
 
-Advanced Risk Management
-The risk control mechanisms are sophisticated and layered:
+Runtime адаптация параметров на основе TP/HTF/Score/Volatility
 
-Adaptive risk percentage based on account size, signal quality, and performance history
-Drawdown protection with automatic risk reduction at specified thresholds
-Dynamic position limits that scale with account balance
-Profit-based circuit breaker that adjusts risk based on recent performance
-Cooling periods for underperforming trading pairs
+Thread-safe логика, защита от ошибок и флагов
 
-Market Adaptability
-The system dynamically adjusts to changing market conditions:
+💡 Key Strengths
+✅ Small Deposit Optimization
+Tier-based адаптация депозита (0–119, 120–249, 250–499…)
 
-Market regime detection (trend, flat, breakout) with parameter adjustments
-Performance-based adaptivity for TP/SL levels
-Volatility-based filtering with dynamic thresholds
-Aggressiveness score that evolves based on trading performance
-Smart switching between positions for superior opportunities
+Dynamic risk/score thresholds
 
-Effective Integration
-The project incorporates several integrated systems working seamlessly together:
+Smart Switching и микропрофит
 
-Telegram control interface with comprehensive command set
-IP monitoring with automated handling of address changes
-Regular performance reporting (daily, weekly, monthly, quarterly)
-Score heatmap visualization for strategy performance analysis
-Progress tracking toward daily and weekly profit goals
+Автоматический выбор активных пар
 
-Potential Improvements
-While the implementation is excellent overall, I've identified a few areas for potential enhancement:
+Поддержка повторного входа и soft exit
 
-1. Configuration Management
-   The system directly modifies the config.py file for parameter updates, which could be problematic in certain environments. Consider:
+✅ Advanced Risk Management
+Агрессивность на основе TP winrate
 
-Using a database for configuration storage instead of direct file modifications
-Implementing a configuration versioning system for better tracking of changes
-Moving toward a more isolated configuration approach that doesn't require file modifications
+Drawdown защита
 
-2. Error Handling Standardization
-   While error handling is generally good, there's some inconsistency in approach across different modules:
+Переменный риск по TP2 winrate
 
-Standardize error handling patterns across the codebase
-Implement a centralized error handling system for more consistent recovery mechanisms
-Add more granular error classification for different types of failures
+Smart scaling и notional-проверка
 
-3. Additional Validation Layers
-   Add more validation for critical operations:
+✅ Market Adaptability
+HTF фильтр и его Confidence
 
-Pre-trade validation to ensure all conditions are met before execution
-Post-trade verification to confirm orders were executed as expected
-Regular balance reconciliation to detect any discrepancies
+Автоадаптация wick / volatility / relax
 
-4. Machine Learning Enhancements
-   The machine learning components (tp_optimizer_ml.py) could be expanded:
+Momentum, MACD, RSI, Bollinger
 
-Incorporate more features for training (market conditions, volatility measures)
-Implement more sophisticated ML models beyond basic statistical adjustments
-Add periodic model evaluation to assess predictive performance
+Open Interest как триггер усиления сигнала
 
-5. Backtest Integration
-   Implement a more robust backtesting framework:
+Волатильностные фильтры и ротация пар
 
-Historical data simulation capabilities for strategy validation
-Parameter optimization through backtesting
-Comparison of trading strategies across different market conditions
+✅ Effective Integration
+Полный Telegram-бот: команды, отчёты, логи
 
-Consistency Check
-I've thoroughly reviewed the codebase for conflicts, contradictions, and incorrect values:
+Auto-ротация пар, логика активности
 
-Parameter consistency: The risk parameters, TP/SL values, and timeframe settings are consistent and reasonable throughout the codebase.
-Thread safety: The locking mechanisms are implemented correctly to prevent race conditions.
-API handling: The Binance API interaction is well-managed with appropriate retry logic and error handling.
-State management: The bot state is properly persisted and managed through transitions.
-Default values: The default parameters are sensible and conservative for small accounts.
+Daily/Weekly/Monthly/Yearly отчёты
 
-No significant errors, conflicts, or contradictions were identified that would impair the functionality of the system.
-Recommendations for Optimal Production Use
+Полная логика missed opportunities и Smart Reentry
 
-Start with ultra-conservative settings and gradually increase risk as performance proves consistent
-Monitor commission impact carefully, especially on smaller accounts where fees significantly affect profitability
-Begin with priority pairs only for accounts under 150 USDC before expanding to more trading pairs
-Run in DRY_RUN mode for at least a week to validate performance before committing real funds
-Implement additional monitoring external to the bot to verify its proper operation
-Consider implementing a scheduled restart mechanism to ensure fresh state regularly
-Develop a disaster recovery plan in case of exchange connectivity issues or unexpected errors
+Heatmap по score и runtime config адаптация
 
-Conclusion
-The BinanceBot implementation represents a highly sophisticated, thoroughly engineered automated trading system optimized specifically for small deposit trading on Binance. The attention to detail regarding risk management, adaptability to market conditions, and optimization for small account sizes demonstrates exceptional thoughtfulness in the design.
-With proper configuration and monitoring, this system has the potential to achieve consistent, positive results within the constraints of the implemented trading strategy. The core functionality appears complete and ready for deployment, with no critical issues identified that would prevent successful operation.
+✅ Current Status Summary
+Текущая версия: v1.6.5-opt-stable
+Режим: REAL_RUN
+Ошибки: отсутствуют
+Стабильность: подтверждена
+Адаптация: активна и проверена
 
-# BinanceBot — Master Plan for Small Deposit Optimization (May 2025)
+📌 Roadmap v1.7 (актуально на май 2025)
+🔧 В процессе:
+Auto-адаптация HTF Confidence (score усиление)
 
-BinanceBot — Master Plan
+Telegram логика Soft Exit
 
-1. Статус проекта
-   ✅ Оптимизация по плану Optimize Claude полностью завершена.
-   ✅ Все улучшения внедрены, протестированы и интегрированы в основную ветку проекта.
-   ✅ Бот работает стабильно в режиме REAL_RUN с минимальной ручной корректировкой.
+Auto-Scaling позиции через TP2 winrate
 
-2. Реализованные ключевые задачи
-   📈 Умная адаптация TP1/TP2 через tp_optimizer.py и tp_optimizer_ml.py.
+Parameter History (json logging всех изменений)
 
-📊 Автоанализ HTF-фильтра и динамическое включение/выключение USE_HTF_CONFIRMATION.
+Signal Failure Reason Logging
 
-🔁 Полная защита логов и файлов через utils_logging.py и filelock.
+Расширение Telegram: /runtime, /signalblocks, /reasons
 
-🛠 Безопасное логирование сделок: DRY_RUN сделки не пишутся в реальные файлы.
+Ротация по активности (rebalancing сигналов)
 
-🚀 Расширенные Telegram-команды: добавлены /goals, /risk, /filters, /router_reboot, /cancel_reboot, /ipstatus, /forceipcheck.
+WebSocket (aggTrade, markPrice, latency оптимизация)
 
-🛡 IP-мониторинг и защита при смене IP (ip_monitor.py и команды управления).
+PnL графики и визуализация динамики winrate/score
 
-💾 Кэширование баланса и позиций для снижения нагрузки на API.
+🔎 Currently Active Core Modules
+main.py — entrypoint
 
-📊 Расширенная отчётность: ежедневные, недельные, месячные, квартальные и годовые отчёты.
+strategy.py — signal detection
 
-🎯 Улучшенные механизмы агрессивности и риск-менеджмента.
+trade_engine.py — trade execution
 
-3. Текущие основные компоненты проекта
-   main.py — ядро запуска, обработка состояния и команд.
+tp_optimizer.py, tp_optimizer_ml.py — TP tuning
 
-config_loader.py — конфигурация проекта.
+htf_optimizer.py, signal_feedback_loop.py — adaptive filters
 
-trade_engine.py — обработка сделок и логика управления позициями.
+pair_selector.py — symbol rotation
 
-strategy.py — стратегия входа на основе score-системы.
+telegram_commands.py, telegram_utils.py — interface
 
-tp_logger.py — логирование результатов сделок.
+missed_tracker.py, symbol_activity_tracker.py — signal tracking
 
-tp_optimizer.py, tp_optimizer_ml.py — автооптимизация TP1/TP2.
+open_interest_tracker.py — volume confirmation
 
-htf_optimizer.py — оптимизация по старшему тренду (HTF).
+score_evaluator.py — custom scoring metrics
 
-telegram\_\* модули — полная поддержка команд, отчётов, уведомлений.
+🔧 Current Version: v1.6.5-opt-stable
+Mode: REAL_RUN
 
-utils_core.py, utils_logging.py — кэш, защита, логи, утилиты.
+Errors: None
 
-4. Текущий статус кода
-   Версия проекта: v1.6.5-opt-stable
+Stability: Confirmed
 
-Режим: Реальный запуск (REAL_RUN)
+Adaptation: Active and correct
 
-Ошибки/замечания: нет.
+# BinanceBot Roadmap Assessment - May 2025
 
-Уровень готовности: 100%
+Based on my analysis of your codebase and the implementations we've reviewed, your roadmap status is accurate with one potential clarification:
+Verification of Current Status
+Key Completed Features
+Your ✅ completed features align with the code we've analyzed:
 
-5. Следующие шаги
-   📌 Поддержка WebSocket в рамках следующей стадии (Roadmap v1.7).
+HTF Confidence → Score Impact: Properly implemented in signal_feedback_loop.py and effectively applied in strategy.py
+Auto-Scaling by TP2 Winrate: Correctly implemented across the system with appropriate centralization in runtime_config
+Parameter History Logging: Successfully integrated into the centralized update_runtime_config() function
 
-📌 Мягкие выходы (Soft Exit) и авто-масштабирование позиций.
+Partially Implemented Features
+Your ⏳ in-progress features are accurately categorized:
 
-📌 Интеграция Open Interest как дополнительного фильтра.
+Telegram Soft Exit Notifications: I would need to review the full tp_utils.py implementation to verify whether notifications are actually missing. If the function adjust_microprofit_exit() doesn't include a call to send_telegram_message(), then your assessment is correct.
+Signal Failure Reasoning: The current implementation logs rejections but lacks a structured format for categorizing rejection reasons, which could be valuable for analysis.
+Symbol Rebalancing: While activity tracking is implemented, the prioritization mechanism isn't yet connected to this data.
 
-✅ Реализованный функционал (май 2025)
-Функция Статус
-Полная Telegram-поддержка (команды, отчёты) ✅
-Адаптивный выбор торговых пар ✅
-Интеллектуальная система оценки сигналов (score) ✅
-Поддержка микроприбыли и мульти-TP ✅
-Безопасное закрытие сделок (Safe Close) ✅
-Адаптация TP/SL через TP Optimizer ✅
-Машинное обучение для TP (TP Optimizer ML) ✅
-Автоопределение агрессивности торговли ✅
-Поддержка Smart Switching между позициями ✅
-Кэширование баланса и позиций ✅
-Мониторинг и защита при смене IP-адреса ✅
-Автоматическая ротация пар по волатильности ✅
-Поддержка отчётов: день, неделя, месяц, 3 мес., год ✅
-Механизм soft-exit и трейлинг-стопов ✅
-Полная защита файлов и логов через filelock ✅
-Автоматическое восстановление при сбоях ✅
-Защита от неправильных состояний через state.json ✅
+Recommendations for Implementation Priority
+Based on your roadmap and current implementation status, I recommend the following prioritization:
+
+Complete Telegram Soft Exit Notifications: This appears to be a simple enhancement that would provide immediate transparency for micro-profit exits.
+Implement Basic /runtime Command: Creating a Telegram command to view current runtime parameters would provide significant operational visibility with minimal development effort.
+Connect Symbol Activity Data to Pair Selection: Since both components exist (activity tracking and pair selection), connecting them would provide immediate benefits with moderate effort.
+Structured Signal Failure Reasons: Implementing a standardized format for rejection reasons would enable better analysis and future automation.
+
+Your implementation approach demonstrates strong architectural principles with appropriate separation of concerns, effective use of configuration, and good modularity that will facilitate completing the remaining roadmap items.
+
+# 📌 Roadmap v1.7 (актуально на май 2025)
+
+🔧 В процессе
+
+| Функция                                                    | Статус                                                                                      |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Auto-адаптация HTF Confidence → Score Impact               | ✅ Реализовано в `signal_feedback_loop.py`, используется в `strategy.py`                    |
+| Telegram-уведомления при Soft Exit (микро-прибыль)         | ✅ Реализовано, сообщение отправляется при закрытии с микроприбылью                         |
+| Auto-Scaling позиции на основе TP2 winrate и агрессивности | ✅ Внедрено: `signal_feedback_loop.py` + `runtime_config.json` + `strategy.py`              |
+| Parameter History (json-логирование всех изменений)        | ✅ Централизовано через `update_runtime_config()`                                           |
+| Signal Failure Reason Logging                              | ✅ Полностью реализовано: `should_enter_trade` + `signal_failures.json` + `fail_stats.json` |
+| Telegram-команды: /runtime, /signalblocks, /reasons        | ⏳ Команды ещё не реализованы                                                               |
+| Rebalancing символов по активности и missed                | ⏳ Логика реализована (логгеры), но не завершена интеграция в `pair_selector.py`            |
+| WebSocket-интеграция (aggTrade, markPrice, bookTicker)     | ❌ Не начата                                                                                |
+| Графики: PnL timeline, winrate динамика, сигнал heatmap    | ⏳ `score_heatmap.py` готов. Остальное — в планах                                           |
+
+🧪 Запланировано:
+
+-   Расширение `signal_feedback_loop.py`:
+
+    -   автоадаптация wick_sensitivity, HTF, relax-фильтра
+    -   runtime-фильтрация слабых символов по статистике
+    -   auto-blocking слабых символов (по отказам / winrate)
+
+-   Расширение ML-моделей:
+
+    -   классификация volatility regime
+    -   TP/Signal classifier
+
+---
+
+## 📌 TODO / Roadmap v1.7 (обновлено: май 2025)
+
+🔧 В процессе:
+
+-   ✅ Auto-адаптация HTF Confidence → Score Impact
+-   ✅ Auto-Scaling позиции на основе TP2 winrate и агрессивности
+-   ✅ Parameter History Logging (json)
+-   ✅ Signal Failure Reason Logging (structured)
+-   ✅ Telegram-уведомления при Soft Exit
+-   ⏳ Telegram-команды: /runtime, /signalblocks, /reasons
+-   ⏳ Rebalancing символов по активности и missed opportunities
+-   ⏳ WebSocket-интеграция (aggTrade, markPrice, bookTicker)
+-   ⏳ PnL графики и визуализация: timeline, winrate динамика, сигнал heatmap
+
+## 📊 Статус (на май 2025)
+
+✅ Внедрено:
+
+-   `signal_feedback_loop.py` работает: адаптация score_threshold, momentum_min, risk_multiplier, TP2-based scaling
+-   HTF Confidence → Score Impact — в стратегии
+-   Soft Exit + Smart Switching
+-   Symbol Tracker + Missed Opportunities
+-   Adaptive Score / Risk / Aggressiveness
+-   TP1/TP2 автооптимизация (вкл. ML)
+-   Telegram-интерфейс, MarkdownV2, защита
+-   Adaptive Re-entry + Cooldown override
+-   DRY_RUN логика изолирована
+-   Auto-ротация по волатильности и активности
+-   Отчёты: день / неделя / месяц / квартал / год
+-   Filelock-защита + надёжное логирование
+-   Parameter History Logging
+
+⏳ В процессе:
+
+1. Rebalancing по активности и missed:
+
+    - `symbol_activity_tracker.py`, `missed_tracker.py` — готовы ✅
+    - Интеграция в `pair_selector.py` — частично (отказные пары обрабатываются, но приоритет missed/active ещё не учитывается полностью)
+
+2. Signal Feedback: автоадаптация wick_sensitivity, relax_factor, HTF включение/отключение — не реализовано
+
+3. Runtime фильтрация слабых символов:
+
+    - пока нет winrate анализа по символам
+    - нет suppress_list / блокировок в runtime_config
+
+4. Signal Blocker:
+
+    - отсутствует механизм `block_until`, временной блокировки
+    - нет auto-blacklist слабых символов на основе отказов
+
+🧪 Запланировано:
+
+-   Завершить `rebalancing` по активности
+-   Расширить `signal_feedback_loop.py` с поддержкой wick, HTF toggle, relax
+-   ML-классификация volatility regime, signal classifier
+-   Визуализация: графики PnL, динамика winrate, heatmap сигналов
+-   Signal Blocker + runtime suppression logic
+
+---

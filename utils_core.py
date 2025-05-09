@@ -2,6 +2,7 @@ import json
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 from threading import Lock
 
 from common.config_loader import LEVERAGE_MAP, SYMBOLS_ACTIVE
@@ -23,6 +24,8 @@ api_cache = {
 }
 cache_lock = Lock()
 state_lock = Lock()
+
+RUNTIME_CONFIG_FILE = Path("data/runtime_config.json")
 
 
 def ensure_data_directory():
@@ -236,6 +239,45 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
                 return None
 
 
+def get_runtime_config() -> dict:
+    if RUNTIME_CONFIG_FILE.exists():
+        try:
+            with open(RUNTIME_CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            log(f"⚠️ Failed to load runtime_config.json: {e}", level="ERROR")
+    return {}
+
+
+def update_runtime_config(new_values: dict):
+    config = get_runtime_config()
+    config.update(new_values)
+
+    try:
+        with open(RUNTIME_CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2)
+        log(f"✅ Runtime config updated: {new_values}", level="INFO")
+    except Exception as e:
+        log(f"⚠️ Failed to update runtime_config.json: {e}", level="ERROR")
+
+    # Parameter history logging
+    try:
+        history_path = Path("data/parameter_history.json")
+        if history_path.exists():
+            with open(history_path, "r") as f:
+                history = json.load(f)
+        else:
+            history = []
+
+        history.append({"timestamp": datetime.utcnow().isoformat(), "updates": new_values})
+
+        # Keep last 100 entries
+        with open(history_path, "w") as f:
+            json.dump(history[-100:], f, indent=2)
+    except Exception as e:
+        log(f"⚠️ Error logging parameter history: {e}", level="WARNING")
+
+
 def set_leverage_for_symbols():
     for symbol in SYMBOLS_ACTIVE:
         leverage = LEVERAGE_MAP.get(symbol, 5)
@@ -417,6 +459,21 @@ def reset_state_flags():
     from utils_logging import log
 
     log("Reset stopping and shutdown flags in state file", level="INFO")
+
+
+# =======================
+# Open Interest Cache
+# =======================
+
+_symbol_oi_cache = {}
+
+
+def get_cached_symbol_open_interest(symbol):
+    return _symbol_oi_cache.get(symbol, 0.0)
+
+
+def update_cached_symbol_open_interest(symbol, value):
+    _symbol_oi_cache[symbol] = value
 
 
 if __name__ == "__main__":
