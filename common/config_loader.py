@@ -173,7 +173,15 @@ TIMEZONE = pytz.timezone(get_config("TIMEZONE", "Europe/Bratislava"))
 
 # ========== Trading Hours Settings ==========
 TRADING_HOURS_FILTER = get_config("TRADING_HOURS_FILTER", "False") == "True"
-HIGH_ACTIVITY_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]
+
+# Comprehensive trading hours including all desired periods
+HIGH_ACTIVITY_HOURS = [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+
+# Optional: You can define specific groups if needed for reporting
+EUROPEAN_MARKET_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16]
+ASIAN_MARKET_HOURS = [0, 1, 2]
+EVENING_HOURS = [17, 18, 19, 20, 21, 22]
+
 WEEKEND_TRADING = get_config("WEEKEND_TRADING", "False") == "True"
 
 # ========== Short-term Trading Optimizations ==========
@@ -466,6 +474,16 @@ def set_bot_status(status):
     except Exception as e:
         log(f"Error setting bot status: {e}", level="ERROR")
         return False
+
+
+def get_max_positions():
+    """
+    Get the maximum allowed concurrent positions from runtime_config.
+    """
+    from utils_core import get_runtime_config
+
+    config = get_runtime_config()
+    return config.get("max_concurrent_positions", 5)
 
 
 def set_filter_thresholds(atr, volume):

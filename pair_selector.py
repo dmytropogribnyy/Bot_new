@@ -11,6 +11,7 @@ import pandas as pd
 from common.config_loader import (
     DRY_RUN,
     FIXED_PAIRS,
+    HIGH_ACTIVITY_HOURS,  # Add this
     MAX_DYNAMIC_PAIRS,
     MIN_DYNAMIC_PAIRS,
     MISSED_OPPORTUNITIES_FILE,
@@ -21,6 +22,7 @@ from common.config_loader import (
     USDC_SYMBOLS,
     USDT_SYMBOLS,
     USE_TESTNET,
+    WEEKEND_TRADING,  # Add this
 )
 from core.binance_api import convert_symbol
 from core.exchange_init import exchange
@@ -272,20 +274,18 @@ def is_peak_trading_hour():
         _last_logged_hour = hour_utc
 
         # Weekend check (Saturday=5, Sunday=6)
-        if now.weekday() >= 5:
+        if now.weekday() >= 5 and not WEEKEND_TRADING:
             log(f"[Time Check] Current UTC hour: {hour_utc} — Weekend (inactive)", level="INFO")
             return False
 
-        # Peak hours: European/US overlap and Asian open
-        peak_hours = [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]
-
-        if hour_utc in peak_hours:
+        # Use centralized configuration for peak hours
+        if hour_utc in HIGH_ACTIVITY_HOURS:
             log(f"[Time Check] Current UTC hour: {hour_utc} — Trading active (peak hour)", level="INFO")
         else:
             log(f"[Time Check] Current UTC hour: {hour_utc} — Trading inactive (off-peak)", level="INFO")
 
-    # Реальная проверка
-    return hour_utc in [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22]
+    # Use centralized configuration for actual check
+    return hour_utc in HIGH_ACTIVITY_HOURS
 
 
 def load_pair_performance():
@@ -397,6 +397,9 @@ def select_active_symbols():
     Select the most promising symbols for trading.
     Enhanced for short-term trading and small account optimization.
     """
+    # Initialize rejection tracking
+    rejected_pairs = {}
+
     # Load performance data
     load_pair_performance()
 
@@ -449,11 +452,13 @@ def select_active_symbols():
     dynamic_data = {}
     for s in all_symbols:
         if s in fixed:
+            rejected_pairs[s] = "fixed_pair"
             continue
 
         # Fetch 15min data for general analysis
         df_15m = fetch_symbol_data(s, timeframe="15m", limit=100)
         if df_15m is None or len(df_15m) < 20:
+            rejected_pairs[s] = "insufficient_data"
             continue
 
         # Store price data for correlation analysis
@@ -563,6 +568,7 @@ def select_active_symbols():
                     # Check if still in cooling period
                     if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
                         log(f"Skipping {s} due to cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="INFO")
+                        rejected_pairs[s] = "cooling_period"
                         continue
                     else:
                         log(f"Pair {s} had 3+ losses but cooling period ({PAIR_COOLING_PERIOD_HOURS}h) has expired", level="INFO")
@@ -588,6 +594,7 @@ def select_active_symbols():
 
             for pair, score in sorted_dyn:
                 if pair in added_pairs or pair in fixed:
+                    rejected_pairs[pair] = "already_added"
                     continue
 
                 # Check correlation with already selected pairs
@@ -600,6 +607,7 @@ def select_active_symbols():
                             break
 
                     if highly_correlated:
+                        rejected_pairs[pair] = "high_correlation"
                         continue
 
                 final_pairs.append(pair)
@@ -642,6 +650,7 @@ def select_active_symbols():
                     # Check if still in cooling period
                     if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
                         log(f"Skipping {s} due to cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="INFO")
+                        rejected_pairs[s] = "cooling_period"
                         continue
                     else:
                         log(f"Pair {s} had 3+ losses but cooling period ({PAIR_COOLING_PERIOD_HOURS}h) has expired", level="INFO")
@@ -657,6 +666,7 @@ def select_active_symbols():
 
         for pair, score in sorted_dyn:
             if pair in added_pairs:
+                rejected_pairs[pair] = "already_added"
                 continue
 
             # Check correlation with already selected pairs
@@ -668,6 +678,7 @@ def select_active_symbols():
                         break
 
                 if highly_correlated:
+                    rejected_pairs[pair] = "high_correlation"
                     continue
 
             uncorrelated_pairs.append(pair)
@@ -683,6 +694,15 @@ def select_active_symbols():
 
     # Combine fixed and dynamic pairs
     active_symbols = fixed + selected_dyn
+
+    # Log rejection statistics
+    rejection_reasons = {}
+    for symbol, reason in rejected_pairs.items():
+        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+
+    log(f"[Pair Selector] {len(dynamic_data)} pairs analyzed, {len(selected_dyn)} selected, {len(rejected_pairs)} rejected", level="INFO")
+    for reason, count in rejection_reasons.items():
+        log(f"[Rejection Stats] {reason}: {count} pairs", level="INFO")
 
     # Log and save results
     log(f"Selected {len(active_symbols)} active symbols: {active_symbols}", level="INFO")

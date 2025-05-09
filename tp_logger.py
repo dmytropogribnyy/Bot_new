@@ -62,6 +62,7 @@ def log_trade_result(
     adx,
     bb_width,
     result_type="manual",
+    account_category=None,  # Added parameter
 ):
     """Log trade result with enhanced commission calculation and duplicate prevention."""
     try:
@@ -145,6 +146,7 @@ def log_trade_result(
                 daily_trade_stats["loss"] += 1
                 daily_trade_stats["profit_total"] += absolute_profit  # Will be negative for losses
 
+        # Составляем строку лога
         row = [
             date_str,
             symbol,
@@ -167,8 +169,38 @@ def log_trade_result(
             round(absolute_profit, 6),  # Absolute profit in USDC
         ]
 
+        # Добавим в конец row, если account_category передан
+        if account_category is not None:
+            row.append(account_category)
+
         # Ensure directory exists
         os.makedirs(os.path.dirname(TP_LOG_FILE), exist_ok=True)
+
+        # Создаем header с учётом поля
+        base_header = [
+            "Date",
+            "Symbol",
+            "Side",
+            "Entry Price",
+            "Exit Price",
+            "Qty",
+            "TP1 Hit",
+            "TP2 Hit",
+            "SL Hit",
+            "PnL (%)",
+            "Result",
+            "Held (min)",
+            "HTF Confirmed",
+            "ATR",
+            "ADX",
+            "BB Width",
+            "Commission",
+            "Net PnL (%)",
+            "Absolute Profit",
+        ]
+
+        if account_category is not None:
+            base_header.append("Account Category")
 
         # Write to both TP_LOG_FILE and EXPORT_PATH
         for path in [TP_LOG_FILE, EXPORT_PATH]:
@@ -176,29 +208,7 @@ def log_trade_result(
             with open(path, mode="a", newline="") as file:
                 writer = csv.writer(file)
                 if not file_exists:
-                    writer.writerow(
-                        [
-                            "Date",
-                            "Symbol",
-                            "Side",
-                            "Entry Price",
-                            "Exit Price",
-                            "Qty",
-                            "TP1 Hit",
-                            "TP2 Hit",
-                            "SL Hit",
-                            "PnL (%)",
-                            "Result",
-                            "Held (min)",
-                            "HTF Confirmed",
-                            "ATR",
-                            "ADX",
-                            "BB Width",
-                            "Commission",
-                            "Net PnL (%)",
-                            "Absolute Profit",
-                        ]
-                    )
+                    writer.writerow(base_header)
                 writer.writerow(row)
 
         # Enhanced logging with absolute profit (important for small deposits)

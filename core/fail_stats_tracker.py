@@ -39,3 +39,25 @@ def record_failure_reason(symbol, reasons):
             from utils_logging import log
 
             log(f"[FailStats] Error recording failure for {symbol}: {e}", level="ERROR")
+
+
+def get_signal_failure_stats():
+    """
+    Retrieve aggregated statistics about signal failures from the tracking data.
+
+    Returns:
+        dict: Dictionary with aggregated failure statistics by symbol and reason
+    """
+    with fail_stats_lock:
+        try:
+            if os.path.exists(FAIL_STATS_FILE):
+                with open(FAIL_STATS_FILE, "r") as f:
+                    data = json.load(f)
+                return data
+            else:
+                return {}
+        except Exception as e:
+            from utils_logging import log
+
+            log(f"[FailStats] Error retrieving failure stats: {e}", level="ERROR")
+            return {}

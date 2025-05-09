@@ -20,12 +20,22 @@ def generate_score_heatmap(days=7):
         return
 
     try:
-        df = pd.read_csv(SCORE_HISTORY_FILE)
+        # Попытка прочитать только нужные колонки (универсально, без пропуска первой строки)
+        try:
+            df = pd.read_csv(SCORE_HISTORY_FILE, usecols=[0, 1, 2], names=["symbol", "score", "timestamp"], header=None)
+        except Exception as csv_error:
+            log(f"⚠️ Error reading score_history.csv with default format: {csv_error} — trying fallback mode", level="DEBUG")
+            df_raw = pd.read_csv(SCORE_HISTORY_FILE, header=None)
+            df = df_raw.iloc[:, 0:3]
+            df.columns = ["symbol", "score", "timestamp"]
+
         if df.empty or "timestamp" not in df or "symbol" not in df or "score" not in df:
             log("⚠️ Invalid or empty score_history.csv — skipping heatmap.", level="WARNING")
             return
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df.dropna(subset=["timestamp"], inplace=True)
+
         cutoff = datetime.now() - timedelta(days=days)
         df = df[df["timestamp"] >= cutoff]
 

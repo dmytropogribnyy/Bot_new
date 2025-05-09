@@ -9,7 +9,6 @@ import threading
 import time
 from datetime import datetime
 
-import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import telegram.telegram_commands as telegram_commands
@@ -70,21 +69,15 @@ def get_trading_signal(symbol):
         dict: Signal data with side, qty, and score, or None if no signal
     """
     try:
-        # Fetch OHLCV data
-        from core.binance_api import fetch_ohlcv
+        # Use the proper data fetching function that calculates indicators
+        from core.strategy import fetch_data
 
-        # Fetch last 50 candles for 15-minute timeframe
-        ohlcv = fetch_ohlcv(symbol, timeframe="15m", limit=50)
-        if not ohlcv or len(ohlcv) < 10:
-            log(f"[Signal] Insufficient data for {symbol}: {len(ohlcv) if ohlcv else 0} candles", level="WARNING")
+        # Fetch data with all indicators calculated
+        df = fetch_data(symbol)
+        if df is None or len(df) < 10:
+            log(f"[Signal] Insufficient data for {symbol}", level="WARNING")
             log_failure(symbol, ["insufficient_data"])
             return None
-
-        # Convert to DataFrame
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
-        df = df.astype(float)
 
         # Process both buy and sell directions separately to preserve original logic
         buy_signal, buy_failures = should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock)
@@ -223,6 +216,10 @@ def start_trading_loop():
     set_bot_status("running")
     initialize_cache()
 
+    # Получаем и выводим значение баланса при старте
+    starting_balance = get_cached_balance()
+    log(f"[Startup] Starting balance: {starting_balance:.2f} USDC", level="INFO", important=True)
+
     # Проверка позиций при старте
     positions = exchange.fetch_positions()
     active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
@@ -254,7 +251,8 @@ def start_trading_loop():
     else:
         bias = "🧊 LOW"
 
-    message = f"Bot started in {mode} mode\nStrategy Bias: {bias} ({score})\nDRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
+    # Обновленное сообщение с информацией о балансе
+    message = f"Bot started in {mode} mode\nBalance: {starting_balance:.2f} USDC\nStrategy Bias: {bias} ({score})\nDRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     send_telegram_message(message, force=True, parse_mode="")
 
     # Загрузка символов
@@ -414,7 +412,10 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
     threading.Thread(
-        target=lambda: start_ip_monitor(telegram_commands._initiate_stop, interval_seconds=IP_MONITOR_INTERVAL_SECONDS),
+        target=lambda: start_ip_monitor(
+            lambda: telegram_commands._initiate_stop("ip_changed"),  # ✅ Фикс: передаём reason
+            interval_seconds=IP_MONITOR_INTERVAL_SECONDS,
+        ),
         daemon=True,
     ).start()
     threading.Thread(
@@ -432,7 +433,6 @@ if __name__ == "__main__":
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
-    # Add TP2 winrate periodic analysis
     scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
 
     scheduler.start()

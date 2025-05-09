@@ -891,40 +891,26 @@ def run_adaptive_trailing_stop(symbol, side, entry_price, check_interval=5):
 
 def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5):
     """
-    Enhanced soft exit with earlier profit taking.
+    Enhanced soft exit with earlier profit taking and cleanup of stop orders.
     """
     global open_positions_count, dry_run_positions_count
     tp1_price = entry_price * (1 + tp1_percent) if side == "buy" else entry_price * (1 - tp1_percent)
-
-    # Use SOFT_EXIT_THRESHOLD (already set to 0.7 in config_loader, was 0.8 previously)
     soft_exit_price = entry_price + (tp1_price - entry_price) * SOFT_EXIT_THRESHOLD if side == "buy" else entry_price - (entry_price - tp1_price) * SOFT_EXIT_THRESHOLD
-
-    # Use SOFT_EXIT_SHARE (typically 0.5 - close half position)
     soft_exit_qty = qty * SOFT_EXIT_SHARE
 
-    log(
-        f"[Soft Exit] Monitoring {symbol}: entry={entry_price}, tp1_price={tp1_price}, " f"soft_exit_price={soft_exit_price}, soft_exit_qty={soft_exit_qty}",
-        level="DEBUG",
-    )
+    log(f"[Soft Exit] Monitoring {symbol}: entry={entry_price}, tp1_price={tp1_price}, " f"soft_exit_price={soft_exit_price}, soft_exit_qty={soft_exit_qty}", level="DEBUG")
 
-    # Dynamic check interval - more frequent during optimal trading hours
     dynamic_check_interval = check_interval // 2 if is_optimal_trading_hour() else check_interval
-
     trade_closed = False
+
     while True:
         try:
             price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")["last"]
-            log(
-                f"[Soft Exit] Checking {symbol}: current price={price}, soft_exit_price={soft_exit_price}",
-                level="DEBUG",
-            )
+            log(f"[Soft Exit] Checking {symbol}: current price={price}, soft_exit_price={soft_exit_price}", level="DEBUG")
 
             if (side == "buy" and price >= soft_exit_price) or (side == "sell" and price <= soft_exit_price):
                 if DRY_RUN:
-                    log(
-                        f"[DRY] Soft Exit triggered for {symbol} at {price}: closing {soft_exit_qty}",
-                        level="INFO",
-                    )
+                    log(f"[DRY] Soft Exit triggered for {symbol} at {price}: closing {soft_exit_qty}", level="INFO")
                     send_telegram_message(f"🔄 [DRY] Soft Exit {symbol} @ {price}", force=True)
                 else:
                     safe_call_retry(
@@ -938,55 +924,27 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
                     trade_manager.update_trade(symbol, "soft_exit_hit", True)
                     log(f"[Soft Exit] Soft exit executed for {symbol} at {price}", level="INFO")
 
+                    # 🔧 Cancel remaining orders after soft exit
+                    try:
+                        exchange.futures_cancel_all_open_orders(symbol=symbol.replace("/", ""))
+                        log(f"[Soft Exit] Canceled all remaining orders for {symbol}", level="INFO")
+                    except Exception as e:
+                        log(f"[Soft Exit] Error canceling orders for {symbol}: {e}", level="WARNING")
+
                     if not trade_closed:
                         record_trade_result(symbol, side, entry_price, price, "soft_exit")
                         trade_closed = True
 
-                    # For small accounts, consider moving stop loss to entry price
-                    trade = trade_manager.get_trade(symbol)
-                    if trade and trade.get("account_category") == "Small":
-                        try:
-                            # Cancel any existing stop orders
-                            open_orders = exchange.fetch_open_orders(symbol)
-                            stop_orders = [o for o in open_orders if o["type"].upper() == "STOP_MARKET" or o["type"].upper() == "STOP"]
-
-                            for order in stop_orders:
-                                exchange.cancel_order(order["id"], symbol)
-                                log(f"[Soft Exit] Cancelled stop order {order['id']} for {symbol}", level="INFO")
-
-                            # Set new stop at entry price (break-even)
-                            remaining_position = get_position_size(symbol)
-                            if remaining_position > 0:
-                                safe_call_retry(
-                                    exchange.create_order,
-                                    symbol,
-                                    "STOP_MARKET",
-                                    "sell" if side == "buy" else "buy",
-                                    remaining_position,
-                                    params={"stopPrice": entry_price, "reduceOnly": True},
-                                    label=f"soft_exit_break_even {symbol}",
-                                )
-                                log(f"[Soft Exit] Set break-even stop for remaining position in {symbol}", level="INFO")
-                                send_telegram_message(f"🔒 Break-even stop set for remaining position in {symbol}", force=True)
-                        except Exception as e:
-                            log(f"[Soft Exit] Failed to adjust stop orders for {symbol}: {e}", level="ERROR")
-
                     position = get_position_size(symbol)
-                    log(
-                        f"[Soft Exit] Remaining position size for {symbol}: {position}",
-                        level="DEBUG",
-                    )
+                    log(f"[Soft Exit] Remaining position size for {symbol}: {position}", level="DEBUG")
                     if position <= 0:
                         trade_manager.remove_trade(symbol)
-                        log(
-                            f"[Soft Exit] Fully closed {symbol}, removed from trade_manager",
-                            level="INFO",
-                        )
+                        log(f"[Soft Exit] Fully closed {symbol}, removed from trade_manager", level="INFO")
                         initialize_cache()
                         break
 
-            # Use dynamic check interval
             time.sleep(dynamic_check_interval)
+
         except Exception as e:
             log(f"[ERROR] Soft Exit error for {symbol}: {e}", level="ERROR")
             break
