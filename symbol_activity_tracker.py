@@ -1,7 +1,11 @@
 import json
+import os
 import time
 from collections import defaultdict
 from threading import Lock
+
+from core.filter_adaptation import get_runtime_config, load_json_file, save_json_file
+from utils_logging import log
 
 FILE_PATH = "data/symbol_signal_activity.json"
 SIGNAL_ACTIVITY_FILE = FILE_PATH
@@ -45,3 +49,38 @@ def get_most_active_symbols(top_n=5, minutes=60):
 
     sorted_symbols = sorted(counts.items(), key=lambda x: x[1], reverse=True)
     return [s[0] for s in sorted_symbols[:top_n]]
+
+
+def auto_adjust_relax_factors_from_missed(min_count_threshold=3, max_relax=0.5):
+    """
+    Increase relax_factor for symbols with frequent missed opportunities
+    """
+    try:
+        missed_file = "data/missed_opportunities.json"
+        adapt_file = "data/filter_adaptation.json"
+
+        if not os.path.exists(missed_file):
+            return
+
+        missed_data = load_json_file(missed_file)
+        filter_data = load_json_file(adapt_file)
+        updated = False
+
+        for symbol, stats in missed_data.items():
+            normalized = symbol.replace("/", "").upper()
+            count = stats.get("count", 0)
+            if count >= min_count_threshold:
+                current = filter_data.get(normalized, {}).get("relax_factor", get_runtime_config().get("relax_factor", 0.35))
+                if current < max_relax:
+                    new_relax = round(min(current + 0.05, max_relax), 3)
+                    if normalized not in filter_data:
+                        filter_data[normalized] = {}
+                    filter_data[normalized]["relax_factor"] = new_relax
+                    log(f"[AutoRelax] ↑ Increased relax_factor for {symbol}: {current} → {new_relax}", level="INFO")
+                    updated = True
+
+        if updated:
+            save_json_file(adapt_file, filter_data)
+            log("[AutoRelax] Updated relax_factor values based on missed opportunities", level="INFO")
+    except Exception as e:
+        log(f"[AutoRelax] Error adjusting relax factors: {e}", level="ERROR")

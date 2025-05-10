@@ -48,7 +48,8 @@ from core.aggressiveness_controller import get_aggressiveness_score
 from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
 
-# Import updates for trade_engine.py - add at the top with other imports
+# Additional required imports
+from core.position_manager import can_open_new_position
 from core.risk_utils import get_adaptive_risk_percent
 from core.tp_utils import calculate_tp_levels
 from telegram.telegram_utils import send_telegram_message
@@ -100,22 +101,15 @@ class TradeInfoManager:
             self._trades[symbol]["last_closed_time"] = timestamp
 
 
-# New functions for safe trade closing
-def safe_close_trade(binance_client, symbol, trade_data):
-    """
-    Safely close a trade by cancelling all orders and closing the position.
-    This ensures clean exits without lingering orders.
-    """
-    try:
-        side = trade_data["side"]
-        quantity = trade_data["quantity"]
-
-        close_trade_and_cancel_orders(binance_client=binance_client, symbol=symbol, side=side, quantity=quantity)
-
-        trade_manager._trades.pop(symbol, None)
-        log(f"✅ Safe close complete for {symbol}. Position and orders cleared.", level="INFO")
-    except Exception as e:
-        log(f"❌ Error during safe close for {symbol}: {str(e)}", level="ERROR")
+# Global variables
+trade_manager = TradeInfoManager()
+monitored_stops = {}
+monitored_stops_lock = threading.Lock()
+open_positions_count = 0
+dry_run_positions_count = 0
+open_positions_lock = threading.Lock()
+logged_trades = set()
+logged_trades_lock = Lock()
 
 
 def close_trade_and_cancel_orders(binance_client, symbol, side, quantity, reduce_only=True):
@@ -140,23 +134,62 @@ def close_trade_and_cancel_orders(binance_client, symbol, side, quantity, reduce
             log(f"❌ Error canceling orders for {symbol}: {str(e)}", level="WARNING")
 
         # Then close the position
-        order = binance_client.futures_create_order(symbol=symbol.replace("/", ""), side=close_side, type="MARKET", quantity=quantity, reduceOnly=reduce_only)  # noqa: F841
+        binance_client.futures_create_order(symbol=symbol.replace("/", ""), side=close_side, type="MARKET", quantity=quantity, reduceOnly=reduce_only)
         log(f"✅ Closed position {symbol} — {quantity} units by MARKET.", level="INFO")
 
     except Exception as e:
         log(f"❌ Error while closing {symbol}: {str(e)}", level="ERROR")
 
 
-trade_manager = TradeInfoManager()
-monitored_stops = {}
-monitored_stops_lock = threading.Lock()
-open_positions_count = 0
-dry_run_positions_count = 0
-open_positions_lock = threading.Lock()
-logged_trades = set()
-logged_trades_lock = Lock()
+def safe_close_trade(binance_client, symbol, trade_data, reason="manual"):
+    """
+    Safely close a trade by cancelling all orders and closing the position.
+    This ensures clean exits without lingering orders.
+    """
+    try:
+        side = trade_data["side"]
+        quantity = trade_data["quantity"]
+        entry_price = trade_data.get("entry", 0)
+
+        # Get current price for exit
+        ticker = safe_call_retry(exchange.fetch_ticker, symbol)
+        exit_price = ticker["last"] if ticker else None
+
+        # Close the position
+        close_trade_and_cancel_orders(binance_client=binance_client, symbol=symbol, side=side, quantity=quantity)
+
+        # Record the trade result BEFORE removing from manager
+        if exit_price:
+            # Calculate PnL for success tracking
+            if side.lower() == "buy":
+                final_pnl = (exit_price - entry_price) * quantity
+            else:
+                final_pnl = (entry_price - exit_price) * quantity
+
+            record_trade_result(symbol, side, entry_price, exit_price, reason)
+
+            # Success tracking for symbol blocking system
+            if reason == "hit_tp" and final_pnl > 0:
+                # Reset failure count for this symbol on profitable TP exit
+                from core.fail_stats_tracker import reset_failure_count
+
+                # Normalize symbol format if needed (BTCUSDC -> BTC/USDC)
+                normalized_symbol = symbol
+                if "/" not in symbol and "USDC" in symbol:
+                    normalized_symbol = symbol.replace("USDC", "/USDC")
+
+                reset_failure_count(normalized_symbol)
+                log(f"[TradeEngine] ✅ Reset failure count for {normalized_symbol} after TP profit of {final_pnl:.2f}", level="INFO")
+
+        # Remove from trade manager
+        trade_manager._trades.pop(symbol, None)
+        log(f"✅ Safe close complete for {symbol} (reason: {reason})", level="INFO")
+
+    except Exception as e:
+        log(f"❌ Error during safe close for {symbol}: {str(e)}", level="ERROR")
 
 
+# Continue with all remaining functions in the original order...
 def is_optimal_trading_hour():
     """
     Determine if current time is during peak trading hours.
@@ -296,7 +329,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             return
 
     # Check position limits based on account size
-    from core.position_manager import can_open_new_position
 
     balance = get_cached_balance()
     if not can_open_new_position(balance):
@@ -941,7 +973,25 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
                         record_trade_result(symbol, side, entry_price, price, "soft_exit")
                         trade_closed = True
 
+                    # Place protective stop loss for remaining position
                     position = get_position_size(symbol)
+                    if position > 0:
+                        stop_side = "sell" if side == "buy" else "buy"
+                        stop_level = entry_price  # Set stop at entry level (breakeven)
+                        try:
+                            safe_call_retry(
+                                exchange.create_order,
+                                symbol,
+                                "STOP_MARKET",
+                                stop_side,
+                                position,
+                                params={"stopPrice": round(stop_level, 4), "reduceOnly": True},
+                                label=f"protective_stop_{symbol}",
+                            )
+                            log(f"[Soft Exit] Protective SL placed at {stop_level:.4f} for remaining position", level="INFO")
+                        except Exception as e:
+                            log(f"[Soft Exit] Failed to place protective stop: {e}", level="ERROR")
+
                     log(f"[Soft Exit] Remaining position size for {symbol}: {position}", level="DEBUG")
                     if position <= 0:
                         trade_manager.remove_trade(symbol)
@@ -1190,12 +1240,12 @@ def run_auto_profit_exit(symbol, side, entry_price, check_interval=5):
             # Check against thresholds
             if profit_percentage >= BONUS_PROFIT_THRESHOLD:
                 log(f"🎉 BONUS PROFIT! Auto-closing {symbol} at +{profit_percentage:.2f}% 🚀", level="INFO")
-                safe_close_trade(exchange, symbol, trade)
+                safe_close_trade(exchange, symbol, trade, reason="bonus_profit")
                 send_telegram_message(f"🎉 *Bonus Profit!* {symbol} closed at +{profit_percentage:.2f}% 🚀\n" f"Reason: Exceeded {BONUS_PROFIT_THRESHOLD}% profit!")
                 break
             elif profit_percentage >= AUTO_CLOSE_PROFIT_THRESHOLD:
                 log(f"✅ Auto-closing {symbol} at +{profit_percentage:.2f}% (Threshold: {AUTO_CLOSE_PROFIT_THRESHOLD}%)", level="INFO")
-                safe_close_trade(exchange, symbol, trade)
+                safe_close_trade(exchange, symbol, trade, reason="auto_profit")
                 send_telegram_message(f"✅ *Auto-closed* {symbol} at +{profit_percentage:.2f}% profit 🚀\n" f"Reason: Reached profit target {AUTO_CLOSE_PROFIT_THRESHOLD}%")
                 break
 
@@ -1265,8 +1315,11 @@ def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check
                     # Get trade data and use safe_close_trade
                     trade_data = trade_manager.get_trade(symbol)
                     if trade_data:
-                        safe_close_trade(exchange, symbol, trade_data)
+                        safe_close_trade(exchange, symbol, trade_data, reason="micro_profit")
                         send_telegram_message(f"⏰ Micro-profit target: {symbol} closed at +{profit_percent:.2f}%", force=True)
+                    break
+                else:
+                    log(f"{symbol} ❎ Micro-trade timeout with only {profit_percent:.2f}% – exiting optimizer loop", level="INFO")
                     break
 
             time.sleep(check_interval)
@@ -1448,7 +1501,7 @@ def check_micro_profit_exit(symbol, trade_data):
         if profit_percent >= MICRO_PROFIT_THRESHOLD:
             log(f"{symbol} 💰 Micro-profit hit: +{profit_percent:.2f}% (+{absolute_profit:.2f} USDC) — closing early", level="INFO")
             send_telegram_message(f"💰 {symbol}: Early close on micro-profit +{profit_percent:.2f}% (+{absolute_profit:.2f} USDC)", force=True)
-            safe_close_trade(exchange, symbol, trade_data)
+            safe_close_trade(exchange, symbol, trade_data, reason="micro_profit")
 
     except Exception as e:
         log(f"[Micro-Profit] Error for {symbol}: {e}", level="ERROR")
@@ -1467,7 +1520,7 @@ def check_stagnant_trade_exit(symbol, trade_data):
         if elapsed_minutes >= MICRO_TRADE_TIMEOUT_MINUTES:
             log(f"{symbol} 💤 Trade stagnant for {elapsed_minutes:.1f} min — closing", level="INFO")
             send_telegram_message(f"💤 {symbol}: Stagnant trade auto-exit after {int(elapsed_minutes)}m", force=True)
-            safe_close_trade(exchange, symbol, trade_data)
+            safe_close_trade(exchange, symbol, trade_data, reason="stagnant")
     except Exception as e:
         log(f"[Stagnant Exit] Error for {symbol}: {e}", level="ERROR")
 

@@ -1,4 +1,4 @@
-# tp_optimizer_ml.py — итоговая версия с автоадаптацией глобальных порогов и аналитикой TP1/TP2
+# tp_optimizer_ml.py — Enhanced version with balance-aware ML optimization
 
 import datetime
 import os
@@ -13,6 +13,7 @@ from common.config_loader import (
     TP_ML_SWITCH_THRESHOLD,
 )
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_core import get_cached_balance
 from utils_logging import log
 
 TP_CSV = "data/tp_performance.csv"
@@ -34,29 +35,64 @@ def rewrite_config_param(param, value):
         log(f"Failed to update {param} in config.py: {e}", level="ERROR")
 
 
-def auto_adapt_thresholds(df):
+def get_min_trades_required(balance, total_trades):
+    """Get minimum trades required based on balance size"""
+    if balance < 150:
+        initial = 6
+        full = 12
+    else:
+        initial = TP_ML_MIN_TRADES_INITIAL
+        full = TP_ML_MIN_TRADES_FULL
+
+    return initial if total_trades < TP_ML_SWITCH_THRESHOLD else full
+
+
+def auto_adapt_thresholds(df, balance):
+    """Adapt ML thresholds based on recent performance and balance"""
     recent = df[df["Date"] >= pd.Timestamp.now() - pd.Timedelta(days=7)]
     num_trades = len(recent)
     winrate = len(recent[recent["Result"].isin(["TP1", "TP2"])]) / num_trades if num_trades else 0
     sl_rate = len(recent[recent["Result"] == "SL"]) / num_trades if num_trades else 0
 
-    if num_trades < 15:
-        rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 10)
-    elif num_trades > 30:
-        rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 15)
-
-    if sl_rate > 0.5:
-        rewrite_config_param("TP_ML_THRESHOLD", 0.08)
-    elif winrate > 0.7:
-        rewrite_config_param("TP_ML_THRESHOLD", 0.03)
-
-    if winrate < 0.4:
-        rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.07)
+    # Adjust initial trades requirement
+    if balance < 150:
+        if num_trades < 8:
+            rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 5)
+        elif num_trades > 15:
+            rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 8)
     else:
-        rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.05)
+        if num_trades < 15:
+            rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 10)
+        elif num_trades > 30:
+            rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 15)
+
+    # Adjust thresholds based on performance - more aggressive for small accounts
+    if balance < 150:
+        if sl_rate > 0.4:  # Lower threshold for small accounts
+            rewrite_config_param("TP_ML_THRESHOLD", 0.06)
+        elif winrate > 0.65:  # Lower threshold for small accounts
+            rewrite_config_param("TP_ML_THRESHOLD", 0.02)
+    else:
+        if sl_rate > 0.5:
+            rewrite_config_param("TP_ML_THRESHOLD", 0.08)
+        elif winrate > 0.7:
+            rewrite_config_param("TP_ML_THRESHOLD", 0.03)
+
+    # Adjust switch threshold
+    if balance < 150:
+        if winrate < 0.35:
+            rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.08)
+        else:
+            rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.04)
+    else:
+        if winrate < 0.4:
+            rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.07)
+        else:
+            rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.05)
 
 
 def analyze_and_optimize_tp():
+    """Main ML optimization function with balance awareness"""
     try:
         if not os.path.exists(TP_CSV):
             log("tp_performance.csv not found", level="WARNING")
@@ -64,16 +100,23 @@ def analyze_and_optimize_tp():
 
         df = pd.read_csv(TP_CSV, parse_dates=["Date"])
         total_trades = len(df)
+
+        # Get current balance
+        balance = get_cached_balance()
+
         if df.empty or total_trades < 5:
             log("Not enough trade data for ML TP optimization", level="WARNING")
             return
 
-        auto_adapt_thresholds(df)  # 🔁 адаптируем глобальные пороги
+        # Adapt thresholds based on balance
+        auto_adapt_thresholds(df, balance)
 
-        min_trades_required = TP_ML_MIN_TRADES_INITIAL if total_trades < TP_ML_SWITCH_THRESHOLD else TP_ML_MIN_TRADES_FULL
+        # Get appropriate minimum trades requirement
+        min_trades_required = get_min_trades_required(balance, total_trades)
 
         report_lines = [
             "🤖 *TP Optimizer ML Report*",
+            f"💰 Account Balance: ${balance:.2f}",
             f"📈 Using min trades per symbol: {min_trades_required} (total trades: {total_trades})",
         ]
 
@@ -100,8 +143,15 @@ def analyze_and_optimize_tp():
             avg_tp2 = tp2_hits["PnL (%)"].mean() if not tp2_hits.empty else 0
             avg_sl = sl_hits["PnL (%)"].mean() if not sl_hits.empty else 0
 
-            best_tp1 = round(min(max(avg_tp1 / 100, 0.004), 0.01), 4)
-            best_tp2 = round(min(max(avg_tp2 / 100, 0.01), 0.03), 4)
+            # Adjust optimization range based on balance
+            if balance < 150:
+                # More aggressive bounds for small accounts
+                best_tp1 = round(min(max(avg_tp1 / 100, 0.005), 0.012), 4)
+                best_tp2 = round(min(max(avg_tp2 / 100, 0.008), 0.025), 4)
+            else:
+                # Standard bounds for larger accounts
+                best_tp1 = round(min(max(avg_tp1 / 100, 0.004), 0.01), 4)
+                best_tp2 = round(min(max(avg_tp2 / 100, 0.01), 0.03), 4)
 
             report_lines.append(
                 f"🔹 *{symbol}*\n"
@@ -116,11 +166,17 @@ def analyze_and_optimize_tp():
         if skipped_symbols:
             report_lines.append("\n⏭️ Skipped (not enough data): " + ", ".join(skipped_symbols))
 
+        # Add balance-specific recommendations
+        if balance < 150:
+            report_lines.append("\n💡 *Small Account Optimization Active*")
+            report_lines.append("• Lower trade requirements enabled")
+            report_lines.append("• More aggressive TP adjustments")
+
         if updated:
             _backup_config()
             send_telegram_message(escape_markdown_v2("\n\n".join(report_lines)))
         else:
-            send_telegram_message(escape_markdown_v2("No symbols met the criteria for TP ML optimization."))
+            send_telegram_message(escape_markdown_v2(f"No symbols met the criteria for TP ML optimization " f"(min {min_trades_required} trades required for ${balance:.0f} balance)."))
 
     except Exception as e:
         log(f"TP Optimizer ML failed: {str(e)}", level="ERROR")
@@ -128,6 +184,7 @@ def analyze_and_optimize_tp():
 
 
 def _update_config(symbol, tp1, tp2):
+    """Update configuration with new TP values"""
     try:
         with open(CONFIG_FILE, "r") as f:
             lines = f.readlines()
@@ -154,6 +211,7 @@ def _update_config(symbol, tp1, tp2):
 
 
 def _backup_config():
+    """Create timestamped backup of configuration"""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     shutil.copy(CONFIG_FILE, f"{BACKUP_FILE}.{timestamp}")
     log("Config backed up after TP ML optimization", level="INFO")

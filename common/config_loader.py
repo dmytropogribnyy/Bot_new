@@ -87,7 +87,7 @@ MIN_DYNAMIC_PAIRS = int(get_config("MIN_DYNAMIC_PAIRS", 5))
 # Updated: Extended timeout for micro trades to capture more opportunities
 MICRO_TRADE_TIMEOUT_MINUTES = int(get_config("MICRO_TRADE_TIMEOUT_MINUTES", 240))  # Increased from 45 to 240 minutes
 MICRO_TRADE_SIZE_THRESHOLD = float(get_config("MICRO_TRADE_SIZE_THRESHOLD", 0.15))
-MICRO_PROFIT_THRESHOLD = float(get_config("MICRO_PROFIT_THRESHOLD", 0.3))
+MICRO_PROFIT_THRESHOLD = float(get_config("MICRO_PROFIT_THRESHOLD", 0.2))  # Changed from 0.3 to 0.2
 MICRO_PROFIT_ENABLED = get_config("MICRO_PROFIT_ENABLED", "True") == "True"
 
 # ========== Pair Rotation Optimization ==========
@@ -105,8 +105,8 @@ MIN_NOTIONAL_ORDER = float(get_config("MIN_NOTIONAL_ORDER", 20))
 
 # ========== TP/SL Settings ==========
 # Optimized for 15-minute timeframe with better risk/reward
-TP1_PERCENT = float(get_config("TP1_PERCENT", 0.008))  # Updated to 0.8% from 0.9%
-TP2_PERCENT = float(get_config("TP2_PERCENT", 0.016))  # Unchanged at 1.6%
+TP1_PERCENT = float(get_config("TP1_PERCENT", 0.007))  # Changed from 0.008 to 0.007
+TP2_PERCENT = float(get_config("TP2_PERCENT", 0.014))  # Changed from 0.016 to 0.014
 SL_PERCENT = float(get_config("SL_PERCENT", 0.007))  # Unchanged at 0.7%
 TP1_SHARE = float(get_config("TP1_SHARE", 0.8))  # Unchanged at 80%
 TP2_SHARE = float(get_config("TP2_SHARE", 0.2))  # Unchanged at 20%
@@ -152,7 +152,7 @@ SOFT_EXIT_THRESHOLD = float(get_config("SOFT_EXIT_THRESHOLD", 0.7))
 SOFT_EXIT_SHARE = float(get_config("SOFT_EXIT_SHARE", 0.5))
 
 # ========== Signal Strength Control ==========
-MIN_TRADE_SCORE = int(get_config("MIN_TRADE_SCORE", 0))
+MIN_TRADE_SCORE = int(get_config("MIN_TRADE_SCORE", 2))  # Changed from 0 to 2
 SCORE_BASED_RISK = get_config("SCORE_BASED_RISK", "True") == "True"
 SCORE_BASED_TP = get_config("SCORE_BASED_TP", "True") == "True"
 

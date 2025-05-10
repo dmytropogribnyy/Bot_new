@@ -3,7 +3,7 @@ import time
 
 import pandas as pd
 
-from common.config_loader import DRY_RUN, EXPORT_PATH  # ✅ добавили сюда
+from common.config_loader import DRY_RUN, EXPORT_PATH
 from utils_logging import log
 
 
@@ -29,13 +29,22 @@ def get_filter_relax_factor():
 
 
 def get_volatility_filters(symbol, base_filters):
-    from utils_core import get_cached_balance
+    from utils_core import get_cached_balance, get_runtime_config
 
     # Get account balance for adaptive filtering
     balance = get_cached_balance()
 
     # Get standard relaxation factor
     relax = get_filter_relax_factor()
+
+    # Copy base filters
+    filters = base_filters.copy()
+
+    # Apply relax factor to thresholds using simple multiplier
+    multiplier = 1 - relax  # relax=0.3 → 0.7 multiplier (30% more permissive)
+    filters["atr"] *= multiplier
+    filters["adx"] *= multiplier
+    filters["bb"] *= multiplier
 
     # For small accounts, apply different filtering strategy
     if balance < 150:
@@ -46,19 +55,28 @@ def get_volatility_filters(symbol, base_filters):
 
         if is_priority:
             # More permissive for priority pairs on small accounts
-            atr_thres = max(base_filters["atr"] * relax * 0.9, 0.0004)
-            adx_thres = max(base_filters["adx"] * relax * 0.9, 5)
-            bb_thres = max(base_filters["bb"] * relax * 0.9, 0.002)
+            filters["atr"] *= 0.9
+            filters["adx"] *= 0.9
+            filters["bb"] *= 0.9
             log(f"Priority pair {symbol} for small account - using relaxed filters")
         else:
             # More strict for non-priority pairs on small accounts
-            atr_thres = max(base_filters["atr"] * relax * 1.1, 0.0006)
-            adx_thres = max(base_filters["adx"] * relax * 1.1, 8)
-            bb_thres = max(base_filters["bb"] * relax * 1.1, 0.0025)
-    else:
-        # Standard filtering for larger accounts
-        atr_thres = max(base_filters["atr"] * relax, 0.0004)
-        adx_thres = max(base_filters["adx"] * relax, 5)
-        bb_thres = max(base_filters["bb"] * relax, 0.002)
+            filters["atr"] *= 1.1
+            filters["adx"] *= 1.1
+            filters["bb"] *= 1.1
 
-    return {"atr": atr_thres, "adx": adx_thres, "bb": bb_thres, "relax_factor": relax}
+    # Apply runtime relax factor if different
+    runtime_relax = get_runtime_config().get("relax_factor", relax)
+    if runtime_relax != relax:
+        adjustment = runtime_relax / relax
+        filters["atr"] = base_filters["atr"] * (1 - runtime_relax) * adjustment
+        filters["adx"] = base_filters["adx"] * (1 - runtime_relax) * adjustment
+        filters["bb"] = base_filters["bb"] * (1 - runtime_relax) * adjustment
+        filters["relax_factor"] = runtime_relax
+
+    # Ensure minimum thresholds (safety net)
+    filters["atr"] = max(filters["atr"], 0.0004)
+    filters["adx"] = max(filters["adx"], 5.0)
+    filters["bb"] = max(filters["bb"], 0.002)
+
+    return filters

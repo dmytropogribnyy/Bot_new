@@ -16,7 +16,6 @@ from common.config_loader import (
     LEVERAGE_MAP,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
-    MIN_TRADE_SCORE,
     MOMENTUM_LOOKBACK,
     PRIORITY_SMALL_BALANCE_PAIRS,
     SHORT_TERM_MODE,
@@ -24,6 +23,7 @@ from common.config_loader import (
     TAKER_FEE_RATE,
     TP2_SHARE,
     TRADING_HOURS_FILTER,
+    USE_HTF_CONFIRMATION,
     USE_TESTNET,
     VOLUME_SPIKE_THRESHOLD,
     WEEKEND_TRADING,
@@ -32,11 +32,10 @@ from common.config_loader import (
 # Core module imports
 from core.order_utils import calculate_order_quantity
 from core.risk_utils import get_adaptive_risk_percent
-from core.score_evaluator import calculate_score
+from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.score_logger import log_score_history
 from core.tp_utils import calculate_tp_levels
 from core.trade_engine import get_position_size, trade_manager
-from core.volatility_controller import get_volatility_filters
 
 # Utility imports
 from telegram.telegram_utils import send_telegram_message
@@ -125,6 +124,11 @@ def fetch_data(symbol, tf="15m"):
         else:
             df["rel_volume"] = df["volume"] / df["volume"].mean()
 
+        # Add HTF trend if enabled
+        if USE_HTF_CONFIRMATION:
+            htf_trend = get_htf_trend(symbol)
+            df["htf_trend"] = htf_trend
+
         return df
     except Exception as e:
         log(f"Error fetching data for {symbol}: {e}", level="ERROR")
@@ -135,19 +139,23 @@ def get_htf_trend(symbol, tf="1h"):
     """
     Get higher timeframe trend with enhanced logic for breakout detection.
     """
-    df_htf = fetch_data(symbol, tf=tf)
-    if df_htf is None:
+    try:
+        df_htf = fetch_data(symbol, tf=tf)
+        if df_htf is None:
+            return False
+
+        # Standard trend check
+        price_above_ema = df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
+
+        # Enhanced trend check - look for momentum
+        momentum_increasing = False
+        if "momentum" in df_htf.columns and len(df_htf) >= 3:
+            momentum_increasing = df_htf["momentum"].iloc[-1] > df_htf["momentum"].iloc[-2]
+
+        return bool(price_above_ema and momentum_increasing)
+    except Exception as e:
+        log(f"Error in get_htf_trend for {symbol}: {e}", level="ERROR")
         return False
-
-    # Standard trend check
-    price_above_ema = df_htf["close"].iloc[-1] > df_htf["ema"].iloc[-1]
-
-    # Enhanced trend check - look for momentum
-    momentum_increasing = False
-    if "momentum" in df_htf.columns and len(df_htf) >= 3:
-        momentum_increasing = df_htf["momentum"].iloc[-1] > df_htf["momentum"].iloc[-2]
-
-    return price_above_ema and momentum_increasing
 
 
 def get_enhanced_market_regime(symbol):
@@ -220,91 +228,47 @@ def get_enhanced_market_regime(symbol):
 
 
 def passes_filters(df, symbol):
-    from common.config_loader import (
-        DRY_RUN,
-        FILTER_THRESHOLDS,
-        VOLATILITY_ATR_THRESHOLD,
-        VOLATILITY_RANGE_THRESHOLD,
-        VOLATILITY_SKIP_ENABLED,
-    )
-    from utils_logging import log
+    """
+    Dynamic filtering implementation using dynamic_filters module.
+    Uses runtime_config for flexible thresholds.
+    """
+    from core.dynamic_filters import get_market_regime_from_indicators, should_filter_pair
+    from core.exchange_init import exchange
+    from utils_core import get_runtime_config, safe_call_retry
 
-    balance = get_cached_balance()
-    filter_mode = "default_light" if balance < 100 else "default"
-    normalized_symbol = symbol.split(":")[0].replace("/", "") if ":" in symbol else symbol.replace("/", "")
-    base_filters = FILTER_THRESHOLDS.get(normalized_symbol, FILTER_THRESHOLDS[filter_mode])
+    try:
+        cfg = get_runtime_config()
+        atr_threshold = cfg.get("atr_threshold_percent", 19.0)
+        volume_threshold = cfg.get("volume_threshold_usdc", 16000)
+        adx_threshold = cfg.get("adx_threshold", 20)
 
-    filters = get_volatility_filters(symbol, base_filters)
-    relax_factor = filters["relax_factor"]
-
-    # Relaxed filters during optimal trading hours
-    if SHORT_TERM_MODE and is_optimal_trading_hour():
-        filters["atr"] *= 0.9  # 10% more permissive during peak hours
-        filters["adx"] *= 0.85  # 15% more permissive during peak hours
-        filters["bb"] *= 0.9  # 10% more permissive during peak hours
-
-    if DRY_RUN:
-        filters["atr"] *= 0.6
-        filters["adx"] *= 0.6
-        filters["bb"] *= 0.6
-
-    price = df["close"].iloc[-1]
-    atr = df["atr"].iloc[-1] / price if not pd.isna(df["atr"].iloc[-1]) else 0
-    adx = df["adx"].iloc[-1] if not pd.isna(df["adx"].iloc[-1]) else 0
-    bb_width = df["bb_width"].iloc[-1] / price if not pd.isna(df["bb_width"].iloc[-1]) else 0
-
-    if pd.isna(atr) or atr == 0:
-        log(f"{symbol} ⛔️ Rejected: ATR is NaN or 0", level="ERROR")
-        send_telegram_message(f"⚠️ ATR calculation failed for {symbol}", force=True)
-        return False
-    if atr < filters["atr"]:
-        log(
-            f"{symbol} ⛔️ Rejected: ATR {atr:.5f} < {filters['atr']} (relax={relax_factor})",
-            level="DEBUG",
-        )
-        send_telegram_message(f"⚠️ {symbol} rejected: ATR {atr:.5f} < {filters['atr']}", force=True)
-        return False
-    if pd.isna(adx) or adx == 0:
-        log(f"{symbol} ⛔️ Rejected: ADX is NaN or 0", level="ERROR")
-        send_telegram_message(f"⚠️ ADX calculation failed for {symbol}", force=True)
-        return False
-    if adx < filters["adx"]:
-        log(
-            f"{symbol} ⛔️ Rejected: ADX {adx:.2f} < {filters['adx']} (relax={relax_factor})",
-            level="DEBUG",
-        )
-        send_telegram_message(f"⚠️ {symbol} rejected: ADX {adx:.2f} < {filters['adx']}", force=True)
-        return False
-    if pd.isna(bb_width) or bb_width == 0:
-        log(f"{symbol} ⛔️ Rejected: BB Width is NaN or 0", level="ERROR")
-        send_telegram_message(f"⚠️ BB Width calculation failed for {symbol}", force=True)
-        return False
-    if bb_width < filters["bb"]:
-        log(
-            f"{symbol} ⛔️ Rejected: BB Width {bb_width:.5f} < {filters['bb']} (relax={relax_factor})",
-            level="DEBUG",
-        )
-        send_telegram_message(f"⚠️ {symbol} rejected: BB Width {bb_width:.5f} < {filters['bb']}", force=True)
-        return False
-
-    # Volume spike check for short-term trading
-    if SHORT_TERM_MODE and "rel_volume" in df.columns and not pd.isna(df["rel_volume"].iloc[-1]):
-        rel_volume = df["rel_volume"].iloc[-1]
-        if rel_volume < 0.7:  # Volume significantly below average
-            log(f"{symbol} ⛔️ Rejected: Low relative volume {rel_volume:.2f}", level="DEBUG")
-            return False
-
-    if VOLATILITY_SKIP_ENABLED:
         price = df["close"].iloc[-1]
-        high = df["high"].iloc[-1]
-        low = df["low"].iloc[-1]
-        atr = df["atr"].iloc[-1] / price
-        range_ratio = (high - low) / price
-        if atr < VOLATILITY_ATR_THRESHOLD and range_ratio < VOLATILITY_RANGE_THRESHOLD:
-            if DRY_RUN:
-                log(f"{symbol} ⛔️ Rejected: low volatility (ATR: {atr:.5f}, Range: {range_ratio:.5f})")
+        atr_percent = df["atr"].iloc[-1] / price if not pd.isna(df["atr"].iloc[-1]) else 0
+
+        # Get 24h volume in USDC
+        ticker = safe_call_retry(exchange.fetch_ticker, symbol)
+        volume_usdc = ticker["baseVolume"] * ticker["last"] if ticker else 0
+
+        # Determine market regime
+        adx = df["adx"].iloc[-1] if not pd.isna(df["adx"].iloc[-1]) else 0
+        bb_width = df["bb_width"].iloc[-1] / price if not pd.isna(df["bb_width"].iloc[-1]) else 0
+        market_regime = get_market_regime_from_indicators(adx, bb_width)
+
+        # Apply basic safety thresholds before dynamic filter
+        if atr_percent < atr_threshold or volume_usdc < volume_threshold or adx < adx_threshold:
+            log(f"{symbol} ⛔️ Rejected by static filter: ATR%={atr_percent:.2f}, Volume={volume_usdc:.0f}, ADX={adx:.1f}", level="DEBUG")
             return False
-    return True
+
+        # Use dynamic filter
+        should_filter, reason = should_filter_pair(symbol, atr_percent, volume_usdc, market_regime)
+        if should_filter:
+            log(f"{symbol} ⛔️ Filtered out: {reason['reason']}", level="DEBUG")
+            return False
+
+        return True
+    except Exception as e:
+        log(f"Error in passes_filters for {symbol}: {e}", level="ERROR")
+        return False
 
 
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
@@ -398,17 +362,9 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
 
     update_cached_symbol_open_interest(symbol, current_oi)
 
-    # Use dynamic threshold from runtime_config
-    min_required = get_runtime_config().get("score_threshold", MIN_TRADE_SCORE)
-    log(f"{symbol} Using score threshold from runtime config: {min_required}", level="DEBUG")
-
-    if MIN_TRADE_SCORE is not None and score < min_required:
-        log(
-            f"{symbol} ⛔️ Rejected: score {score:.2f} < score threshold {min_required}",
-            level="DEBUG",
-        )
-        failure_reasons.append("low_score")
-        return None, failure_reasons
+    # Get adaptive threshold
+    market_volatility = "medium"  # Can be enhanced with actual volatility calculation
+    min_required = get_adaptive_min_score(balance, market_volatility, symbol)
 
     # Adjust score requirement during optimal trading hours
     if SHORT_TERM_MODE and is_optimal_trading_hour():
@@ -419,8 +375,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         log(f"{symbol} 🔎 Final Score: {score:.2f} / (Required: {min_required:.4f})")
 
     if score < min_required:
-        if DRY_RUN:
-            log(f"{symbol} ❌ No entry: insufficient score\n" f"Final Score: {score:.2f} / (Required: {min_required:.4f})")
+        log(
+            f"{symbol} ⛔️ Rejected: score {score:.2f} < adaptive threshold {min_required:.2f}",
+            level="DEBUG",
+        )
         failure_reasons.append("insufficient_score")
         return None, failure_reasons
 

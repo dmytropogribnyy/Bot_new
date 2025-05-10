@@ -217,94 +217,76 @@ Structured Signal Failure Reasons: Implementing a standardized format for reject
 
 Your implementation approach demonstrates strong architectural principles with appropriate separation of concerns, effective use of configuration, and good modularity that will facilitate completing the remaining roadmap items.
 
-# 📌 Roadmap v1.7 (актуально на май 2025)
+## 📌 BinanceBot Roadmap v1.7 — Актуализация (май 2025)
 
-🔧 В процессе
+### ✅ Реализовано
 
-| Функция                                                    | Статус                                                                                      |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Auto-адаптация HTF Confidence → Score Impact               | ✅ Реализовано в `signal_feedback_loop.py`, используется в `strategy.py`                    |
-| Telegram-уведомления при Soft Exit (микро-прибыль)         | ✅ Реализовано, сообщение отправляется при закрытии с микроприбылью                         |
-| Auto-Scaling позиции на основе TP2 winrate и агрессивности | ✅ Внедрено: `signal_feedback_loop.py` + `runtime_config.json` + `strategy.py`              |
-| Parameter History (json-логирование всех изменений)        | ✅ Централизовано через `update_runtime_config()`                                           |
-| Signal Failure Reason Logging                              | ✅ Полностью реализовано: `should_enter_trade` + `signal_failures.json` + `fail_stats.json` |
-| Telegram-команды: /runtime, /signalblocks, /reasons        | ⏳ Команды ещё не реализованы                                                               |
-| Rebalancing символов по активности и missed                | ⏳ Логика реализована (логгеры), но не завершена интеграция в `pair_selector.py`            |
-| WebSocket-интеграция (aggTrade, markPrice, bookTicker)     | ❌ Не начата                                                                                |
-| Графики: PnL timeline, winrate динамика, сигнал heatmap    | ⏳ `score_heatmap.py` готов. Остальное — в планах                                           |
+| Функция                                             | Комментарий                                                                                     |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Auto-адаптация HTF Confidence → Score Impact        | В `signal_feedback_loop.py`, используется в `strategy.py`                                       |
+| Telegram-уведомления при Soft Exit (микро-прибыль)  | Внедрено: `tp_utils.py` отправляет уведомление при Soft Exit                                    |
+| Auto-Scaling позиции по TP2 winrate + агрессивности | Внедрено в `signal_feedback_loop.py`, `strategy.py`, `runtime_config.json`                      |
+| Parameter History Logging                           | Все изменения логируются через `update_runtime_config()`                                        |
+| Signal Failure Reason Logging                       | Реализовано через `should_enter_trade`, `signal_failures.json`, `fail_stats.json`               |
+| Relax Factor Adaptation                             | Внедрено: `filter_adaptation.py`, `pair_selector.py`, `dynamic_filters.py`, автоусиление active |
+| Missed Opportunities + Tracker                      | Реализовано логгирование, кеш, Telegram `/missedlog`, автообработка                             |
+| Rebalancing по активности                           | `symbol_activity_tracker.py` реализован, интеграция в `pair_selector.py` частично               |
+| Adaptive Score / Risk / Aggressiveness              | Полностью реализовано через `score_evaluator`, `runtime_config.json`, feedback loop             |
+| TP1/TP2 ML-оптимизация                              | Реализовано через `tp_optimizer.py`, `tp_optimizer_ml.py`                                       |
+| Telegram-команда `/signalconfig`                    | Показывает глобальный и символ-специфичный `relax_factor`, TP, SL, risk, score                  |
+| DRY_RUN защита и изоляция                           | Все записи и файлы отключены в DRY_RUN                                                          |
+| Auto-ротация активных символов                      | По волатильности, объёму, активности, missed и cooldown                                         |
+| Telegram отчёты: день/неделя/месяц/год              | Поддерживаются автоматические и ручные отчёты                                                   |
+| Adaptive Re-entry + Cooldown Override               | Реализовано                                                                                     |
+| Smart Switching & Soft Exit                         | Интеграция с TP-системой, break-even, trailing stop                                             |
 
-🧪 Запланировано:
+---
+
+### ⏳ В процессе
+
+| Функция                                       | Комментарий                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------ |
+| Signal Feedback: wick, relax, HTF toggle      | Требуется автоадаптация в `signal_feedback_loop.py`                |
+| Runtime фильтрация слабых символов            | Нет анализа winrate по символам, suppress_list пока не применяется |
+| Signal Blocker / Auto-Blacklist               | Нет механизма `block_until`, авто-блокировки на 6–12 часов         |
+| Telegram команды: `/runtime`, `/signalblocks` | Команды не реализованы                                             |
+| Графики: PnL timeline, winrate динамика       | `score_heatmap.py` готов, остальные — в планах                     |
+| WebSocket интеграция                          | Не начата: агг. сделки, mark price, bookTicker                     |
+
+---
+
+### 🧪 Запланировано
 
 -   Расширение `signal_feedback_loop.py`:
 
-    -   автоадаптация wick_sensitivity, HTF, relax-фильтра
-    -   runtime-фильтрация слабых символов по статистике
-    -   auto-blocking слабых символов (по отказам / winrate)
+    -   автоадаптация: `wick_sensitivity`, `relax_factor`, `HTF` включение/отключение
+    -   suppress runtime символов с плохим результатом
+    -   auto-blocking по fail count / low winrate
 
--   Расширение ML-моделей:
+-   ML-модули:
 
-    -   классификация volatility regime
-    -   TP/Signal classifier
+    -   классификация волатильности (`volatility regime`)
+    -   классификатор сигналов (TP success predictor)
+
+-   Графики:
+
+    -   визуализация PnL, timeline, winrate динамика, heatmap сигналов
+
+---
+
+### 🧩 Phase 4: v1.6.5 Patch (Heatmap & Logging)
+
+-   [ ] Лог всех `score` в `score_history.csv`, даже если не выбран
+-   [ ] `count` в heatmap → частота сигналов
+-   [ ] Telegram улучшение: суммарная строка по символам × дней
+-   [ ] Автоочистка `score_history.csv` > 30 дней (по плану)
 
 ---
 
-## 📌 TODO / Roadmap v1.7 (обновлено: май 2025)
+### 🧭 Phase 5 (v1.7.x)
 
-🔧 В процессе:
-
--   ✅ Auto-адаптация HTF Confidence → Score Impact
--   ✅ Auto-Scaling позиции на основе TP2 winrate и агрессивности
--   ✅ Parameter History Logging (json)
--   ✅ Signal Failure Reason Logging (structured)
--   ✅ Telegram-уведомления при Soft Exit
--   ⏳ Telegram-команды: /runtime, /signalblocks, /reasons
--   ⏳ Rebalancing символов по активности и missed opportunities
--   ⏳ WebSocket-интеграция (aggTrade, markPrice, bookTicker)
--   ⏳ PnL графики и визуализация: timeline, winrate динамика, сигнал heatmap
-
-## 📊 Статус (на май 2025)
-
-✅ Внедрено:
-
--   `signal_feedback_loop.py` работает: адаптация score_threshold, momentum_min, risk_multiplier, TP2-based scaling
--   HTF Confidence → Score Impact — в стратегии
--   Soft Exit + Smart Switching
--   Symbol Tracker + Missed Opportunities
--   Adaptive Score / Risk / Aggressiveness
--   TP1/TP2 автооптимизация (вкл. ML)
--   Telegram-интерфейс, MarkdownV2, защита
--   Adaptive Re-entry + Cooldown override
--   DRY_RUN логика изолирована
--   Auto-ротация по волатильности и активности
--   Отчёты: день / неделя / месяц / квартал / год
--   Filelock-защита + надёжное логирование
--   Parameter History Logging
-
-⏳ В процессе:
-
-1. Rebalancing по активности и missed:
-
-    - `symbol_activity_tracker.py`, `missed_tracker.py` — готовы ✅
-    - Интеграция в `pair_selector.py` — частично (отказные пары обрабатываются, но приоритет missed/active ещё не учитывается полностью)
-
-2. Signal Feedback: автоадаптация wick_sensitivity, relax_factor, HTF включение/отключение — не реализовано
-
-3. Runtime фильтрация слабых символов:
-
-    - пока нет winrate анализа по символам
-    - нет suppress_list / блокировок в runtime_config
-
-4. Signal Blocker:
-
-    - отсутствует механизм `block_until`, временной блокировки
-    - нет auto-blacklist слабых символов на основе отказов
-
-🧪 Запланировано:
-
--   Завершить `rebalancing` по активности
--   Расширить `signal_feedback_loop.py` с поддержкой wick, HTF toggle, relax
--   ML-классификация volatility regime, signal classifier
--   Визуализация: графики PnL, динамика winrate, heatmap сигналов
--   Signal Blocker + runtime suppression logic
-
----
+-   [ ] WebSocket поддержка (реакция на события)
+-   [ ] Реализация Re-entry после stop
+-   [ ] Масштабирование позиции на основе волатильности
+-   [ ] Контроль throttle API (testnet/mainnet)
+-   [ ] Поддержка мультибиржевой архитектуры (Binance/OKX/Bybit...)

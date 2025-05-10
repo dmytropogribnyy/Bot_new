@@ -10,9 +10,7 @@ import pandas as pd
 from common.config_loader import (
     DRY_RUN,
     FIXED_PAIRS,
-    HIGH_ACTIVITY_HOURS,  # Add this
-    MAX_DYNAMIC_PAIRS,
-    MIN_DYNAMIC_PAIRS,
+    HIGH_ACTIVITY_HOURS,
     MISSED_OPPORTUNITIES_FILE,
     PAIR_COOLING_PERIOD_HOURS,
     PAIR_ROTATION_MIN_INTERVAL,
@@ -21,14 +19,16 @@ from common.config_loader import (
     USDC_SYMBOLS,
     USDT_SYMBOLS,
     USE_TESTNET,
-    WEEKEND_TRADING,  # Add this
+    WEEKEND_TRADING,
 )
 from core.binance_api import convert_symbol
+from core.dynamic_filters import get_market_regime_from_indicators, should_filter_pair
 from core.exchange_init import exchange
-from core.fail_stats_tracker import FAIL_STATS_FILE
+from core.fail_stats_tracker import FAIL_STATS_FILE, is_symbol_blocked
+from core.filter_adaptation import load_json_file, save_json_file
 from symbol_activity_tracker import SIGNAL_ACTIVITY_FILE
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, get_market_volatility_index, safe_call_retry
+from utils_core import get_cached_balance, get_market_volatility_index, get_max_positions, get_runtime_config, safe_call_retry
 from utils_logging import log
 
 SYMBOLS_FILE = "data/dynamic_symbols.json"
@@ -45,14 +45,6 @@ pair_performance = {}
 
 # Добавить глобальную переменную
 _last_logged_hour = None
-
-
-def load_json_file(filepath):
-    try:
-        with open(filepath, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
 
 
 def load_failure_stats():
@@ -414,15 +406,22 @@ def select_active_symbols():
     # Determine pair limits based on account size
     balance = get_cached_balance()
 
+    # Rotation pool size (monitoring)
     if balance < 120:
-        min_dyn = min(MIN_DYNAMIC_PAIRS, 3)  # Max 3 dynamic pairs for very small accounts
-        max_dyn = min(MAX_DYNAMIC_PAIRS, 5)  # Max 5 dynamic pairs for very small accounts
+        rotation_pool_size = 8
     elif balance < 200:
-        min_dyn = min(MIN_DYNAMIC_PAIRS, 5)
-        max_dyn = min(MAX_DYNAMIC_PAIRS, 8)
+        rotation_pool_size = 10
+    elif balance < 300:
+        rotation_pool_size = 12
     else:
-        min_dyn = MIN_DYNAMIC_PAIRS
-        max_dyn = MAX_DYNAMIC_PAIRS
+        rotation_pool_size = 15
+
+    # Concurrent position limit (separate from rotation)
+    get_max_positions(balance)
+
+    # Use rotation_pool_size for pair selection
+    min_dyn = max(5, rotation_pool_size - 2)
+    max_dyn = rotation_pool_size
 
     # Adapt pair count based on market volatility
     market_volatility = get_market_volatility_index()
@@ -452,6 +451,14 @@ def select_active_symbols():
     for s in all_symbols:
         if s in fixed:
             rejected_pairs[s] = "fixed_pair"
+            continue
+
+        # Check if symbol is auto-blocked
+        is_blocked, block_info = is_symbol_blocked(s)
+        if is_blocked:
+            block_until = block_info.get("block_until", "unknown")
+            rejected_pairs[s] = f"auto_blocked_until_{block_until}"
+            log(f"{s} is auto-blocked until {block_until} (failures: {block_info.get('total_failures', 0)})", level="DEBUG")
             continue
 
         # Fetch 15min data for general analysis
@@ -503,7 +510,8 @@ def select_active_symbols():
             log(f"{s} ⬆️ Missed bonus applied: +{bonus}", level="DEBUG")
 
         # 🔼 Boost for symbol activity
-        activity_count = activity_data.get(s, 0)
+        activity_timestamps = activity_data.get(s, [])
+        activity_count = len(activity_timestamps)
         if activity_count >= 10:
             activity_bonus = 0.1 + min(activity_count / 100, 0.2)  # capped at +0.2
             dynamic_data[s]["performance_score"] += activity_bonus
@@ -518,6 +526,52 @@ def select_active_symbols():
             dynamic_data[s]["failure_penalty"] = round(penalty, 3)
             dynamic_data[s]["performance_score"] = max(dynamic_data[s]["performance_score"] - penalty, 0)
             log(f"{s} ⚠️ Failure penalty applied: -{penalty:.2f} (failures: {total_failures})", level="DEBUG")
+
+    # Apply dynamic filters with should_filter_pair
+    filtered_data = {}
+    for s, d in dynamic_data.items():
+        atr = d.get("volatility", 0)
+        volume = d.get("volume", 0)
+        # Set default values for missing indicators
+        adx = 20  # Default ADX value
+        bb_width = 0.03  # Default Bollinger Bands width
+
+        # Determine market regime
+        market_regime = get_market_regime_from_indicators(adx, bb_width)
+
+        # Apply filter
+        should_filter, reason = should_filter_pair(s, atr, volume, market_regime)
+
+        if should_filter:
+            rejected_pairs[s] = reason["reason"]
+            log(f"{s} ⛔️ Filtered: {reason['reason']} (ATR={atr:.4f}, Vol={volume:.0f}, Regime={market_regime})", level="DEBUG")
+        else:
+            filtered_data[s] = d
+
+    # Track which pairs are added through fallback mechanism
+    fallback_pairs = set()
+
+    # Ensure minimum number of pairs
+    if len(filtered_data) < min_dyn:
+        # Sort rejected pairs by how close they are to thresholds
+        candidate_pairs = []
+        for s, reason in rejected_pairs.items():
+            if s in dynamic_data and reason in ["low_volatility", "low_volume"]:
+                data = dynamic_data[s]
+                candidate_pairs.append((s, data))
+
+        # Sort by performance score to get the best rejected pairs
+        candidate_pairs.sort(key=lambda x: x[1].get("performance_score", 0), reverse=True)
+
+        # Add best rejected pairs until we reach minimum
+        while len(filtered_data) < min_dyn and candidate_pairs:
+            pair, data = candidate_pairs.pop(0)
+            filtered_data[pair] = data
+            fallback_pairs.add(pair)  # Mark as fallback pair
+            log(f"Added {pair} back to ensure minimum {min_dyn} pairs despite filtering", level="WARNING")
+
+    # Replace dynamic_data with filtered data
+    dynamic_data = filtered_data
 
     # Calculate correlation matrix if we have enough pairs
     corr_matrix = calculate_correlation(price_data) if len(price_data) > 1 else None
@@ -556,7 +610,7 @@ def select_active_symbols():
             # Final score combines short-term signals and price factor
             final_score = short_term_score * price_factor
 
-            # Skip pairs in cooling period (3+ consecutive losses within PAIR_COOLING_PERIOD_HOURS)
+            # Skip pairs in cooling period
             if "trade_history" in pair_performance.get(s, {}) and len(pair_performance[s]["trade_history"]) >= 3:
                 last_3 = pair_performance[s]["trade_history"][-3:]
                 if all(not t.get("win", False) for t in last_3):
@@ -599,10 +653,13 @@ def select_active_symbols():
                 # Check correlation with already selected pairs
                 if corr_matrix is not None and len(added_pairs) > 0:
                     highly_correlated = False
+                    # Use relaxed correlation threshold for fallback pairs
+                    correlation_threshold = 0.95 if pair in fallback_pairs else 0.9
+
                     for added_pair in added_pairs:
-                        if abs(corr_matrix.loc[pair, added_pair]) > 0.8:  # 0.8 correlation threshold
+                        if abs(corr_matrix.loc[pair, added_pair]) > correlation_threshold:
                             highly_correlated = True
-                            log(f"Skipping {pair} due to high correlation with {added_pair}", level="DEBUG")
+                            log(f"Skipping {pair} due to high correlation with {added_pair} (threshold: {correlation_threshold})", level="DEBUG")
                             break
 
                     if highly_correlated:
@@ -638,7 +695,7 @@ def select_active_symbols():
                 + data["performance_score"] * 0.2  # Historical performance (20%)
             )
 
-            # Skip pairs in cooling period (3+ consecutive losses within PAIR_COOLING_PERIOD_HOURS)
+            # Skip pairs in cooling period
             if "trade_history" in pair_performance.get(s, {}) and len(pair_performance[s]["trade_history"]) >= 3:
                 last_3 = pair_performance[s]["trade_history"][-3:]
                 if all(not t.get("win", False) for t in last_3):
@@ -671,8 +728,11 @@ def select_active_symbols():
             # Check correlation with already selected pairs
             if corr_matrix is not None and len(added_pairs) > 0:
                 highly_correlated = False
+                # Use relaxed correlation threshold for fallback pairs
+                correlation_threshold = 0.95 if pair in fallback_pairs else 0.9
+
                 for added_pair in added_pairs:
-                    if abs(corr_matrix.loc[pair, added_pair]) > 0.8:  # 0.8 correlation threshold
+                    if abs(corr_matrix.loc[pair, added_pair]) > correlation_threshold:
                         highly_correlated = True
                         break
 
@@ -694,14 +754,49 @@ def select_active_symbols():
     # Combine fixed and dynamic pairs
     active_symbols = fixed + selected_dyn
 
-    # Log rejection statistics
-    rejection_reasons = {}
-    for symbol, reason in rejected_pairs.items():
-        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+    # Initialize relax_factor for new active symbols
+    try:
+        filter_path = "data/filter_adaptation.json"
+        filter_data = load_json_file(filter_path)
+        updated = False
 
-    log(f"[Pair Selector] {len(dynamic_data)} pairs analyzed, {len(selected_dyn)} selected, {len(rejected_pairs)} rejected", level="INFO")
-    for reason, count in rejection_reasons.items():
-        log(f"[Rejection Stats] {reason}: {count} pairs", level="INFO")
+        for symbol in active_symbols:
+            normalized = symbol.replace("/", "").upper()
+            if normalized not in filter_data:
+                filter_data[normalized] = {"relax_factor": get_runtime_config().get("relax_factor", 0.35)}
+                log(f"[FilterAdapt] Initialized relax_factor for {symbol}", level="INFO")
+                updated = True
+
+        if updated:
+            save_json_file(filter_path, filter_data)
+            log("[FilterAdapt] Updated filter_adaptation.json with new symbols", level="INFO")
+    except Exception as e:
+        log(f"[FilterAdapt] Error initializing relax_factor for active symbols: {e}", level="ERROR")
+
+    # Calculate final rejection statistics
+    final_selected = set(selected_dyn)
+    total_analyzed = len(dynamic_data)
+    total_selected = len(selected_dyn)
+    total_ultimately_rejected = total_analyzed - total_selected
+
+    # Count rejection reasons for final rejected pairs only
+    final_rejection_reasons = {}
+    for symbol in dynamic_data:
+        if symbol not in final_selected:
+            # Find the last rejection reason for this symbol
+            if symbol in rejected_pairs:
+                reason = rejected_pairs[symbol]
+                final_rejection_reasons[reason] = final_rejection_reasons.get(reason, 0) + 1
+
+    # Log clearer statistics
+    log(f"[Pair Selector] {total_analyzed} pairs analyzed, {total_selected} selected, {total_ultimately_rejected} ultimately rejected", level="INFO")
+    log(f"[Pair Selector] {len(filtered_data) - len(fallback_pairs)} pairs passed initial filters, {len(fallback_pairs)} restored through fallback", level="INFO")
+
+    # Log final rejection reasons
+    if final_rejection_reasons:
+        log("[Final Rejection Stats]:", level="INFO")
+        for reason, count in final_rejection_reasons.items():
+            log(f"  {reason}: {count} pairs", level="INFO")
 
     # Log and save results
     log(f"Selected {len(active_symbols)} active symbols: {active_symbols}", level="INFO")

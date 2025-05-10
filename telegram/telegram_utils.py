@@ -214,3 +214,18 @@ def send_daily_summary():
         send_telegram_message(escape_markdown_v2(message))
     except Exception as e:
         send_telegram_message(escape_markdown_v2(f"⚠️ Failed to send daily summary:\n{e}"))
+
+
+COMMAND_REGISTRY = {}
+
+
+def register_command(name, description=""):
+    """
+    Decorator to register a command handler.
+    """
+
+    def decorator(func):
+        COMMAND_REGISTRY[name] = {"handler": func, "description": description or func.__doc__ or ""}
+        return func
+
+    return decorator

@@ -1,7 +1,7 @@
 # telegram_commands.py
 """
 Telegram command handlers for BinanceBot
-Processes user commands and provides bot control
+Processes user commands and provides bot control with balance-aware enhancements
 """
 
 import json
@@ -12,17 +12,34 @@ from threading import Lock, Thread
 
 import pandas as pd
 
-from common.config_loader import DRY_RUN, EXPORT_PATH, LEVERAGE_MAP
+from common.config_loader import (
+    DRY_RUN,
+    EXPORT_PATH,
+    FILTER_THRESHOLDS,
+    LEVERAGE_MAP,
+    RISK_PERCENT,
+    SL_PERCENT,
+    TP1_PERCENT,
+    TP2_PERCENT,
+    get_adaptive_risk_percent,
+    get_adaptive_score_threshold,
+    get_deposit_tier,
+    get_max_positions,
+)
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
+from core.fail_stats_tracker import is_symbol_blocked, reset_failure_count
 from core.trade_engine import close_real_trade, trade_manager
 from main import stop_event
 from missed_tracker import flush_best_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from symbol_activity_tracker import get_most_active_symbols
+
+# Add this import at the top of telegram_commands.py
+from telegram.telegram_handler import handle_errors  # or wherever it's defined
 from telegram.telegram_ip_commands import handle_ip_and_misc_commands
-from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from telegram.telegram_utils import escape_markdown_v2, register_command, send_telegram_message
 from utils_core import get_cached_balance, get_runtime_config, load_state, save_state
 from utils_logging import log
 
@@ -237,25 +254,163 @@ def handle_goals_command():
         log(f"Goals command error: {e}", level="ERROR")
 
 
+@handle_errors
+def cmd_signalblocks(update, context):
+    """Show currently blocked symbols."""
+    try:
+        from utils_core import get_runtime_config
+
+        runtime_config = get_runtime_config()
+        blocked_symbols = runtime_config.get("blocked_symbols", {})
+
+        if not blocked_symbols:
+            update.message.reply_text("No symbols are currently blocked. ✅")
+            return
+
+        msg = "🚫 Currently Blocked Symbols:\n\n"
+
+        for symbol, block_info in blocked_symbols.items():
+            is_blocked, _ = is_symbol_blocked(symbol)
+            if is_blocked:
+                block_until = block_info.get("block_until", "unknown")
+                failures = block_info.get("total_failures", 0)
+                block_count = block_info.get("block_count", 0)
+
+                # Calculate remaining time
+                try:
+                    from dateutil import parser
+
+                    until_dt = parser.parse(block_until)
+                    from stats import now_with_timezone
+
+                    now = now_with_timezone()
+                    remaining = until_dt - now
+                    hours_remaining = remaining.total_seconds() / 3600
+
+                    msg += f"• {symbol}\n" f"  Failures: {failures}\n" f"  Block #: {block_count}\n" f"  Expires: {hours_remaining:.1f}h\n\n"
+                except Exception as e:
+                    msg += f"• {symbol} (error parsing: {e})\n\n"
+
+        update.message.reply_text(msg)
+    except Exception as e:
+        update.message.reply_text(f"Error fetching block info: {e}")
+
+
+@handle_errors
+def cmd_unblock(update, context):
+    """Manually unblock a symbol: /unblock BTCUSDC"""
+    try:
+        if not context.args:
+            update.message.reply_text("Usage: /unblock SYMBOL (e.g., /unblock BTCUSDC)")
+            return
+
+        # Handle both formats: BTCUSDC and BTC/USDC
+        input_symbol = context.args[0].upper()
+
+        # Convert to standard format (with slash) if needed
+        if "/" not in input_symbol and "USDC" in input_symbol:
+            # Convert BTCUSDC to BTC/USDC
+            symbol = input_symbol.replace("USDC", "/USDC")
+        else:
+            symbol = input_symbol
+
+        from utils_core import get_runtime_config, update_runtime_config
+
+        runtime_config = get_runtime_config()
+        blocked_symbols = runtime_config.get("blocked_symbols", {})
+
+        if symbol not in blocked_symbols:
+            update.message.reply_text(f"{symbol} is not blocked.")
+            return
+
+        # Remove block
+        del blocked_symbols[symbol]
+        runtime_config["blocked_symbols"] = blocked_symbols
+        update_runtime_config(runtime_config)
+
+        # Reset failure count
+        reset_failure_count(symbol)
+
+        update.message.reply_text(f"✅ {symbol} has been unblocked and failure count reset.")
+    except Exception as e:
+        update.message.reply_text(f"Error unblocking symbol: {e}")
+
+
+@handle_errors
+def cmd_failstats(update, context):
+    """Show failure statistics for all symbols."""
+    try:
+        from core.fail_stats_tracker import get_signal_failure_stats
+
+        failure_stats = get_signal_failure_stats()
+
+        if not failure_stats:
+            update.message.reply_text("No failure statistics available. ✅")
+            return
+
+        msg = "📊 Signal Failure Statistics:\n\n"
+
+        # Sort by total failures descending
+        sorted_symbols = sorted(failure_stats.items(), key=lambda x: sum(x[1].values()), reverse=True)
+
+        for symbol, reasons in sorted_symbols[:10]:  # Show top 10
+            total_failures = sum(reasons.values())
+
+            msg += f"• {symbol}: {total_failures} failures\n"
+
+            # Show breakdown of reasons
+            sorted_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)
+            for reason, count in sorted_reasons[:3]:  # Top 3 reasons
+                msg += f"  - {reason}: {count}\n"
+            msg += "\n"
+
+        if len(sorted_symbols) > 10:
+            msg += f"... and {len(sorted_symbols) - 10} more symbols"
+
+        update.message.reply_text(msg)
+    except Exception as e:
+        update.message.reply_text(f"Error fetching failure stats: {e}")
+
+
 def handle_risk_command(message):
     """
-    Adjust risk level (e.g., /risk 0.02)
+    Adjust risk level with balance-aware limits
     """
     try:
-        from core.risk_utils import get_max_risk, set_max_risk
-
         parts = message.get("text", "").strip().split()
+        balance = get_cached_balance()
+        tier = get_deposit_tier()
+        max_recommended_risk = get_adaptive_risk_percent(tier)
+
         if len(parts) == 1:
-            current_risk = get_max_risk()
-            msg = f"Current Risk Level: {current_risk*100:.1f}%\n" "Use /risk <value> to set new risk (e.g., /risk 0.02 for 2%)"
+            current_risk = RISK_PERCENT if RISK_PERCENT else get_adaptive_risk_percent(tier)
+            msg = (
+                f"Current Risk Level: {current_risk*100:.1f}%\n"
+                f"Your Balance: ${balance:.2f} (Tier: {tier})\n"
+                f"Recommended Max Risk: {max_recommended_risk*100:.1f}%\n"
+                "Use /risk <value> to set new risk (e.g., /risk 0.02 for 2%)"
+            )
             send_telegram_message(msg, force=True)
         else:
             new_risk = float(parts[1])
-            if new_risk < 0.01 or new_risk > 0.05:
-                send_telegram_message("❌ Risk must be between 0.01 (1%) and 0.05 (5%)", force=True)
+
+            # Balance-aware limits
+            if balance < 150:
+                max_allowed_risk = 0.025  # 2.5% max for small accounts
+            elif balance < 300:
+                max_allowed_risk = 0.035  # 3.5% max for medium accounts
             else:
-                set_max_risk(new_risk)
-                send_telegram_message(f"✅ Risk level set to {new_risk*100:.1f}%", force=True)
+                max_allowed_risk = 0.05  # 5% max for larger accounts
+
+            if new_risk < 0.005:  # 0.5% minimum
+                send_telegram_message("❌ Risk must be at least 0.005 (0.5%)", force=True)
+            elif new_risk > max_allowed_risk:
+                send_telegram_message(f"❌ For your balance (${balance:.2f}), maximum risk is {max_allowed_risk*100:.1f}%\n" f"Recommended: {max_recommended_risk*100:.1f}%", force=True)
+            else:
+                from utils_core import update_runtime_config
+
+                update_runtime_config({"risk_percent": new_risk})
+                send_telegram_message(f"✅ Risk level set to {new_risk*100:.1f}%\n" f"(Recommended for ${balance:.2f}: {max_recommended_risk*100:.1f}%)", force=True)
                 log(f"Risk level set to {new_risk*100:.1f}% via /risk command", level="INFO")
     except Exception as e:
         send_telegram_message(f"❌ Failed to set risk: {e}", force=True)
@@ -264,28 +419,76 @@ def handle_risk_command(message):
 
 def handle_status_command(state):
     """
-    Report current bot status: running/stopping, DRY_RUN, active positions, balance
+    Report current bot status with balance-aware parameters and enhanced risk display
     """
     try:
         mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
         stopping = state.get("stopping", False)
-        msg = f"🔍 *Bot Status*\nMode: `{mode}`\nStopping: `{stopping}`"
+        balance = round(float(get_cached_balance()), 2)
+        tier = get_deposit_tier()
+        max_positions = get_max_positions()
 
+        runtime_config = get_runtime_config()
+        current_risk = runtime_config.get("risk_percent", get_adaptive_risk_percent(tier))
+        current_tp1 = runtime_config.get("tp1_percent", TP1_PERCENT)
+        current_tp2 = runtime_config.get("tp2_percent", TP2_PERCENT)
+        current_sl = runtime_config.get("sl_percent", SL_PERCENT)
+
+        # Calculate enhanced risk metrics
+        from core.risk_utils import calculate_current_risk
+
+        total_exposure = calculate_current_risk()
+        exposure_warning = " ⚠️" if total_exposure > 200 else ""
+
+        # Calculate individual position risks
+        if not DRY_RUN:
+            positions = exchange.fetch_positions()
+            position_risks = []
+            for pos in positions:
+                if float(pos.get("contracts", 0)) > 0:
+                    # Calculate individual position risk
+                    contracts = float(pos.get("contracts", 0))
+                    entry_price = float(pos.get("entryPrice", 0))
+                    notional = contracts * entry_price
+                    position_risk = (notional * SL_PERCENT) / balance * 100
+                    position_risks.append(position_risk)
+
+            max_single_risk = max(position_risks) if position_risks else 0
+            active_positions = len(position_risks)
+        else:
+            # For DRY_RUN mode
+            active_positions = len([t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit")])
+            max_single_risk = 0  # Simplified for DRY_RUN
+
+        # Construct status message with enhanced risk metrics
+        msg = (
+            f"🔍 *Bot Status*\n"
+            f"Mode: `{mode}`\n"
+            f"Stopping: `{stopping}`\n"
+            f"Balance: `{balance}` USDC\n"
+            f"Risk Tier: `{tier}`\n"
+            f"Max Positions: `{max_positions}`\n"
+            f"\n*Risk Metrics:*\n"
+            f"Total Exposure: `{total_exposure:.1f}%`{exposure_warning}\n"
+            f"Max Single Risk: `{max_single_risk:.1f}%`\n"
+            f"Active Positions: `{active_positions}`\n"
+            f"Risk Per Trade: `{current_risk*100:.1f}%`\n"
+            f"TP1/TP2/SL: `{current_tp1*100:.1f}%/{current_tp2*100:.1f}%/{current_sl*100:.1f}%`"
+        )
+
+        # Get open positions details (unchanged from original)
         if DRY_RUN:
             open_trades = [_format_pos_dry(t) for t in trade_manager._trades.values()]
         else:
             positions = exchange.fetch_positions()
             open_trades = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
 
-        msg += f"\nOpen Positions: `{len(open_trades)}`"
+        msg += f"\n\nOpen Positions: `{len(open_trades)}`"
         if open_trades:
             msg += "\n" + "\n".join(open_trades)
 
-        balance = round(float(get_cached_balance()), 2)
-        msg += f"\nBalance: `{balance}` USDC"
-
         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-        log("Sent bot status via /status", level="INFO")
+        log("Sent enhanced bot status via /status", level="INFO")
     except Exception as e:
         send_telegram_message(f"❌ Failed to get bot status: {e}", force=True)
         log(f"Status command error: {e}", level="ERROR")
@@ -293,29 +496,116 @@ def handle_status_command(state):
 
 def handle_filters_command(message):
     """
-    Adjust pair filters (e.g., /filters 0.19 16000)
+    Adjust pair filters with dynamic filter display
     """
     try:
         from common.config_loader import set_filter_thresholds
 
         parts = message.get("text", "").strip().split()
+
+        # Get current runtime config
+        runtime_config = get_runtime_config()
+        relax_factor = runtime_config.get("relax_factor", 1.0)
+
         if len(parts) == 1:
             try:
                 with open("data/filter_settings.json", "r") as f:
                     filters = json.load(f)
-                msg = f"Current Filters:\nATR: {filters['atr_percent']*100:.2f}%\nVolume: {filters['volume_usdc']:,.0f} USDC\n" "Use /filters <atr_percent> <volume_usdc> to set new filters"
+
+                # Get current symbol if we have an active one
+                current_filters = {}
+                if trade_manager._trades:
+                    sample_symbol = list(trade_manager._trades.keys())[0]
+                    if sample_symbol in FILTER_THRESHOLDS:
+                        current_filters = FILTER_THRESHOLDS[sample_symbol]
+                    else:
+                        current_filters = FILTER_THRESHOLDS.get("default", {})
+                else:
+                    current_filters = FILTER_THRESHOLDS.get("default", {})
+
+                msg = (
+                    f"Current Filters:\n"
+                    f"ATR: {filters['atr_percent']*100:.2f}%\n"
+                    f"Volume: {filters['volume_usdc']:,.0f} USDC\n"
+                    f"Relax Factor: {relax_factor:.2f}\n"
+                    f"Current Thresholds:\n"
+                    f"  ATR: {current_filters.get('atr', 0):.4f}\n"
+                    f"  ADX: {current_filters.get('adx', 0):.1f}\n"
+                    f"  BB: {current_filters.get('bb', 0):.4f}\n"
+                    "Use /filters <atr_percent> <volume_usdc> to set new filters"
+                )
             except Exception:
-                msg = "No filters set. Use /filters <atr_percent> <volume_usdc> to set new filters"
+                msg = f"No filters set. Relax Factor: {relax_factor:.2f}\n" "Use /filters <atr_percent> <volume_usdc> to set new filters"
             send_telegram_message(msg, force=True)
         else:
             atr_percent = float(parts[1])
             volume_usdc = float(parts[2])
             set_filter_thresholds(atr_percent, volume_usdc)
-            send_telegram_message(f"✅ Filters updated: ATR={atr_percent*100:.2f}%, Volume={volume_usdc:,.0f} USDC", force=True)
+            send_telegram_message(f"✅ Filters updated: ATR={atr_percent*100:.2f}%, Volume={volume_usdc:,.0f} USDC\n" f"(Current Relax Factor: {relax_factor:.2f})", force=True)
             log(f"Filters updated via /filters command: ATR={atr_percent*100:.2f}%, Volume={volume_usdc:,.0f} USDC", level="INFO")
     except Exception as e:
         send_telegram_message(f"❌ Failed to set filters: {e}", force=True)
         log(f"Filters command error: {e}", level="ERROR")
+
+
+@register_command("/signalconfig")
+def handle_signalconfig_command():
+    """
+    Show current adaptive signal configuration with key trading parameters and relax factors
+    """
+    try:
+        config = get_runtime_config()
+
+        # Add current trading parameters
+        balance = get_cached_balance()
+        tier = get_deposit_tier()
+
+        # Get effective values if not in runtime config
+        effective_tp1 = config.get("tp1_percent", TP1_PERCENT)
+        effective_tp2 = config.get("tp2_percent", TP2_PERCENT)
+        effective_sl = config.get("sl_percent", SL_PERCENT)
+        effective_risk = config.get("risk_percent", get_adaptive_risk_percent(tier))
+
+        msg = (
+            "*Current Adaptive Signal Config:*\n"
+            f"Balance: ${balance:.2f} (Tier: {tier})\n"
+            f"Risk Percent: {effective_risk*100:.1f}%\n"
+            f"TP1 Percent: {effective_tp1*100:.1f}%\n"
+            f"TP2 Percent: {effective_tp2*100:.1f}%\n"
+            f"SL Percent: {effective_sl*100:.1f}%\n"
+            f"Max Positions: {get_max_positions()}\n"
+            f"Min Score: {get_adaptive_score_threshold(tier):.1f}\n"
+            "\n*Runtime Config:*\n"
+        )
+
+        # Add all runtime config items
+        for k, v in config.items():
+            msg += f"`{k}` = `{v}`\n"
+
+        # ─── Add per-symbol relax factors ───
+        import os
+
+        from common.config_loader import SYMBOLS_FILE
+        from utils_core import load_json_file
+
+        if os.path.exists(SYMBOLS_FILE):
+            with open(SYMBOLS_FILE, "r") as f:
+                active_symbols = json.load(f)
+        else:
+            active_symbols = []
+
+        filter_data = load_json_file("data/filter_adaptation.json")
+        if filter_data:
+            msg += "\n*Per-Symbol Relax Factors:*\n"
+            for symbol in active_symbols:
+                norm = symbol.replace("/", "").upper()
+                rf = filter_data.get(norm, {}).get("relax_factor", config.get("relax_factor", "N/A"))
+                msg += f"`{symbol}`: `{rf}`\n"
+
+        send_telegram_message(msg, parse_mode="MarkdownV2")
+    except Exception as e:
+        send_telegram_message(f"❌ Error fetching signal config: {e}", force=True)
+        log(f"Signal config error: {e}", level="ERROR")
 
 
 def handle_stop_command():
@@ -651,11 +941,18 @@ def handle_telegram_command(message, state):
             "/debuglog",
             "/log",
             "/runtime",
-            "/signalblocks",
             "/reasons",
         ] or text.startswith("/close_dry"):
             handle_ip_and_misc_commands(text, _initiate_stop)
             return
+        elif text == "/signalblocks":
+            cmd_signalblocks({"message": message}, {})
+        elif text.startswith("/unblock"):
+            # Parse the command arguments
+            parts = text.split()
+            cmd_unblock({"message": message}, {"args": parts[1:] if len(parts) > 1 else []})
+        elif text == "/failstats":
+            cmd_failstats({"message": message}, {})
         elif text == "/goals":
             handle_goals_command()
         elif text.startswith("/risk"):
@@ -680,20 +977,22 @@ def handle_telegram_command(message, state):
                 "⚖️ /mode - Show strategy bias and score\n"
                 "📈 /open - Show open positions\n"
                 "🔄 /restart - Restart bot after closing positions\n"
-                "⚠️ /risk - Adjust risk level (e.g., /risk 0.02)\n"
+                "⚠️ /risk - Adjust risk level (balance-aware)\n"
                 "🔄 /router_reboot - Plan router reboot\n"
                 "▶️ /resume_after_ip - Resume after IP change\n"
                 "🚪 /shutdown - Exit bot after positions close\n"
                 "🛑 /stop - Stop after all positions close\n"
                 "🚨 /panic - Force close all trades (confirmation)\n"
-                "🔍 /status - Show bot status\n"
+                "🔍 /status - Show bot status with risk tier & trading params\n"
                 "📊 /summary - Show performance summary\n"
-                "⚙️ /filters - Adjust pair filters (e.g., /filters 0.19 16000)\n"
+                "⚙️ /filters - Adjust pair filters (with dynamic values)\n"
                 "🔧 /runtime - Show current runtime config\n"
-                "🧱 /signalblocks - Show blocked signals (if any)\n"
+                "🚫 /signalblocks - Show currently blocked symbols\n"
+                "🔓 /unblock - Manually unblock a symbol (e.g., /unblock BTCUSDC)\n"
+                "📉 /failstats - Show failure statistics for all symbols\n"
                 "❌ /reasons - Show signal rejection reasons\n"
-                "📈 /pairstoday - Show today's selected pairs"
-                "🧠 /runtime - Show current runtime config (risk, score, etc)"
+                "📈 /pairstoday - Show today's selected pairs\n"
+                "🧠 /signalconfig - Show adaptive signal config (balance-aware)\n"
             )
 
             send_telegram_message(help_msg, force=True, parse_mode="")
@@ -701,14 +1000,28 @@ def handle_telegram_command(message, state):
         elif text == "/summary":
             try:
                 summary = generate_summary()
+                # Add balance-aware context
+                balance = get_cached_balance()
+                tier = get_deposit_tier()
+                runtime_config = get_runtime_config()
+                current_risk = runtime_config.get("risk_percent", get_adaptive_risk_percent(tier))
+
                 if DRY_RUN:
                     open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
                 else:
                     positions = exchange.fetch_positions()
                     open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-                msg = summary + "\n\n*Open Positions*:\n" + ("\n".join(open_details) if open_details else "None")
+
+                msg = (
+                    summary + f"\n\n*Account Info*:\n"
+                    f"Balance: {balance:.2f} USDC\n"
+                    f"Risk Tier: {tier}\n"
+                    f"Active Risk: {current_risk*100:.1f}%\n"
+                    f"Max Positions: {get_max_positions()}\n"
+                    "\n*Open Positions*:\n" + ("\n".join(open_details) if open_details else "None")
+                )
                 send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                log("Sent summary via /summary.", level="INFO")
+                log("Sent enhanced summary via /summary.", level="INFO")
             except Exception as e:
                 send_telegram_message(f"❌ Failed to generate summary: {e}", force=True)
                 log(f"Summary error: {e}", level="ERROR")
@@ -730,6 +1043,8 @@ def handle_telegram_command(message, state):
             handle_shutdown(message, state)
         elif text == "/status":
             handle_status_command(state)
+        elif text == "/signalconfig":
+            handle_signalconfig_command()
         elif text == "/resume_after_ip":
             state = load_state()
             if DRY_RUN:
@@ -785,7 +1100,8 @@ def handle_telegram_command(message, state):
         elif text == "/balance":
             try:
                 balance = round(float(get_cached_balance()), 2)
-                send_telegram_message(f"💰 Balance: {balance} USDC", force=True)
+                tier = get_deposit_tier()
+                send_telegram_message(f"💰 Balance: {balance} USDC\n📊 Risk Tier: {tier}", force=True)
                 log("Sent balance info.", level="INFO")
             except Exception as e:
                 send_telegram_message(f"❌ Failed to fetch balance: {e}", force=True)
@@ -797,12 +1113,6 @@ def handle_telegram_command(message, state):
 
         elif text == "/missedlog":
             flush_best_missed_opportunities(top_n=5)
-
-        elif text == "/signalconfig":
-            config = get_runtime_config()
-
-            msg = "*Current Adaptive Signal Config:*\n" + "\n".join(f"`{k}` = `{v}`" for k, v in config.items())
-            send_telegram_message(msg)
 
         elif text == "/runtime":
             handle_runtime_command()

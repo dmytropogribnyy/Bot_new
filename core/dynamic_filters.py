@@ -6,13 +6,14 @@ Optimized for 120 USDC deposit target
 """
 
 from core.aggressiveness_controller import get_aggressiveness_score
-from utils_core import get_cached_balance
+from core.filter_adaptation import get_adaptive_relax_factor
+from utils_core import get_cached_balance, get_runtime_config
 from utils_logging import log
 
 
 def get_dynamic_filter_thresholds(symbol, market_regime=None):
     """
-    Dynamic filter thresholds optimized for 120 USDC deposit
+    Dynamic filter thresholds optimized for small USDC deposits (e.g. 120–250 USDC)
 
     Args:
         symbol (str): Trading pair symbol
@@ -21,66 +22,65 @@ def get_dynamic_filter_thresholds(symbol, market_regime=None):
     Returns:
         dict: Filter thresholds including min_atr_percent and min_volume_usdc
     """
-    # Base values - balanced approach
-    base_atr_percent = 0.19  # Compromise between 0.18% and 0.20%
-    base_volume_usdc = 16000  # Compromise between 15,000 and 17,500
+    # Base values (slightly lowered for smaller accounts)
+    base_atr_percent = 0.17
+    base_volume_usdc = 14000
 
     # Get current balance and aggressiveness score
     balance = get_cached_balance()
     aggr_score = get_aggressiveness_score()
 
-    # Log initial values
-    log(f"Dynamic filters for {symbol}: Base ATR%={base_atr_percent*100:.2f}%, Volume={base_volume_usdc:,} USDC", level="DEBUG")
+    # Relax factor from runtime_config
+    relax = get_runtime_config().get("relax_factor", 0.35)
 
     # Market regime adjustments
     if market_regime == "breakout":
-        base_atr_percent *= 0.75  # -25% in breakout mode
-        base_volume_usdc *= 0.75  # -25% volume requirement in breakout mode
-        log(f"{symbol} Market regime adjustment: Breakout mode (-25%)", level="DEBUG")
+        base_atr_percent *= 0.75
+        base_volume_usdc *= 0.75
+        log(f"{symbol} Market regime: Breakout (-25%)", level="DEBUG")
     elif market_regime == "trend":
-        base_atr_percent *= 0.85  # -15% in trend following
-        base_volume_usdc *= 0.85  # -15% in trend following
-        log(f"{symbol} Market regime adjustment: Trend mode (-15%)", level="DEBUG")
+        base_atr_percent *= 0.85
+        base_volume_usdc *= 0.85
+        log(f"{symbol} Market regime: Trend (-15%)", level="DEBUG")
     elif market_regime == "flat":
-        base_atr_percent *= 1.05  # +5% in flat markets
-        log(f"{symbol} Market regime adjustment: Flat market (+5%)", level="DEBUG")
+        base_atr_percent *= 1.05
+        log(f"{symbol} Market regime: Flat (+5%)", level="DEBUG")
 
-    # Account size adjustments
+    # Balance-based adjustment
     if balance < 100:
-        # Ultra-small accounts need more permissive filters
-        account_factor = 0.85  # -15% for ultra-small accounts
-        log(f"{symbol} Account size adjustment: Ultra-small account (-15%)", level="DEBUG")
+        account_factor = 0.85
+        log(f"{symbol} Balance adjustment: Ultra-small (-15%)", level="DEBUG")
     elif balance < 150:
-        # Small accounts need slightly more permissive filters
-        account_factor = 0.9  # -10% for small accounts
-        log(f"{symbol} Account size adjustment: Small account (-10%)", level="DEBUG")
+        account_factor = 0.9
+        log(f"{symbol} Balance adjustment: Small (-10%)", level="DEBUG")
     else:
-        # Normal accounts use standard filters
         account_factor = 1.0
 
-    # Apply account size adjustments
     base_atr_percent *= account_factor
     base_volume_usdc *= account_factor
 
-    # Aggressiveness adjustments
+    # Aggressiveness adjustment
     if aggr_score > 0.7:
-        base_atr_percent *= 0.9  # -10% when system is in aggressive mode
-        base_volume_usdc *= 0.9  # -10% volume requirement in aggressive mode
-        log(f"{symbol} Aggressiveness adjustment: High aggression (-10%)", level="DEBUG")
+        base_atr_percent *= 0.9
+        base_volume_usdc *= 0.9
+        log(f"{symbol} Aggression adjustment: High (-10%)", level="DEBUG")
 
-    # Absolute minimum safeguards
-    min_atr_percent = max(base_atr_percent, 0.17)  # Hard floor at 0.17%
-    min_volume_usdc = max(base_volume_usdc, 13000)  # Hard floor at 13,000 USDC
+    # Apply relax factor
+    base_atr_percent *= 1 - relax
+    base_volume_usdc *= 1 - relax
 
-    # Log final values
+    # Hard floors (safety limits)
+    min_atr_percent = max(base_atr_percent, 0.11)
+    min_volume_usdc = max(base_volume_usdc, 9500)
+
     log(f"{symbol} Final filter thresholds: ATR%={min_atr_percent*100:.2f}%, Volume={min_volume_usdc:,} USDC", level="INFO")
-
     return {"min_atr_percent": min_atr_percent, "min_volume_usdc": min_volume_usdc}
 
 
 def should_filter_pair(symbol, atr_percent, volume_usdc, market_regime=None):
     """
     Determine if a pair should be filtered out based on dynamic thresholds
+    with additional relaxation based on per-symbol configuration.
 
     Args:
         symbol (str): Trading pair symbol
@@ -94,13 +94,23 @@ def should_filter_pair(symbol, atr_percent, volume_usdc, market_regime=None):
     # Get dynamic thresholds
     thresholds = get_dynamic_filter_thresholds(symbol, market_regime)
 
+    # Get per-symbol relax_factor
+    relax = get_adaptive_relax_factor(symbol)
+
+    # Adjust thresholds with relax_factor
+    adjusted_atr = thresholds["min_atr_percent"] * (1 - relax)
+    adjusted_vol = thresholds["min_volume_usdc"] * (1 - relax)
+
+    # Debug logging
+    log(f"{symbol} [Thresholds] ATR={atr_percent:.4f} vs {adjusted_atr:.4f}, Volume={volume_usdc:,.0f} vs {adjusted_vol:,.0f}", level="DEBUG")
+
     # Check ATR percent
-    if atr_percent < thresholds["min_atr_percent"]:
-        return True, {"reason": "low_volatility", "current": atr_percent, "threshold": thresholds["min_atr_percent"]}
+    if atr_percent < adjusted_atr:
+        return True, {"reason": "low_volatility", "current": atr_percent, "threshold": adjusted_atr}
 
     # Check volume
-    if volume_usdc < thresholds["min_volume_usdc"]:
-        return True, {"reason": "low_volume", "current": volume_usdc, "threshold": thresholds["min_volume_usdc"]}
+    if volume_usdc < adjusted_vol:
+        return True, {"reason": "low_volume", "current": volume_usdc, "threshold": adjusted_vol}
 
     # Pair passes all filters
     return False, {"reason": "passed"}

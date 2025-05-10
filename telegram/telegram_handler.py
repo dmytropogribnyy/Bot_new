@@ -97,3 +97,15 @@ def process_telegram_commands(state: dict, handler_fn):
         except Exception as e:
             log(f"⚠️ Telegram polling error: {e}", level="ERROR")
             time.sleep(3)
+
+
+def handle_errors(func):
+    def wrapper(update, context):
+        try:
+            return func(update, context)
+        except Exception as e:
+            from telegram.telegram_utils import send_telegram_message
+
+            send_telegram_message(f"❌ Telegram command error: {e}", force=True)
+
+    return wrapper

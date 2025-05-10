@@ -43,6 +43,7 @@ from stats import (
     send_yearly_report,
     should_run_optimizer,
 )
+from symbol_activity_tracker import auto_adjust_relax_factors_from_missed
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import send_daily_summary, send_telegram_message
 from tp_logger import ensure_log_exists
@@ -394,6 +395,10 @@ if __name__ == "__main__":
     initialize_runtime_adaptive_config()
     log("✅ Adaptive config initialized based on current balance", level="INFO")
 
+    from utils_core import get_runtime_config
+
+    log(f"Runtime config at startup: {get_runtime_config()}", level="DEBUG")
+
     # Add TP2 winrate analysis at startup
     analyze_tp2_winrate()
     log("✅ TP2 winrate analysis initialized", level="INFO")
@@ -406,6 +411,11 @@ if __name__ == "__main__":
 
     ensure_log_exists()
 
+    # ✅ Установка времени запуска для ip_monitor логики
+    import ip_monitor
+
+    ip_monitor.boot_time = time.time()
+
     # Запуск фоновых задач
     threading.Thread(
         target=lambda: process_telegram_commands(state, telegram_commands.handle_telegram_command),
@@ -413,7 +423,7 @@ if __name__ == "__main__":
     ).start()
     threading.Thread(
         target=lambda: start_ip_monitor(
-            lambda: telegram_commands._initiate_stop("ip_changed"),  # ✅ Фикс: передаём reason
+            lambda: telegram_commands._initiate_stop("ip_changed"),
             interval_seconds=IP_MONITOR_INTERVAL_SECONDS,
         ),
         daemon=True,
@@ -433,6 +443,8 @@ if __name__ == "__main__":
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
+    scheduler.add_job(auto_adjust_relax_factors_from_missed, "interval", minutes=30)
+
     scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
 
     scheduler.start()

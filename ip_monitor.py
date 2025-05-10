@@ -10,14 +10,13 @@ from common.config_loader import (
     IP_MONITOR_INTERVAL_SECONDS,
     ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
 )
-
-# Добавляем DRY_RUN
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 
 IP_STATUS_FILE = "data/last_ip.txt"
 router_reboot_mode = {"enabled": False, "expires_at": None}
 last_ip_check_time = None
+boot_time = time.time()
 
 
 def get_current_ip():
@@ -65,13 +64,10 @@ def check_ip_change(stop_callback):
         now = datetime.now().strftime("%d %b %Y, %H:%M")
 
         if router_reboot_mode["enabled"]:
-            msg = (
-                "⚠️ IP Address Changed\n"
-                f"🕒 Time: {now} (Bratislava)\n"
-                f"🌐 Old IP: {last_ip}\n"
-                f"🌐 New IP: {current_ip}\n"
-                "✅ No action needed (reboot mode active)."
-            )
+            msg = "⚠️ IP Address Changed\n" f"🕒 Time: {now} (Bratislava)\n" f"🌐 Old IP: {last_ip}\n" f"🌐 New IP: {current_ip}\n" "✅ No action needed (reboot mode active)."
+        elif time.time() - boot_time <= 300:
+            msg = "⚠️ IP Address Changed\n" f"🕒 Time: {now} (Bratislava)\n" f"🌐 Old IP: {last_ip}\n" f"🌐 New IP: {current_ip}\n" "ℹ️ Ignored due to recent startup (within 5 minutes)."
+            log("[IP Monitor] IP changed, but within 5 minutes of startup — ignoring", level="INFO")
         else:
             msg = (
                 "⚠️ IP Address Changed\n"
@@ -85,7 +81,7 @@ def check_ip_change(stop_callback):
                 log("IP changed, calling stop callback.", level="WARNING")
                 stop_callback()
 
-        send_telegram_message(msg, force=True, parse_mode="")  # ✅ Markdown отключён
+        send_telegram_message(msg, force=True, parse_mode="")
         return True, current_ip, last_ip, now
 
     return False, current_ip, last_ip, None
@@ -93,13 +89,9 @@ def check_ip_change(stop_callback):
 
 def enable_router_reboot_mode():
     router_reboot_mode["enabled"] = True
-    router_reboot_mode["expires_at"] = datetime.now() + timedelta(
-        minutes=ROUTER_REBOOT_MODE_TIMEOUT_MINUTES
-    )
+    router_reboot_mode["expires_at"] = datetime.now() + timedelta(minutes=ROUTER_REBOOT_MODE_TIMEOUT_MINUTES)
     send_telegram_message(
-        escape_markdown_v2(
-            f"🟢 Router reboot mode ENABLED for {ROUTER_REBOOT_MODE_TIMEOUT_MINUTES} minutes."
-        ),
+        escape_markdown_v2(f"🟢 Router reboot mode ENABLED for {ROUTER_REBOOT_MODE_TIMEOUT_MINUTES} minutes."),
         force=True,
     )
     expires_at = router_reboot_mode["expires_at"].strftime("%H:%M")
@@ -172,11 +164,10 @@ def force_ip_check_now(stop_callback):
         result_msg = "⚠️ IP has changed!"
         if router_reboot_mode["enabled"]:
             result_msg += "\n✅ No action needed (reboot mode active)."
+        elif time.time() - boot_time <= 300:
+            result_msg += "\nℹ️ Ignored due to recent startup."
         else:
-            result_msg += (
-                "\n🚫 Bot will stop after closing orders.\n"
-                f"ℹ️ Update Binance API IP whitelist with {current_ip or 'Unknown'}, then use /resume_after_ip."
-            )
+            result_msg += "\n🚫 Bot will stop after closing orders.\n" f"ℹ️ Update Binance API IP whitelist with {current_ip or 'Unknown'}, then use /resume_after_ip."
     else:
         result_msg = "✅ No changes detected."
 
@@ -205,10 +196,8 @@ def start_ip_monitor(stop_callback, interval_seconds=IP_MONITOR_INTERVAL_SECONDS
             time.sleep(interval_seconds)
         else:
             time_since_last_check = (datetime.now() - last_ip_check_time).total_seconds()
-            check_interval = (
-                120 if DRY_RUN else 30 * 60
-            )  # 120 секунд в DRY_RUN, 30 минут в REAL_RUN
+            check_interval = 120 if DRY_RUN else 1800  # 2 min (DRY), 30 min (REAL)
             if time_since_last_check >= check_interval:
                 check_ip_change(stop_callback)
                 last_ip_check_time = datetime.now()
-            time.sleep(60 if DRY_RUN else 60)  # Минимальная задержка
+            time.sleep(60)

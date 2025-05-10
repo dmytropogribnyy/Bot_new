@@ -7,20 +7,23 @@ from common.config_loader import API_KEY, API_SECRET, DRY_RUN, LEVERAGE_MAP, SYM
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
-# Initialize exchange (Standard Futures)
+# Initialize Binance Futures exchange (USDT-M)
 exchange = ccxt.binance(
     {
         "apiKey": API_KEY,
         "secret": API_SECRET,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "future",  # futures mode (USDT-M)
+            "defaultType": "future",  # USDT-M futures mode
             "adjustForTimeDifference": True,
         },
     }
 )
 
-# Check connection
+# ✅ Explicitly reinforce USDT-M futures mode
+exchange.options["defaultType"] = "future"
+
+# Check connection to exchange
 try:
     log("Checking connection to exchange...", level="INFO")
     exchange.load_markets()
@@ -34,37 +37,33 @@ except Exception as e:
 
 def set_leverage_for_symbols():
     """Sets leverage for all active symbols."""
-    from core.binance_api import convert_symbol  # Правильный импорт
+    from core.binance_api import convert_symbol  # Ensure proper formatting
 
     success_count = 0
     error_count = 0
 
     for symbol in SYMBOLS_ACTIVE:
         try:
-            api_symbol = convert_symbol(symbol)  # Корректное преобразование символа
+            api_symbol = convert_symbol(symbol)
 
-            # Правильное форматирование символа для API
+            # Normalize symbol ID
             if USE_TESTNET:
-                # Для тестнета может потребоваться другой формат
                 normalized_symbol = api_symbol.replace("/", "").replace(":USDC", "")
             else:
-                # Для реального режима - убираем слеш
                 normalized_symbol = symbol.replace("/", "")
 
-            # Проверка существования символа на бирже
             markets = exchange.load_markets()
             if normalized_symbol not in [m.replace("/", "") for m in markets.keys()]:
                 log(f"Symbol {symbol} не найден на бирже (пропускаем)", level="WARNING")
                 continue
 
-            # Получение значения кредитного плеча из конфигурации
             leverage = LEVERAGE_MAP.get(normalized_symbol, 5)
 
-            # Установка кредитного плеча
             exchange.fapiPrivate_post_leverage({"symbol": normalized_symbol, "leverage": leverage})
+
             log(f"Установлено кредитное плечо {leverage}x для {symbol}", level="INFO")
             success_count += 1
-            time.sleep(0.2)  # Небольшая задержка между запросами
+            time.sleep(0.2)
         except Exception as e:
             log(f"Ошибка установки кредитного плеча для {symbol}: {e}", level="ERROR")
             error_count += 1

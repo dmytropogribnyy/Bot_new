@@ -211,13 +211,24 @@ def log_trade_result(
                     writer.writerow(base_header)
                 writer.writerow(row)
 
-        # Enhanced logging with absolute profit (important for small deposits)
-        log(
-            f"[REAL_RUN] Recorded result for {symbol}, PnL: {round(price_change_pct, 2)}%, "
-            f"Net PnL: {round(net_pnl, 2)}%, Commission: {round(commission, 6)} USDC, "
-            f"Absolute Profit: {round(absolute_profit, 6)} USDC",
-            level="INFO",
-        )
+        # Enhanced logging with different messages for different result types
+        if result_type == "recovered":
+            log(
+                f"[Recovered Log] {symbol} closed outside tracked logic. PnL: {round(price_change_pct, 2)}%, " f"Net: {round(net_pnl, 2)}%, Profit: {round(absolute_profit, 6)} USDC",
+                level="WARNING",
+            )
+        elif result_type == "micro_profit":
+            log(
+                f"[Micro-Profit] {symbol} closed at micro target. PnL: {round(price_change_pct, 2)}%, " f"Net: {round(net_pnl, 2)}%, Profit: {round(absolute_profit, 6)} USDC",
+                level="INFO",
+            )
+        else:
+            log(
+                f"[REAL_RUN] Recorded result for {symbol}, PnL: {round(price_change_pct, 2)}%, "
+                f"Net PnL: {round(net_pnl, 2)}%, Commission: {round(commission, 6)} USDC, "
+                f"Absolute Profit: {round(absolute_profit, 6)} USDC",
+                level="INFO",
+            )
 
         # Telegram notification with key metrics
         from telegram.telegram_utils import send_telegram_message

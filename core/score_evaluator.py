@@ -247,6 +247,18 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
         raw_score += score_weights["VOLUME"]
         breakdown["VOLUME"] = score_weights["VOLUME"]
 
+    # Activity bonus for frequently signaling symbols
+    from symbol_activity_tracker import load_activity
+
+    activity_data = load_activity()
+    activity_timestamps = activity_data.get(symbol, [])
+    recent_count = len(activity_timestamps)
+
+    if recent_count >= 3:
+        raw_score += 0.2
+        breakdown["Activity"] = 0.2
+        log(f"{symbol} 🔔 Active symbol bonus: {recent_count} signals (score +0.2)", level="DEBUG")
+
     # NEW: EMA Crossover detection for short-term momentum
     has_crossover, direction = detect_ema_crossover(df)
     if has_crossover:
