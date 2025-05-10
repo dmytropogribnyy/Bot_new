@@ -1,7 +1,6 @@
 # pair_selector.py
 import json
 import os
-import threading
 import time
 from datetime import datetime
 from threading import Lock
@@ -730,9 +729,6 @@ def select_active_symbols():
             msg += f"\nPriority pairs included: {', '.join(priority_in_selection)}"
 
     send_telegram_message(msg, force=True)
-
-    # Track missed opportunities after rotation
-    threading.Thread(target=track_missed_opportunities, daemon=True).start()
 
     return active_symbols
 

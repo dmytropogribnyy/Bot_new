@@ -429,7 +429,7 @@ if __name__ == "__main__":
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
-    scheduler.add_job(select_active_symbols, "interval", hours=4)
+    # scheduler.add_job(select_active_symbols, "interval", hours=4)
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)

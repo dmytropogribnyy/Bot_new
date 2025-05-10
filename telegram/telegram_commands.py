@@ -262,6 +262,35 @@ def handle_risk_command(message):
         log(f"Risk command error: {e}", level="ERROR")
 
 
+def handle_status_command(state):
+    """
+    Report current bot status: running/stopping, DRY_RUN, active positions, balance
+    """
+    try:
+        mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
+        stopping = state.get("stopping", False)
+        msg = f"🔍 *Bot Status*\nMode: `{mode}`\nStopping: `{stopping}`"
+
+        if DRY_RUN:
+            open_trades = [_format_pos_dry(t) for t in trade_manager._trades.values()]
+        else:
+            positions = exchange.fetch_positions()
+            open_trades = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
+
+        msg += f"\nOpen Positions: `{len(open_trades)}`"
+        if open_trades:
+            msg += "\n" + "\n".join(open_trades)
+
+        balance = round(float(get_cached_balance()), 2)
+        msg += f"\nBalance: `{balance}` USDC"
+
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("Sent bot status via /status", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to get bot status: {e}", force=True)
+        log(f"Status command error: {e}", level="ERROR")
+
+
 def handle_filters_command(message):
     """
     Adjust pair filters (e.g., /filters 0.19 16000)
@@ -525,6 +554,74 @@ def handle_runtime_command():
         send_telegram_message(f"❌ Error fetching runtime config: {e}", force=True)
 
 
+def handle_open_command(state):
+    """
+    Show all open positions (DRY or REAL) with potential TP1/TP2 profit
+    """
+    try:
+        from core.strategy import calculate_tp_targets
+        from utils_core import get_cached_balance
+
+        balance = float(get_cached_balance())
+        tp1_total, tp2_total = 0.0, 0.0
+
+        if DRY_RUN:
+            open_list = []
+            trades = [t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+            for t in trades:
+                symbol = t["symbol"]
+                qty = float(t["qty"])
+                entry = float(t["entry"])
+                side = t["side"].lower()
+
+                tp1, tp2 = calculate_tp_targets(symbol, side, entry)
+
+                profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
+                profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
+                tp1_total += profit1
+                tp2_total += profit2
+
+                pos_str = _format_pos_dry(t)
+                open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f} USDC")
+
+            header = "🔍 *Open DRY positions:*"
+        else:
+            open_list = []
+            positions = exchange.fetch_positions()
+            real_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
+            for p in real_positions:
+                symbol = p["symbol"]
+                qty = float(p["contracts"])
+                entry = float(p["entryPrice"])
+                side = p["side"].lower()
+
+                tp1, tp2 = calculate_tp_targets(symbol, side, entry)
+
+                profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
+                profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
+                tp1_total += profit1
+                tp2_total += profit2
+
+                pos_str = _format_pos_real(p)
+                open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f} USDC")
+
+            header = "🔍 *Open positions:*"
+
+        if not open_list:
+            send_telegram_message(f"{header} none.", force=True)
+        else:
+            msg = (
+                f"{header}\n\n" + "\n\n".join(open_list) + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({tp1_total / balance * 100:.2f}%)\n"
+                f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({tp2_total / balance * 100:.2f}%)"
+            )
+            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+
+        log("Sent /open positions with potential PnL.", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to fetch open positions: {e}", force=True)
+        log(f"Open positions error: {e}", level="ERROR")
+
+
 def handle_telegram_command(message, state):
     """
     Main Telegram command handler with thread safety and enhanced reliability
@@ -631,6 +728,8 @@ def handle_telegram_command(message, state):
             handle_panic(message, state)
         elif text == "/shutdown":
             handle_shutdown(message, state)
+        elif text == "/status":
+            handle_status_command(state)
         elif text == "/resume_after_ip":
             state = load_state()
             if DRY_RUN:
@@ -659,20 +758,7 @@ def handle_telegram_command(message, state):
                 send_telegram_message(f"❌ Failed to fetch mode: {e}", force=True)
                 log(f"Mode error: {e}", level="ERROR")
         elif text == "/open":
-            try:
-                if DRY_RUN:
-                    open_list = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
-                    header = "Open DRY positions:"
-                else:
-                    positions = exchange.fetch_positions()
-                    open_list = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-                    header = "Open positions:"
-                msg = header + "\n" + "\n".join(open_list) if open_list else f"{header} none."
-                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                log("Sent /open positions.", level="INFO")
-            except Exception as e:
-                send_telegram_message(f"❌ Failed to fetch open positions: {e}", force=True)
-                log(f"Open positions error: {e}", level="ERROR")
+            handle_open_command(state)
         elif text == "/last":
             try:
                 df = pd.read_csv(EXPORT_PATH)

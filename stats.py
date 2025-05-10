@@ -86,6 +86,32 @@ def generate_summary():
     winrate = f"{(stats['wins'] / stats['total'] * 100):.0f}%" if stats["total"] > 0 else "0%"
     date = datetime.now().strftime("%d.%m.%Y")
 
+    # Подсчёт типов выходов из TP-лога
+    exit_stats = ""
+    try:
+        import pandas as pd
+
+        from common.config_loader import TP_LOG_FILE
+
+        if os.path.exists(TP_LOG_FILE):
+            df = pd.read_csv(TP_LOG_FILE)
+            tp1 = len(df[df["Result"] == "TP1"])
+            tp2 = len(df[df["Result"] == "TP2"])
+            sl = len(df[df["Result"] == "SL"])
+            soft = len(df[df["Result"] == "SOFT_EXIT"])
+            switch = len(df[df["Result"] == "SWITCH_EXIT"])
+            manual = len(df[df["Result"] == "MANUAL_EXIT"])
+            trailing = len(df[df["Result"] == "TRAILING"])
+            be = len(df[df["Result"] == "BE"])
+
+            exit_stats = (
+                f"\n🧩 *Exit Types:*\n"
+                f"🏁 TP1: `{tp1}` | 🎯 TP2: `{tp2}` | ❌ SL: `{sl}`\n"
+                f"🟡 Soft: `{soft}` | 🔄 Switch: `{switch}` | ✋ Manual: `{manual}` | 🔂 Trail: `{trailing}` | 🟢 BE: `{be}`"
+            )
+    except Exception as e:
+        exit_stats = f"\n⚠️ *Exit stats unavailable:* {e}"
+
     summary = f"""
 📊 *Current Bot Summary*
 
@@ -101,8 +127,10 @@ def generate_summary():
 
 🧾 *Last trade summary:*
 {stats['last_trade_summary']}
-"""
-    return summary.strip()
+{exit_stats}
+""".strip()
+
+    return summary
 
 
 def export_trade_log():

@@ -4,6 +4,8 @@ import threading
 import time
 import traceback
 from threading import Lock
+from telegram.telegram_utils import escape_markdown_v2
+
 
 import pandas as pd
 import ta
@@ -370,21 +372,24 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 label=f"create_stop_order {symbol}",
             )
             msg = (
-                r"✅ NEW TRADE" + (" (Re-entry)" if is_reentry else "") + r"\n"
-                r"Symbol: {symbol}\nSide: {side_upper}\nEntry: {entry_price}\n"
-                r"Qty: {qty}\nTP1: +{tp1_percent}%"
-                + (r" / TP2: +{tp2_percent}%" if tp2_price and qty_tp2 > 0 else "")
-                + r"\nSL: -{sl_percent}%"
-            ).format(
-                symbol=symbol,
-                side_upper=side.upper(),
-                entry_price=round(entry_price, 4),
-                qty=qty,
-                tp1_percent=round(TP1_PERCENT * 100, 1),
-                tp2_percent=round(TP2_PERCENT * 100, 1) if tp2_price else "",
-                sl_percent=round(SL_PERCENT * 100, 1),
-            )
-            send_telegram_message(msg, force=True)
+            "🚀 *NEW TRADE OPENED*{}\n"
+            "📊 *Symbol:* `{}`\n"
+            "🧭 *Side:* `{}`\n"
+            "🎯 *Entry:* `{}`\n"
+            "📦 *Qty:* `{}`\n"
+            "🏁 *TP1:* `+{}%`{}\n"
+            "🛑 *SL:* `-{}%`"
+        ).format(
+            " (Re-entry)" if is_reentry else "",
+            escape_markdown_v2(symbol),
+            escape_markdown_v2(side.upper()),
+            round(entry_price, 4),
+            qty,
+            round(TP1_PERCENT * 100, 1),
+            f" / TP2: `+{round(TP2_PERCENT * 100, 1)}%`" if tp2_price and qty_tp2 > 0 else "",
+            round(SL_PERCENT * 100, 1),
+        )
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
 
         trade_data = {
             "symbol": symbol,
