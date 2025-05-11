@@ -135,6 +135,61 @@ def fetch_data(symbol, tf="15m"):
         return None
 
 
+def fetch_data_optimized(symbol, tf="3m"):
+    from core.binance_api import fetch_ohlcv
+
+    try:
+        data = fetch_ohlcv(symbol, timeframe=tf, limit=100)
+        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume"])
+
+        # VWAP
+        df["vwap"] = (df["volume"] * (df["high"] + df["low"] + df["close"]) / 3).cumsum() / df["volume"].cumsum()
+
+        # RSI
+        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=9).rsi()
+
+        # EMAs
+        df["ema_9"] = df["close"].ewm(span=9).mean()
+        df["ema_21"] = df["close"].ewm(span=21).mean()
+        df["ema"] = df["ema_21"]  # For compatibility with legacy strategy logic
+
+        # MACD - Adding this to fix the 'macd' error
+        macd_indicator = ta.trend.MACD(df["close"])
+        df["macd"] = macd_indicator.macd()
+        df["macd_signal"] = macd_indicator.macd_signal()
+
+        # ATR
+        df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+
+        # Volume analysis
+        df["volume_ma"] = df["volume"].rolling(window=24).mean()
+        df["rel_volume"] = df["volume"] / df["volume_ma"]
+
+        return df
+
+    except Exception as e:
+        log(f"Error in fetch_data_optimized for {symbol}: {e}", level="ERROR")
+        return None
+
+
+def passes_filters_optimized(df, symbol):
+    try:
+        price = df["close"].iloc[-1]
+        atr_percent = df["atr"].iloc[-1] / price
+        rel_vol = df["rel_volume"].iloc[-1]
+
+        if atr_percent < 0.003:
+            log(f"{symbol} ⛔️ Rejected: ATR too low ({atr_percent:.4f})", level="DEBUG")
+            return False
+        if rel_vol < 0.5:
+            log(f"{symbol} ⛔️ Rejected: Relative volume too low ({rel_vol:.2f})", level="DEBUG")
+            return False
+        return True
+    except Exception as e:
+        log(f"Error in passes_filters_optimized for {symbol}: {e}", level="ERROR")
+        return False
+
+
 def get_htf_trend(symbol, tf="1h"):
     """
     Get higher timeframe trend with enhanced logic for breakout detection.
@@ -234,7 +289,7 @@ def passes_filters(df, symbol):
     """
     from core.dynamic_filters import get_market_regime_from_indicators, should_filter_pair
     from core.exchange_init import exchange
-    from utils_core import get_runtime_config, safe_call_retry
+    from utils_core import safe_call_retry
 
     try:
         cfg = get_runtime_config()
@@ -287,10 +342,24 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     """
     failure_reasons = []  # Initialize failure reasons list
 
-    if df is None:
-        log(f"Skipping {symbol} due to data fetch error", level="WARNING")
-        failure_reasons.append("data_fetch_error")
-        return None, failure_reasons
+    from utils_core import get_runtime_config
+
+    runtime_config = get_runtime_config()
+    scalping_mode = runtime_config.get("scalping_mode", False)
+
+    # ✅ Fetch data based on mode
+    if scalping_mode:
+        df = fetch_data_optimized(symbol, tf="3m")
+        if df is None:
+            log(f"Skipping {symbol} due to data fetch error (optimized)", level="WARNING")
+            failure_reasons.append("data_fetch_error")
+            return None, failure_reasons
+    else:
+        df = fetch_data(symbol)
+        if df is None:
+            log(f"Skipping {symbol} due to data fetch error", level="WARNING")
+            failure_reasons.append("data_fetch_error")
+            return None, failure_reasons
 
     # Check if we're in optimal trading hours
     if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
@@ -325,8 +394,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     log(f"{symbol} 🔎 Step 1: Cooldown check", level="DEBUG")
     with last_trade_times_lock:
         last_time = last_trade_times.get(symbol)
-        # Reduced cooldown for short-term trading
-        cooldown = 20 * 60 if SHORT_TERM_MODE else 30 * 60  # 20 or 30 minutes
+        cooldown = 20 * 60 if SHORT_TERM_MODE else 30 * 60
         elapsed = utc_now.timestamp() - last_time.timestamp() if last_time else float("inf")
         if elapsed < cooldown:
             if DRY_RUN:
@@ -334,10 +402,16 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             failure_reasons.append("cooldown_active")
             return None, failure_reasons
 
+    # ✅ Step 2 должен идти ВНЕ блока with
     log(f"{symbol} 🔎 Step 2: Filter check", level="DEBUG")
-    if not passes_filters(df, symbol):
-        failure_reasons.append("filter_reject")
-        return None, failure_reasons
+    if scalping_mode:
+        if not passes_filters_optimized(df, symbol):
+            failure_reasons.append("filter_reject")
+            return None, failure_reasons
+    else:
+        if not passes_filters(df, symbol):
+            failure_reasons.append("filter_reject")
+            return None, failure_reasons
 
     log(f"{symbol} 🔎 Step 3: Scoring check", level="DEBUG")
     trade_count, winrate = get_trade_stats()

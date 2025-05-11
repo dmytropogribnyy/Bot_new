@@ -29,54 +29,47 @@ def get_filter_relax_factor():
 
 
 def get_volatility_filters(symbol, base_filters):
+    from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
     from utils_core import get_cached_balance, get_runtime_config
 
-    # Get account balance for adaptive filtering
     balance = get_cached_balance()
-
-    # Get standard relaxation factor
+    config = get_runtime_config()
     relax = get_filter_relax_factor()
+    runtime_relax = config.get("relax_factor", relax)
 
-    # Copy base filters
     filters = base_filters.copy()
 
-    # Apply relax factor to thresholds using simple multiplier
-    multiplier = 1 - relax  # relax=0.3 → 0.7 multiplier (30% more permissive)
-    filters["atr"] *= multiplier
-    filters["adx"] *= multiplier
-    filters["bb"] *= multiplier
+    # Apply relax factor
+    relax_multiplier = 1 - runtime_relax
+    filters["atr"] *= relax_multiplier
+    filters["adx"] *= relax_multiplier
+    filters["bb"] *= relax_multiplier
+    filters["relax_factor"] = runtime_relax
 
-    # For small accounts, apply different filtering strategy
+    # Special treatment for small balance accounts
     if balance < 150:
-        # Check if this is a priority pair for small accounts
-        from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
-
-        is_priority = symbol in PRIORITY_SMALL_BALANCE_PAIRS
-
-        if is_priority:
-            # More permissive for priority pairs on small accounts
+        if symbol in PRIORITY_SMALL_BALANCE_PAIRS:
             filters["atr"] *= 0.9
             filters["adx"] *= 0.9
             filters["bb"] *= 0.9
-            log(f"Priority pair {symbol} for small account - using relaxed filters")
+            log(f"⚙️ Priority pair {symbol} for small account – relaxed filters", level="DEBUG")
         else:
-            # More strict for non-priority pairs on small accounts
             filters["atr"] *= 1.1
             filters["adx"] *= 1.1
             filters["bb"] *= 1.1
 
-    # Apply runtime relax factor if different
-    runtime_relax = get_runtime_config().get("relax_factor", relax)
-    if runtime_relax != relax:
-        adjustment = runtime_relax / relax
-        filters["atr"] = base_filters["atr"] * (1 - runtime_relax) * adjustment
-        filters["adx"] = base_filters["adx"] * (1 - runtime_relax) * adjustment
-        filters["bb"] = base_filters["bb"] * (1 - runtime_relax) * adjustment
-        filters["relax_factor"] = runtime_relax
+    # 🔹 Dynamic min-thresholds based on market volatility (future-proof)
+    avg_market_atr = config.get("market_volatility", 0.5)
+    if avg_market_atr < 0.4:
+        min_thresholds = {"atr": 0.0003, "adx": 4.0, "bb": 0.0015}
+    elif avg_market_atr < 0.6:
+        min_thresholds = {"atr": 0.0004, "adx": 5.0, "bb": 0.0020}
+    else:
+        min_thresholds = {"atr": 0.0005, "adx": 6.0, "bb": 0.0025}
 
-    # Ensure minimum thresholds (safety net)
-    filters["atr"] = max(filters["atr"], 0.0004)
-    filters["adx"] = max(filters["adx"], 5.0)
-    filters["bb"] = max(filters["bb"], 0.002)
+    # Enforce minimum thresholds
+    filters["atr"] = max(filters["atr"], min_thresholds["atr"])
+    filters["adx"] = max(filters["adx"], min_thresholds["adx"])
+    filters["bb"] = max(filters["bb"], min_thresholds["bb"])
 
     return filters

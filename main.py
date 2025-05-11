@@ -24,6 +24,7 @@ from common.config_loader import (
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
+from core.fail_stats_tracker import schedule_failure_decay
 from core.failure_logger import log_failure
 from core.risk_utils import check_drawdown_protection
 from core.signal_feedback_loop import analyze_tp2_winrate, initialize_runtime_adaptive_config
@@ -32,7 +33,7 @@ from core.trade_engine import close_real_trade, enter_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
 from missed_tracker import flush_best_missed_opportunities
-from pair_selector import select_active_symbols, start_symbol_rotation, track_missed_opportunities
+from pair_selector import auto_cleanup_signal_failures, select_active_symbols, start_symbol_rotation, track_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import (
     generate_daily_report,
@@ -392,6 +393,8 @@ if __name__ == "__main__":
     reset_state_flags()
     log("State flags reset at startup", level="INFO")
 
+    auto_cleanup_signal_failures()
+
     initialize_runtime_adaptive_config()
     log("✅ Adaptive config initialized based on current balance", level="INFO")
 
@@ -410,6 +413,18 @@ if __name__ == "__main__":
     log(f"New bot session started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}", level="INFO")
 
     ensure_log_exists()
+
+    # Phase 1: Run initial failure decay on startup
+    schedule_failure_decay()  # Run initial decay on startup
+    log("✅ Initial failure decay completed", level="INFO")
+
+    # Phase 1: Verify configuration matches optimization requirements
+    config = get_runtime_config()
+    log(f"ATR threshold: {config.get('atr_threshold_percent')}, Volume threshold: {config.get('volume_threshold_usdc')}", level="DEBUG")
+    if config.get("atr_threshold_percent", 0) > 6.0:
+        log("⚠️ Warning: ATR threshold not optimized for scalping", level="WARNING")
+    if config.get("volume_threshold_usdc", 0) > 5000:
+        log("⚠️ Warning: Volume threshold not optimized for small accounts", level="WARNING")
 
     # ✅ Установка времени запуска для ip_monitor логики
     import ip_monitor
@@ -439,7 +454,6 @@ if __name__ == "__main__":
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
-    # scheduler.add_job(select_active_symbols, "interval", hours=4)
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
@@ -447,8 +461,11 @@ if __name__ == "__main__":
 
     scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
 
+    # Phase 1: Add failure decay scheduler
+    scheduler.add_job(schedule_failure_decay, "interval", hours=1, id="failure_decay")
+
     scheduler.start()
-    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, and TP2 risk feedback", level="INFO")
+    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, TP2 risk feedback, and failure decay", level="INFO")
 
     try:
         start_trading_loop()

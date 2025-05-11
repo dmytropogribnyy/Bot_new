@@ -71,7 +71,7 @@ def flush_best_missed_opportunities(top_n=5):
         top = sorted(recent, key=lambda x: abs(x["profit"]), reverse=True)[:top_n]
 
         lines = [f"- {e['symbol']} ({e['profit']}% profit, Momentum: {e['momentum']}%, ATR vol: {e['atr_vol']}, Avg volume: {e['avg_volume']:,})" for e in top]
-        log("[Top Missed Opportunities — Last 30 min]\n" + "\n".join(lines), level="WARNING")
+        log("[Top Missed Opportunities — Last 30 min]\n" + "\n".join(lines), level="INFO")
 
         # Очистим кэш после логирования
         with open(CACHE_FILE, "w") as f:

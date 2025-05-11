@@ -365,3 +365,15 @@ def reset_daily_stats():
         daily_trade_stats["loss"] = 0
         daily_trade_stats["commission_total"] = 0.0
         daily_trade_stats["profit_total"] = 0.0
+
+
+def get_total_trade_count():
+    """Return total number of trades recorded in the log."""
+    if not os.path.exists(EXPORT_PATH):
+        return 0
+    try:
+        df = pd.read_csv(EXPORT_PATH)
+        return len(df)
+    except Exception as e:
+        log(f"[ERROR] Failed to count trades: {e}", level="WARNING")
+        return 0

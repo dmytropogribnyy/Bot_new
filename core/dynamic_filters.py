@@ -2,123 +2,84 @@
 """
 Dynamic pair filtering system for BinanceBot
 Implements adaptive filter thresholds based on market conditions and account size
-Optimized for 120 USDC deposit target
+Optimized for small USDC deposits and scalping strategies
 """
 
-from core.aggressiveness_controller import get_aggressiveness_score
 from core.filter_adaptation import get_adaptive_relax_factor
-from utils_core import get_cached_balance, get_runtime_config
+from utils_core import get_runtime_config
 from utils_logging import log
 
 
 def get_dynamic_filter_thresholds(symbol, market_regime=None):
     """
-    Dynamic filter thresholds optimized for small USDC deposits (e.g. 120–250 USDC)
-
-    Args:
-        symbol (str): Trading pair symbol
-        market_regime (str, optional): Current market regime (breakout, trend, flat, neutral)
-
-    Returns:
-        dict: Filter thresholds including min_atr_percent and min_volume_usdc
+    Get dynamic thresholds from runtime config, adjusted by relax_factor.
+    Clean version optimized for full external control via runtime_config.json.
     """
-    # Base values (slightly lowered for smaller accounts)
-    base_atr_percent = 0.17
-    base_volume_usdc = 14000
+    runtime_config = get_runtime_config()
 
-    # Get current balance and aggressiveness score
-    balance = get_cached_balance()
-    aggr_score = get_aggressiveness_score()
+    base_atr_percent = runtime_config.get("atr_threshold_percent", 2.0) / 100
+    base_volume_usdc = runtime_config.get("volume_threshold_usdc", 3000)
+    relax = runtime_config.get("relax_factor", 0.3)
 
-    # Relax factor from runtime_config
-    relax = get_runtime_config().get("relax_factor", 0.35)
+    adjusted_atr = base_atr_percent * (1 - relax)
+    adjusted_vol = base_volume_usdc * (1 - relax)
 
-    # Market regime adjustments
-    if market_regime == "breakout":
-        base_atr_percent *= 0.75
-        base_volume_usdc *= 0.75
-        log(f"{symbol} Market regime: Breakout (-25%)", level="DEBUG")
-    elif market_regime == "trend":
-        base_atr_percent *= 0.85
-        base_volume_usdc *= 0.85
-        log(f"{symbol} Market regime: Trend (-15%)", level="DEBUG")
-    elif market_regime == "flat":
-        base_atr_percent *= 1.05
-        log(f"{symbol} Market regime: Flat (+5%)", level="DEBUG")
+    log(f"{symbol} Final filter thresholds: ATR%={adjusted_atr*100:.2f}%, Volume={adjusted_vol:,.0f} USDC", level="INFO")
 
-    # Balance-based adjustment
-    if balance < 100:
-        account_factor = 0.85
-        log(f"{symbol} Balance adjustment: Ultra-small (-15%)", level="DEBUG")
-    elif balance < 150:
-        account_factor = 0.9
-        log(f"{symbol} Balance adjustment: Small (-10%)", level="DEBUG")
-    else:
-        account_factor = 1.0
-
-    base_atr_percent *= account_factor
-    base_volume_usdc *= account_factor
-
-    # Aggressiveness adjustment
-    if aggr_score > 0.7:
-        base_atr_percent *= 0.9
-        base_volume_usdc *= 0.9
-        log(f"{symbol} Aggression adjustment: High (-10%)", level="DEBUG")
-
-    # Apply relax factor
-    base_atr_percent *= 1 - relax
-    base_volume_usdc *= 1 - relax
-
-    # Hard floors (safety limits)
-    min_atr_percent = max(base_atr_percent, 0.11)
-    min_volume_usdc = max(base_volume_usdc, 9500)
-
-    log(f"{symbol} Final filter thresholds: ATR%={min_atr_percent*100:.2f}%, Volume={min_volume_usdc:,} USDC", level="INFO")
-    return {"min_atr_percent": min_atr_percent, "min_volume_usdc": min_volume_usdc}
+    return {"min_atr_percent": adjusted_atr, "min_volume_usdc": adjusted_vol}
 
 
-def should_filter_pair(symbol, atr_percent, volume_usdc, market_regime=None):
+def should_filter_pair(symbol, atr_percent, volume_usdc, market_regime=None, thresholds=None):
     """
-    Determine if a pair should be filtered out based on dynamic thresholds
-    with additional relaxation based on per-symbol configuration.
-
-    Args:
-        symbol (str): Trading pair symbol
-        atr_percent (float): Current ATR percentage
-        volume_usdc (float): Current 24h volume in USDC
-        market_regime (str, optional): Current market regime
-
-    Returns:
-        tuple: (bool, dict) - (Should filter, Reason dict)
+    Determine if a pair should be filtered out based on dynamic thresholds,
+    relax factors and market volatility adjustment.
     """
-    # Get dynamic thresholds
-    thresholds = get_dynamic_filter_thresholds(symbol, market_regime)
+    from utils_core import get_market_volatility_index
 
-    # Get per-symbol relax_factor
+    # 🧠 Если thresholds не переданы — взять дефолт из runtime_config
+    if thresholds is None:
+        runtime_config = get_runtime_config()
+        thresholds = {
+            "min_atr_percent": runtime_config.get("atr_threshold_percent", 1.5) / 100,
+            "min_volume_usdc": runtime_config.get("volume_threshold_usdc", 2000),
+        }
+
     relax = get_adaptive_relax_factor(symbol)
+    volatility_index = get_market_volatility_index()
 
-    # Adjust thresholds with relax_factor
-    adjusted_atr = thresholds["min_atr_percent"] * (1 - relax)
-    adjusted_vol = thresholds["min_volume_usdc"] * (1 - relax)
+    # 🔁 Корректировка порогов в зависимости от волатильности рынка
+    if volatility_index < 0.6:
+        volatility_softener = 0.8
+    elif volatility_index > 1.5:
+        volatility_softener = 1.2
+    else:
+        volatility_softener = 1.0
 
-    # Debug logging
+    # 🎛️ Применение коэффициентов смягчения
+    adjusted_atr = thresholds["min_atr_percent"] * (1 - relax) * volatility_softener
+    adjusted_vol = thresholds["min_volume_usdc"] * (1 - relax) * volatility_softener
+
+    # 🔒 Минимальные границы
+    adjusted_atr = max(adjusted_atr, 0.003)  # 0.3%
+    adjusted_vol = max(adjusted_vol, 500)  # 500 USDC
+
     log(f"{symbol} [Thresholds] ATR={atr_percent:.4f} vs {adjusted_atr:.4f}, Volume={volume_usdc:,.0f} vs {adjusted_vol:,.0f}", level="DEBUG")
 
-    # Check ATR percent
     if atr_percent < adjusted_atr:
+        log(f"[Filter] {symbol} ⛔️ Low ATR: {atr_percent:.4f} < {adjusted_atr:.4f}", level="DEBUG")
         return True, {"reason": "low_volatility", "current": atr_percent, "threshold": adjusted_atr}
 
-    # Check volume
     if volume_usdc < adjusted_vol:
+        log(f"[Filter] {symbol} ⛔️ Low Volume: {volume_usdc:.0f} < {adjusted_vol:,.0f}", level="DEBUG")
         return True, {"reason": "low_volume", "current": volume_usdc, "threshold": adjusted_vol}
 
-    # Pair passes all filters
     return False, {"reason": "passed"}
 
 
 def get_market_regime_from_indicators(adx, bb_width, recent_candles=None):
     """
     Determine market regime based on technical indicators
+    Enhanced for scalping with more sensitive breakout detection
 
     Args:
         adx (float): Average Directional Index value
@@ -128,15 +89,16 @@ def get_market_regime_from_indicators(adx, bb_width, recent_candles=None):
     Returns:
         str: Market regime (breakout, trend, flat, neutral)
     """
-    # Breakout detection - high ADX and wide BB
-    if adx > 25 and bb_width > 0.05:
+    # NEW: More sensitive breakout detection for scalping
+    # Lower ADX threshold and BB width for earlier breakout detection
+    if adx > 22 and bb_width > 0.04:  # Reduced from 25 and 0.05
         return "breakout"
 
-    # Strong trend - high ADX
-    elif adx > 20:
+    # Strong trend - slightly lower threshold
+    elif adx > 18:  # Reduced from 20
         return "trend"
 
-    # Flat market - low ADX
+    # Flat market - adjusted for scalping
     elif adx < 15:
         return "flat"
 
@@ -148,6 +110,7 @@ def get_market_regime_from_indicators(adx, bb_width, recent_candles=None):
 def apply_filter_to_pairs(pairs, market_data, min_pairs=5):
     """
     Apply dynamic filters to a list of pairs
+    Enhanced with better fallback selection for small accounts
 
     Args:
         pairs (list): List of trading pairs to filter
@@ -165,8 +128,8 @@ def apply_filter_to_pairs(pairs, market_data, min_pairs=5):
         pair_data = market_data.get(symbol, {})
         atr_percent = pair_data.get("atr_percent", 0)
         volume_usdc = pair_data.get("volume_usdc", 0)
-        adx = pair_data.get("adx", 0)
-        bb_width = pair_data.get("bb_width", 0)
+        adx = pair_data.get("adx", 20)  # Default ADX
+        bb_width = pair_data.get("bb_width", 0.03)  # Default BB width
 
         # Determine market regime
         market_regime = get_market_regime_from_indicators(adx, bb_width)
@@ -177,18 +140,43 @@ def apply_filter_to_pairs(pairs, market_data, min_pairs=5):
         if not should_filter:
             filtered_pairs.append(symbol)
         else:
-            rejected_pairs.append({"symbol": symbol, "reason": reason})
+            rejected_pairs.append({"symbol": symbol, "reason": reason, "score": _calculate_fallback_score(pair_data, reason)})
 
-    # Ensure we have minimum number of pairs
+    # Enhanced fallback mechanism
     if len(filtered_pairs) < min_pairs and rejected_pairs:
-        # Sort rejected pairs by closeness to threshold
-        if rejected_pairs and "threshold" in rejected_pairs[0]["reason"]:
-            rejected_pairs.sort(key=lambda x: abs(x["reason"]["threshold"] - x["reason"]["current"]))
+        # Sort rejected pairs by how close they are to passing
+        rejected_pairs.sort(key=lambda x: x["score"], reverse=True)
 
-            # Add pairs until we reach minimum
-            while len(filtered_pairs) < min_pairs and rejected_pairs:
-                pair_to_add = rejected_pairs.pop(0)
-                filtered_pairs.append(pair_to_add["symbol"])
-                log(f"Added {pair_to_add['symbol']} despite not meeting filters to ensure minimum {min_pairs} pairs", level="WARNING")
+        # Add best rejected pairs until we reach minimum
+        while len(filtered_pairs) < min_pairs and rejected_pairs:
+            pair_to_add = rejected_pairs.pop(0)
+            filtered_pairs.append(pair_to_add["symbol"])
+            log(f"Added {pair_to_add['symbol']} to ensure minimum {min_pairs} pairs (score: {pair_to_add['score']:.3f})", level="WARNING")
 
     return filtered_pairs
+
+
+def _calculate_fallback_score(pair_data, rejection_reason):
+    """
+    Calculate a score for rejected pairs to determine fallback priority
+    Higher score means closer to passing filters
+
+    Args:
+        pair_data (dict): Market data for the pair
+        rejection_reason (dict): Reason for rejection with current/threshold values
+
+    Returns:
+        float: Fallback score (0-1, higher is better)
+    """
+    if "current" in rejection_reason and "threshold" in rejection_reason:
+        current = rejection_reason["current"]
+        threshold = rejection_reason["threshold"]
+
+        # Calculate how close the value is to threshold (0-1 scale)
+        if threshold > 0:
+            ratio = current / threshold
+            # Cap at 1 and give exponential weight to values close to threshold
+            return min(1.0, ratio**2)
+
+    # Default score for other rejection types
+    return 0.1
