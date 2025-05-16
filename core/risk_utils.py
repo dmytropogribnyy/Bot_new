@@ -6,6 +6,7 @@ Implements adaptive risk allocation, position limits, and drawdown protection
 
 from datetime import datetime
 
+from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
@@ -125,6 +126,32 @@ def get_max_risk():
     except Exception as e:
         log(f"Error reading max risk: {e}", level="ERROR")
         return 0.03  # Default 3% if there's an error
+
+
+def check_capital_utilization(balance: float, new_position_value: float = 0) -> bool:
+    """
+    Ensure total capital utilization stays under 70%, including active positions and open limit orders.
+    """
+    try:
+        # 1. Calculate exposure from open positions
+        positions = exchange.fetch_positions()
+        current_exposure = sum(abs(float(pos.get("contracts", 0)) * float(pos.get("entryPrice", 0))) for pos in positions if pos.get("contracts") and pos.get("entryPrice"))
+
+        # 2. Add exposure from open limit orders
+        open_orders = exchange.fetch_open_orders()
+        orders_exposure = sum(float(order.get("amount", 0)) * float(order.get("price", 0)) for order in open_orders if order.get("type") == "limit")
+
+        # 3. Combine all exposures
+        total_exposure = current_exposure + orders_exposure + new_position_value
+        max_allowed = balance * 0.7
+
+        if total_exposure > max_allowed:
+            log(f"[Risk] Capital utilization too high: {total_exposure:.2f} > {max_allowed:.2f} (limit = 70%)", level="WARNING")
+            return False
+        return True
+    except Exception as e:
+        log(f"[Risk] Error checking capital utilization: {e}", level="ERROR")
+        return True  # Fail-safe: allow trade if can't check
 
 
 def set_max_risk(risk):

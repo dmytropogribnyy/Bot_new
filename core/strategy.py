@@ -4,7 +4,6 @@ from datetime import datetime
 
 # Third-party imports
 import pandas as pd
-import pytz
 import ta
 
 # Configuration imports
@@ -12,7 +11,6 @@ from common.config_loader import (
     AUTO_TP_SL_ENABLED,
     BREAKOUT_DETECTION,
     DRY_RUN,
-    HIGH_ACTIVITY_HOURS,
     LEVERAGE_MAP,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
@@ -26,7 +24,6 @@ from common.config_loader import (
     USE_HTF_CONFIRMATION,
     USE_TESTNET,
     VOLUME_SPIKE_THRESHOLD,
-    WEEKEND_TRADING,
 )
 
 # Core module imports
@@ -40,7 +37,7 @@ from core.trade_engine import get_position_size, trade_manager
 # Utility imports
 from telegram.telegram_utils import send_telegram_message
 from tp_logger import get_trade_stats
-from utils_core import get_cached_balance, get_min_net_profit, get_runtime_config
+from utils_core import get_cached_balance, get_min_net_profit, get_runtime_config, is_optimal_trading_hour
 from utils_logging import log
 
 # Module-level variables
@@ -49,25 +46,6 @@ last_trade_times_lock = threading.Lock()
 
 last_trade_times = {}
 last_trade_times_lock = threading.Lock()
-
-
-def is_optimal_trading_hour():
-    """
-    Determine if the current time is during optimal trading hours.
-    Returns True during hours of high market activity, False otherwise.
-    """
-    if not TRADING_HOURS_FILTER:
-        return True  # Always allow if filter is disabled
-
-    current_time = datetime.now(pytz.UTC)
-    hour_utc = current_time.hour
-
-    # Weekend check - skip trading on weekends if configured
-    if not WEEKEND_TRADING and current_time.weekday() >= 5:  # 5=Saturday, 6=Sunday
-        return False
-
-    # Check if current hour is in high activity hours list
-    return hour_utc in HIGH_ACTIVITY_HOURS
 
 
 def fetch_data(symbol, tf="15m"):

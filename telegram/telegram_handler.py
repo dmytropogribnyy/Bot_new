@@ -10,9 +10,8 @@ import time
 import requests
 
 from common.config_loader import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+from constants import UPDATE_FILE
 from utils_logging import log
-
-UPDATE_FILE = "data/last_update.txt"
 
 
 def load_last_update_id():

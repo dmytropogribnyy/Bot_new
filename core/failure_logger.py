@@ -4,9 +4,9 @@ import os
 from datetime import datetime
 from threading import Lock
 
+from constants import FAILURE_LOG_FILE
 from utils_logging import log
 
-FAILURE_LOG_FILE = "data/signal_failures.json"
 failure_log_lock = Lock()
 
 

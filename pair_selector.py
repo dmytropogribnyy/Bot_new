@@ -10,17 +10,15 @@ import pandas as pd
 from common.config_loader import (
     DRY_RUN,
     FIXED_PAIRS,
-    HIGH_ACTIVITY_HOURS,
     MISSED_OPPORTUNITIES_FILE,
     PAIR_COOLING_PERIOD_HOURS,
     PAIR_ROTATION_MIN_INTERVAL,
     PRIORITY_SMALL_BALANCE_PAIRS,
-    TRADING_HOURS_FILTER,
     USDC_SYMBOLS,
     USDT_SYMBOLS,
     USE_TESTNET,
-    WEEKEND_TRADING,
 )
+from constants import INACTIVE_CANDIDATES_FILE, PERFORMANCE_FILE, SIGNAL_FAILURES_FILE, SYMBOLS_FILE
 from core.binance_api import convert_symbol
 from core.dynamic_filters import get_market_regime_from_indicators, should_filter_pair
 from core.exchange_init import exchange
@@ -28,12 +26,8 @@ from core.fail_stats_tracker import FAIL_STATS_FILE, is_symbol_blocked
 from core.filter_adaptation import load_json_file, save_json_file
 from symbol_activity_tracker import SIGNAL_ACTIVITY_FILE
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, get_market_volatility_index, get_runtime_config, safe_call_retry
+from utils_core import get_cached_balance, get_market_volatility_index, get_runtime_config, is_optimal_trading_hour, safe_call_retry
 from utils_logging import log
-
-SYMBOLS_FILE = "data/dynamic_symbols.json"
-PERFORMANCE_FILE = "data/pair_performance.json"
-SIGNAL_FAILURES_FILE = "data/signal_failures.json"
 
 # Adaptive rotation interval - more frequent for small accounts and high volatility
 BASE_UPDATE_INTERVAL = 60 * 15  # 15 минут вместо 30
@@ -261,38 +255,6 @@ def calculate_correlation(price_data):
         return None
 
 
-def is_peak_trading_hour():
-    """
-    Check if current time is during peak trading hours.
-    Log only once per hour to avoid spam.
-    """
-    global _last_logged_hour
-
-    if not TRADING_HOURS_FILTER:
-        return True
-
-    now = datetime.utcnow()
-    hour_utc = now.hour
-
-    # Log only if hour changed
-    if _last_logged_hour != hour_utc:
-        _last_logged_hour = hour_utc
-
-        # Weekend check (Saturday=5, Sunday=6)
-        if now.weekday() >= 5 and not WEEKEND_TRADING:
-            log(f"[Time Check] Current UTC hour: {hour_utc} — Weekend (inactive)", level="INFO")
-            return False
-
-        # Use centralized configuration for peak hours
-        if hour_utc in HIGH_ACTIVITY_HOURS:
-            log(f"[Time Check] Current UTC hour: {hour_utc} — Trading active (peak hour)", level="INFO")
-        else:
-            log(f"[Time Check] Current UTC hour: {hour_utc} — Trading inactive (off-peak)", level="INFO")
-
-    # Use centralized configuration for actual check
-    return hour_utc in HIGH_ACTIVITY_HOURS
-
-
 def load_pair_performance():
     """Load historical performance data for pairs."""
     global pair_performance
@@ -411,7 +373,7 @@ def select_active_symbols():
 
     # Get runtime config for failure threshold and blocked symbols
     runtime_config = get_runtime_config()
-    runtime_config.get("blocked_symbols", {})
+    blocked_symbols = runtime_config.get("blocked_symbols", {})
 
     # Use the same threshold as fail_stats_tracker.py
     MAX_FAILURES_PER_SYMBOL = runtime_config.get("FAILURE_BLOCK_THRESHOLD", 30)
@@ -423,6 +385,60 @@ def select_active_symbols():
     # Load missed opportunities and symbol activity data
     missed_data = load_json_file(MISSED_OPPORTUNITIES_FILE)
     activity_data = load_json_file(SIGNAL_ACTIVITY_FILE)
+
+    # Get all available symbols
+    all_symbols = fetch_all_symbols()
+
+    # 🔎 Mass block check before selection
+    from datetime import datetime, timezone
+
+    current_time = datetime.now(timezone.utc)
+    active_blocked_count = 0
+    active_blocked_details = []
+
+    for symbol, block_info in blocked_symbols.items():
+        block_until_str = block_info.get("block_until")
+        if block_until_str:
+            try:
+                block_until = datetime.fromisoformat(block_until_str.replace("Z", "+00:00"))
+                if block_until > current_time:
+                    active_blocked_count += 1
+                    time_remaining = block_until - current_time
+                    hours_remaining = time_remaining.total_seconds() / 3600
+                    active_blocked_details.append(f"{symbol} ({hours_remaining:.1f}h remaining)")
+            except Exception:
+                continue
+
+    # Dynamic thresholds for blocking detection
+    MIN_REQUIRED_PAIRS = 3
+    WARNING_THRESHOLD = 0.3  # 30% blocked triggers warning
+    CRITICAL_THRESHOLD = 0.5  # 50% blocked triggers critical alert
+
+    if all_symbols:
+        block_ratio = active_blocked_count / len(all_symbols)
+        unblocked_count = len(all_symbols) - active_blocked_count
+        is_critical = block_ratio >= CRITICAL_THRESHOLD
+        is_warning = block_ratio >= WARNING_THRESHOLD
+        is_insufficient = unblocked_count < MIN_REQUIRED_PAIRS * 2
+
+        if is_critical or (is_warning and is_insufficient):
+            active_blocked_details.sort()
+            examples = active_blocked_details[:10]
+
+            message = f"⚠️ Mass blocking detected: {active_blocked_count} of {len(all_symbols)} " f"symbols ({block_ratio:.1%})\n" f"Only {unblocked_count} symbols available for trading.\n"
+
+            if examples:
+                message += "Next unblocks:\n" + "\n".join(examples)
+
+            if is_critical:
+                message = "🛑 CRITICAL: " + message
+            elif is_insufficient:
+                message += f"\n⚡ Below recommended minimum ({MIN_REQUIRED_PAIRS * 2} pairs)"
+
+            send_telegram_message(message, force=True)
+
+            log_level = "ERROR" if is_critical else "WARNING"
+            log(f"Mass blocking: {active_blocked_count}/{len(all_symbols)} " f"({block_ratio:.1%}) symbols blocked", level=log_level)
 
     # Determine pair limits based on account size using new function
     balance = get_cached_balance()
@@ -441,11 +457,8 @@ def select_active_symbols():
 
     log(f"Adaptive pair limits: min={min_dyn}, max={max_dyn}", level="INFO")
 
-    # Get all available symbols
-    all_symbols = fetch_all_symbols()
+    # Fixed pairs and priority pairs
     fixed = FIXED_PAIRS
-
-    # Priority pairs for small accounts
     priority_pairs = PRIORITY_SMALL_BALANCE_PAIRS if balance < 150 else []
 
     # Dictionary to store price data for correlation analysis
@@ -750,6 +763,73 @@ def select_active_symbols():
     # Combine fixed and dynamic pairs
     active_symbols = fixed + selected_dyn
 
+    # 🆘 EMERGENCY RECOVERY: Check if too few pairs remain
+    MIN_ACTIVE_PAIRS = 3
+    if len(active_symbols) < MIN_ACTIVE_PAIRS:
+        log(f"🛑 Only {len(active_symbols)} pairs passed filtering. Triggering emergency recovery...", level="WARNING")
+
+        # Get blocked symbols to avoid them in recovery
+        blocked_symbols = get_runtime_config().get("blocked_symbols", {})
+
+        # 🔁 Try to recover from inactive_candidates.json if needed
+        inactive_candidates = load_json_file(INACTIVE_CANDIDATES_FILE)
+        for entry in inactive_candidates:
+            symbol = entry.get("symbol")
+            if symbol and symbol not in active_symbols and symbol not in blocked_symbols:
+                active_symbols.append(symbol)
+                log(f"[Fallback] Added {symbol} from inactive_candidates.json", level="INFO")
+                if len(active_symbols) >= MIN_ACTIVE_PAIRS:
+                    break
+
+        # ✅ If recovery worked — skip manual fallback
+        if len(active_symbols) >= MIN_ACTIVE_PAIRS:
+            log(f"✅ Emergency recovery succeeded using inactive_candidates.json. Total: {len(active_symbols)}", level="INFO")
+        else:
+            # Temporarily relax filters
+            emergency_thresholds = {
+                "min_atr_percent": 0.002,  # 0.2% ATR minimum
+                "min_volume_usdc": 400,  # 400 USDC minimum volume
+            }
+
+            # Look for fallback candidates
+            fallback_candidates = []
+
+        for symbol in rejected_pairs:
+            if symbol in active_symbols or symbol in blocked_symbols:
+                continue
+
+            # Re-evaluate with relaxed thresholds
+            if symbol in dynamic_data:
+                data = dynamic_data[symbol]
+                atr = data.get("volatility", 0)
+                volume = data.get("volume", 0)
+
+                # Check against emergency thresholds
+                should_filter, reason = should_filter_pair(symbol, atr, volume, market_regime="neutral", thresholds=emergency_thresholds)
+
+                if not should_filter:
+                    # Sort by volume for priority
+                    vol_usdc = volume * data.get("price", 0)
+                    fallback_candidates.append((symbol, vol_usdc))
+
+        # Sort by volume (highest first)
+        fallback_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # Add best candidates up to minimum required
+        needed = MIN_ACTIVE_PAIRS - len(active_symbols)
+        recovered = [s for s, _ in fallback_candidates[:needed]]
+
+        if recovered:
+            active_symbols.extend(recovered)
+
+            # Send Telegram notification
+            send_telegram_message(f"🆘 Emergency fallback triggered:\n" f"Recovered symbols: {', '.join(recovered)}\n" f"Total active pairs now: {len(active_symbols)}", force=True)
+
+            log(f"Emergency recovery added: {recovered}. Total pairs: {len(active_symbols)}", level="INFO")
+        else:
+            log("No suitable symbols found for emergency recovery", level="ERROR")
+            send_telegram_message(f"⚠️ CRITICAL: Only {len(active_symbols)} active pairs and no recovery candidates found", force=True)
+
     # Initialize relax_factor for new active symbols
     try:
         filter_path = "data/filter_adaptation.json"
@@ -886,7 +966,7 @@ def get_update_interval():
         account_factor = 1.0
 
     # Adjust for trading hours
-    hour_factor = 0.75 if is_peak_trading_hour() else 1.0  # 25% быстрее в часы пик
+    hour_factor = 0.75 if is_optimal_trading_hour() else 1.0
 
     # Adjust for market volatility
     market_volatility = get_market_volatility_index()

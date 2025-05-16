@@ -5,13 +5,12 @@ import re
 import pandas as pd
 
 from common.config_loader import CONFIG_FILE, EXPORT_PATH, TP1_PERCENT, TP2_PERCENT
+from constants import BACKUP_PATH, STATUS_PATH
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance
 from utils_logging import backup_config
 
 CONFIG_PATH = CONFIG_FILE
-BACKUP_PATH = "data/thresholds_backup.json"
-STATUS_PATH = "data/pair_status.json"
 
 # Dynamic thresholds will be set based on balance
 TP_MIN_TRADES = 20

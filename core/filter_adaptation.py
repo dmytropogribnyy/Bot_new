@@ -1,10 +1,10 @@
 import json
 import os
 
+from constants import FILTER_ADAPTATION_FILE
 from utils_core import get_runtime_config
 from utils_logging import log
 
-FILTER_ADAPTATION_FILE = "data/filter_adaptation.json"
 DEFAULT_RELAX_FACTOR = 0.3
 
 

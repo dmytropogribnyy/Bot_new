@@ -27,7 +27,7 @@ from core.exchange_init import exchange
 from core.fail_stats_tracker import schedule_failure_decay
 from core.failure_logger import log_failure
 from core.risk_utils import check_drawdown_protection
-from core.signal_feedback_loop import analyze_tp2_winrate, initialize_runtime_adaptive_config
+from core.signal_feedback_loop import adjust_score_relax_boost, analyze_tp2_winrate, initialize_runtime_adaptive_config
 from core.strategy import last_trade_times, last_trade_times_lock, should_enter_trade
 from core.trade_engine import close_real_trade, enter_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
@@ -47,6 +47,7 @@ from stats import (
 from symbol_activity_tracker import auto_adjust_relax_factors_from_missed
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import send_daily_summary, send_telegram_message
+from tools.continuous_scanner import continuous_scan
 from tp_logger import ensure_log_exists
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
@@ -426,6 +427,11 @@ if __name__ == "__main__":
     if config.get("volume_threshold_usdc", 0) > 5000:
         log("⚠️ Warning: Volume threshold not optimized for small accounts", level="WARNING")
 
+    # ✅ Инициализируем scheduler заранее
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    scheduler = BackgroundScheduler()
+
     # ✅ Установка времени запуска для ip_monitor логики
     import ip_monitor
 
@@ -433,39 +439,40 @@ if __name__ == "__main__":
 
     # Запуск фоновых задач
     threading.Thread(
-        target=lambda: process_telegram_commands(state, telegram_commands.handle_telegram_command),
+        target=lambda: process_telegram_commands(state, lambda message: telegram_commands.handle_telegram_command(message, state, stop_event=stop_event)),
         daemon=True,
     ).start()
+
     threading.Thread(
         target=lambda: start_ip_monitor(
-            lambda: telegram_commands._initiate_stop("ip_changed"),
+            lambda: telegram_commands._initiate_stop("ip_changed", stop_event=stop_event),
             interval_seconds=IP_MONITOR_INTERVAL_SECONDS,
         ),
         daemon=True,
     ).start()
+
     threading.Thread(
         target=lambda: start_symbol_rotation(stop_event),
         daemon=True,
     ).start()
+
     threading.Thread(
         target=start_report_loops,
         daemon=True,
     ).start()
 
-    scheduler = BackgroundScheduler()
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
     scheduler.add_job(auto_adjust_relax_factors_from_missed, "interval", minutes=30)
-
     scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
-
-    # Phase 1: Add failure decay scheduler
     scheduler.add_job(schedule_failure_decay, "interval", hours=1, id="failure_decay")
+    scheduler.add_job(continuous_scan, "interval", hours=2, id="inactive_scanner")
+    scheduler.add_job(adjust_score_relax_boost, "interval", hours=1, id="score_relax_adjustment")
 
     scheduler.start()
-    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, TP2 risk feedback, and failure decay", level="INFO")
+    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, TP2 risk feedback, failure decay, and score relax adjustment", level="INFO")
 
     try:
         start_trading_loop()

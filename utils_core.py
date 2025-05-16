@@ -6,11 +6,11 @@ from pathlib import Path
 from threading import Lock
 
 from common.config_loader import LEVERAGE_MAP, SYMBOLS_ACTIVE
+from constants import STATE_FILE
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
-STATE_FILE = "data/bot_state.json"
 DEFAULT_STATE = {
     "stopping": False,
     "shutdown": False,
@@ -474,6 +474,16 @@ def get_cached_symbol_open_interest(symbol):
 
 def update_cached_symbol_open_interest(symbol, value):
     _symbol_oi_cache[symbol] = value
+
+
+def is_optimal_trading_hour():
+    """
+    Centralized check for optimal trading hours.
+    Excludes only deep night hours (3–7 UTC).
+    """
+    inactive_hours = [3, 4, 5, 6, 7]
+    current_hour = datetime.utcnow().hour
+    return current_hour not in inactive_hours
 
 
 if __name__ == "__main__":

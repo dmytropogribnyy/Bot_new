@@ -16,3 +16,4 @@ filelock==3.16.1
 colorama==0.4.6
 ruff==0.3.4
 apscheduler>=3.9.1
+schedule==1.2.0

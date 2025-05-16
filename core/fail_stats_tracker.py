@@ -4,11 +4,11 @@ import os
 from datetime import datetime, timedelta
 from threading import Lock
 
+from constants import FAIL_STATS_FILE
 from stats import now_with_timezone
 from utils_core import get_runtime_config, update_runtime_config
 from utils_logging import log
 
-FAIL_STATS_FILE = "data/fail_stats.json"
 fail_stats_lock = Lock()
 
 # Configuration constants

@@ -30,7 +30,6 @@ from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
 from core.fail_stats_tracker import is_symbol_blocked, reset_failure_count
 from core.trade_engine import close_real_trade, trade_manager
-from main import stop_event
 from missed_tracker import flush_best_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
@@ -169,34 +168,25 @@ def _monitor_stop_timeout(reason, state, timeout_minutes=30):
         log(f"[Stop Monitor] Final check error: {e}", level="ERROR")
 
 
-def _initiate_stop(reason):
+def _initiate_stop(reason, stop_event=None):
     """
     Initiate stop process with enhanced position handling
     """
-    # Import the global stop_event
-    from main import stop_event
-
+    if stop_event:
+        stop_event.set()
+        log(f"[Stop] Setting global stop_event for {reason}", level="INFO")
     state = load_state()
     if state.get("stopping"):
         send_telegram_message("⚠️ Bot is already stopping…", force=True)
         return False
-
     state["stopping"] = True
     save_state(state)
-
-    # Set the global stop event
-    if stop_event:
-        stop_event.set()
-        log(f"[Stop] Setting global stop_event for {reason}", level="INFO")
-
     try:
         if DRY_RUN:
             open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
         else:
             positions = exchange.fetch_positions()
             open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-
-            # Actively close positions in real mode
             for pos in positions:
                 if float(pos.get("contracts", 0)) > 0:
                     try:
@@ -208,13 +198,11 @@ def _initiate_stop(reason):
         log(f"[Stop] Failed to fetch positions: {e}", level="ERROR")
         send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
         open_details = []
-
     if open_details:
         msg = f"🛑 *{escape_markdown_v2(reason)}*.\n" "Waiting for these positions to close:\n" + "\n".join(open_details) + "\nNo new trades will be opened."
         Thread(target=_monitor_stop_timeout, args=(reason, state), daemon=True).start()
     else:
         msg = f"🛑 {reason}.\nNo open positions. Bot will stop shortly."
-
     send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
     log(f"[Stop] {reason}", level="INFO")
     return True
@@ -608,12 +596,12 @@ def handle_signalconfig_command():
         log(f"Signal config error: {e}", level="ERROR")
 
 
-def handle_stop_command():
+def handle_stop_command(stop_event=None):
     """
     Enhanced stop command with active position closing and stop_event triggering
     """
-    # Import the global stop_event
-    from main import stop_event
+    # Remove this line to break the circular import
+    # from main import stop_event
 
     # Make sure we load the latest state
     state = load_state()
@@ -668,7 +656,7 @@ def handle_stop_command():
     log("[Stop] Stop command processed.", level="INFO")
 
 
-def handle_panic(message, state):
+def handle_panic(message, state, stop_event=None):
     """
     Emergency force closure of all positions and orders with timeout
     """
@@ -762,7 +750,7 @@ def handle_panic(message, state):
 
 
 # -----------------------------------------------------------------------
-def handle_shutdown(message, state):
+def handle_shutdown(message, state, stop_event=None):
     """
     Gracefully shutdown bot with proper position and order closure
     """
@@ -912,7 +900,7 @@ def handle_open_command(state):
         log(f"Open positions error: {e}", level="ERROR")
 
 
-def handle_telegram_command(message, state):
+def handle_telegram_command(message, state, stop_event=None):
     """
     Main Telegram command handler with thread safety and enhanced reliability
     """
@@ -1036,11 +1024,11 @@ def handle_telegram_command(message, state):
                     send_telegram_message(f"❌ Failed to generate heatmap: {e}", force=True)
                     log(f"Heatmap error: {e}", level="ERROR")
         elif text == "/stop":
-            handle_stop_command()
+            handle_stop_command(stop_event)
         elif text in ("/panic", "yes"):
-            handle_panic(message, state)
+            handle_panic(message, state, stop_event)
         elif text == "/shutdown":
-            handle_shutdown(message, state)
+            handle_shutdown(message, state, stop_event)
         elif text == "/status":
             handle_status_command(state)
         elif text == "/signalconfig":

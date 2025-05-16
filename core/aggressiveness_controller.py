@@ -5,9 +5,9 @@ import os
 import threading
 from datetime import datetime
 
+from constants import AGGRESSIVENESS_FILE
 from utils_logging import log
 
-AGGRESSIVENESS_FILE = "data/aggressiveness.json"
 LOCK = threading.Lock()
 
 aggressiveness_data = {

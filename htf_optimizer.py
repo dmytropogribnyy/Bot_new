@@ -6,10 +6,10 @@ import shutil
 import pandas as pd
 
 from common.config_loader import CONFIG_FILE, USE_HTF_CONFIRMATION  # ✅ добавили сюда
+from constants import TP_CSV
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 
-TP_CSV = "data/tp_performance.csv"
 BACKUP_FILE = "config_backup.py"
 
 HTF_MIN_TRADES = 30
@@ -21,11 +21,7 @@ def analyze_htf_winrate():
         df = pd.read_csv(TP_CSV)
         if "HTF Confirmed" not in df.columns:
             log("HTF Confirmed column not found in tp_performance.csv", level="WARNING")
-            send_telegram_message(
-                escape_markdown_v2(
-                    "⚠️ HTF Confirmed column not found in `tp_performance.csv`\nAuto-analysis skipped."
-                )
-            )
+            send_telegram_message(escape_markdown_v2("⚠️ HTF Confirmed column not found in `tp_performance.csv`\nAuto-analysis skipped."))
             return
 
         htf_true = df[df["HTF Confirmed"]]
@@ -33,11 +29,7 @@ def analyze_htf_winrate():
 
         if len(htf_true) < HTF_MIN_TRADES or len(htf_false) < HTF_MIN_TRADES:
             log("Not enough data for HTF analysis", level="INFO")
-            send_telegram_message(
-                escape_markdown_v2(
-                    f"ℹ️ Not enough trades for HTF auto-analysis\nHTF: {len(htf_true)} | No HTF: {len(htf_false)}"
-                )
-            )
+            send_telegram_message(escape_markdown_v2(f"ℹ️ Not enough trades for HTF auto-analysis\nHTF: {len(htf_true)} | No HTF: {len(htf_false)}"))
             return
 
         wr_true = len(htf_true[htf_true["Result"].isin(["TP1", "TP2"])]) / len(htf_true)

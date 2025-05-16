@@ -10,10 +10,10 @@ from common.config_loader import (
     IP_MONITOR_INTERVAL_SECONDS,
     ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
 )
+from constants import IP_STATUS_FILE
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
 
-IP_STATUS_FILE = "data/last_ip.txt"
 router_reboot_mode = {"enabled": False, "expires_at": None}
 last_ip_check_time = None
 boot_time = time.time()

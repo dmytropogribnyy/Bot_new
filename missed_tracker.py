@@ -3,10 +3,10 @@ import os
 from datetime import datetime, timedelta
 from threading import Lock
 
+from constants import CACHE_FILE
 from pair_selector import calculate_atr_volatility, calculate_short_term_metrics, fetch_symbol_data
 from utils_logging import log
 
-CACHE_FILE = "data/missed_cache.json"
 CACHE_LOCK = Lock()
 MAX_ENTRIES = 1000
 

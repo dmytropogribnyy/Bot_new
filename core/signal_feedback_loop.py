@@ -1,15 +1,18 @@
 import statistics
 from pathlib import Path
 
+from constants import TP_PERFORMANCE_FILE
 from utils_core import get_cached_balance, get_runtime_config, update_runtime_config
 from utils_logging import log
-
-TP_PERFORMANCE_FILE = Path("data/tp_performance.csv")
-RUNTIME_CONFIG_FILE = Path("data/runtime_config.json")
 
 VOLATILITY_METRICS = ["atr", "adx", "bb_width"]
 HTF_THRESHOLD = 0.10
 HTF_MIN_TRADES = 30
+
+
+def get_tp_file_path():
+    """Convert TP_PERFORMANCE_FILE string to a Path object."""
+    return Path(TP_PERFORMANCE_FILE)
 
 
 def calculate_winrate(results: list[str]) -> float:
@@ -21,11 +24,11 @@ def calculate_winrate(results: list[str]) -> float:
 
 
 def analyze_htf_and_volatility():
-    if not TP_PERFORMANCE_FILE.exists():
+    if not get_tp_file_path().exists():
         log("[HTF/Volatility] tp_performance.csv not found", level="WARNING")
         return
 
-    rows = TP_PERFORMANCE_FILE.read_text().splitlines()
+    rows = get_tp_file_path().read_text().splitlines()
     if not rows or len(rows) < 2:
         return
 
@@ -85,11 +88,11 @@ def analyze_tp2_winrate():
     """
     Analyze TP2 winrate and set appropriate risk multiplier
     """
-    if not TP_PERFORMANCE_FILE.exists():
+    if not get_tp_file_path().exists():
         log("[TP2 Analysis] tp_performance.csv not found", level="WARNING")
         return
 
-    rows = TP_PERFORMANCE_FILE.read_text().splitlines()
+    rows = get_tp_file_path().read_text().splitlines()
     if not rows or len(rows) < 2:
         return
 
@@ -319,3 +322,52 @@ def initialize_runtime_adaptive_config():
         missing_values = {k: v for k, v in defaults.items() if k not in current_config}
         update_runtime_config(missing_values)
         log(f"Initialized missing runtime config values: {missing_values}", level="INFO")
+
+
+def adjust_score_relax_boost():
+    """
+    Адаптивно увеличивает или уменьшает score_relax_boost в зависимости от количества сделок за последний час.
+    Позволяет стратегии смягчать требования при низкой активности.
+    """
+    from datetime import datetime, timedelta
+
+    import pandas as pd
+
+    from common.config_loader import EXPORT_PATH
+    from utils_core import get_runtime_config, update_runtime_config
+    from utils_logging import log
+
+    try:
+        df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        now = datetime.now()
+        one_hour_ago = now - timedelta(hours=1)
+        three_hours_ago = now - timedelta(hours=3)
+
+        trades_1h = df[df["Date"] >= one_hour_ago]
+        trades_3h = df[df["Date"] >= three_hours_ago]
+
+        trade_count_1h = len(trades_1h)
+        trade_count_3h = len(trades_3h)
+
+        runtime_config = get_runtime_config()
+        current_boost = runtime_config.get("score_relax_boost", 1.0)
+
+        # Низкая активность
+        if trade_count_1h < 3:
+            new_boost = min(1.3, current_boost + 0.1)
+            log(f"[ScoreAdjust] Low activity: {trade_count_1h} trades/hour → boost {current_boost:.2f} → {new_boost:.2f}")
+            update_runtime_config({"score_relax_boost": new_boost})
+
+            if trade_count_3h < 1:
+                emergency_boost = min(1.5, new_boost + 0.2)
+                log(f"[ScoreAdjust] 🚨 No trades in 3h! Emergency boost {new_boost:.2f} → {emergency_boost:.2f}", level="WARNING")
+                update_runtime_config({"score_relax_boost": emergency_boost})
+
+        # Восстановление активности
+        elif trade_count_1h >= 5 and current_boost > 1.0:
+            restored_boost = max(1.0, current_boost - 0.1)
+            log(f"[ScoreAdjust] Activity normalized ({trade_count_1h} trades/hour). Reducing boost {current_boost:.2f} → {restored_boost:.2f}")
+            update_runtime_config({"score_relax_boost": restored_boost})
+
+    except Exception as e:
+        log(f"[ScoreAdjust] Error: {e}", level="ERROR")

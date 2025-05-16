@@ -2,12 +2,15 @@
 import threading
 from datetime import datetime
 
+import pytz
+
 from common.config_loader import (
     ADAPTIVE_SCORE_ENABLED,
     DRY_RUN,
     PRIORITY_SMALL_BALANCE_PAIRS,
     SCORE_WEIGHTS,
 )
+from utils_core import get_runtime_config
 from utils_logging import log
 
 last_score_data = {}
@@ -27,47 +30,54 @@ signal_performance = {
 
 def get_adaptive_min_score(balance, market_volatility=None, symbol=None):
     """
-    Returns adaptive minimum score based on account size, market volatility,
-    and whether the symbol is in priority list for small accounts.
-
-    Enhanced for short-term trading with more aggressive thresholds.
+    Get adaptive minimum score required for trade entry based on conditions
+    with relax_boost factor applied for dynamic adjustment
     """
-    # Base threshold by account size
-    if balance < 100:
-        base_threshold = 2.3  # Further reduced for ultra-small accounts
-    elif balance < 200:
-        base_threshold = 2.8  # Reduced from 3.0
+    # Base threshold based on account size
+    if balance < 120:
+        base_threshold = 2.3  # Lower threshold for micro accounts
+    elif balance < 250:
+        base_threshold = 2.8  # Moderate threshold for small accounts
     else:
-        base_threshold = 3.3  # Reduced from 3.5
+        base_threshold = 3.3  # Higher threshold for larger accounts
 
-    # Volatility adjustment - more aggressive for short-term trading
+    # Adjust for market volatility
+    vol_adjustment = 0
     if market_volatility == "high":
-        volatility_adj = -0.6  # More aggressive: -0.6 instead of -0.5
+        vol_adjustment = -0.6  # More lenient during high volatility
     elif market_volatility == "low":
-        volatility_adj = 0.4  # Less aggressive: 0.4 instead of 0.5
-    else:  # medium volatility
-        volatility_adj = 0.0
+        vol_adjustment = +0.4  # More strict during low volatility
 
-    # New: Priority pair adjustment for small accounts
-    priority_adj = 0.0
-    if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
-        priority_adj = -0.3  # Lower threshold for priority pairs
+    # Adjustment for trading session (time of day)
+    # Only consider deep night hours (3-7 UTC) as inactive
+    inactive_hours = [3, 4, 5, 6, 7]
+    hour_utc = datetime.now(pytz.UTC).hour
+    session_adjustment = 0
 
-    # New: Trading session adjustment
-    hour_utc = datetime.utcnow().hour
-    # Peak trading hours (European/US sessions overlap)
-    if hour_utc in [12, 13, 14, 15, 16]:
-        session_adj = -0.2  # More aggressive during high liquidity
-    # Asian session
-    elif hour_utc in [0, 1, 2, 3, 4, 5]:
-        session_adj = 0.2  # More conservative during Asian session
+    if hour_utc in inactive_hours:
+        session_adjustment = +0.2  # More strict during deep night hours
     else:
-        session_adj = 0.0
+        session_adjustment = -0.2  # More lenient during all other hours
 
-    final_threshold = base_threshold + volatility_adj + priority_adj + session_adj
+    # Symbol-specific adjustment (priority pairs for small accounts)
+    symbol_adjustment = 0
+    if balance < 150 and symbol and symbol.split("/")[0] in ["XRP", "DOGE", "ADA", "MATIC", "DOT"]:
+        symbol_adjustment = -0.2  # Bonus for small account priority pairs
 
-    # Ensure minimum sanity threshold
-    return max(1.8, final_threshold)
+    # Apply score_relax_boost from runtime_config for dynamic activity adjustment
+    runtime_config = get_runtime_config()
+    relax_boost = runtime_config.get("score_relax_boost", 1.0)
+
+    # DRY_RUN mode uses lower threshold for testing
+    dry_run_factor = 0.3 if DRY_RUN else 1.0
+
+    # Calculate final threshold with all adjustments applied
+    raw_threshold = (base_threshold + vol_adjustment + session_adjustment + symbol_adjustment) * dry_run_factor
+    threshold = raw_threshold / relax_boost  # Apply relax boost as divisor
+
+    log(f"{symbol} Adaptive min_score: {threshold:.2f} (base={base_threshold}, relax_boost={relax_boost})", level="DEBUG")
+
+    return max(1.8, threshold)  # Minimum floor of 1.8
 
 
 def get_risk_percent_by_score(balance, score, win_streak=0, symbol=None):

@@ -12,11 +12,11 @@ from common.config_loader import (
     TP_ML_MIN_TRADES_INITIAL,
     TP_ML_SWITCH_THRESHOLD,
 )
+from constants import TP_CSV
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance
 from utils_logging import log
 
-TP_CSV = "data/tp_performance.csv"
 BACKUP_FILE = "config_backup.py"
 
 

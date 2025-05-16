@@ -4,9 +4,8 @@ import os
 from datetime import datetime
 
 from common.config_loader import DRY_RUN, TAKER_FEE_RATE
+from constants import ENTRY_LOG_PATH
 from utils_logging import log, log_dry_entry
-
-ENTRY_LOG_PATH = "data/entry_log.csv"
 
 FIELDNAMES = [
     "timestamp",

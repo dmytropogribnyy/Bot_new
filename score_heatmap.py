@@ -7,11 +7,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
+from constants import OUTPUT_IMAGE_PATH, SCORE_HISTORY_FILE
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_image
 from utils_logging import log
-
-SCORE_HISTORY_FILE = "data/score_history.csv"
-OUTPUT_IMAGE_PATH = "data/score_heatmap.png"
 
 
 def generate_score_heatmap(days=7):

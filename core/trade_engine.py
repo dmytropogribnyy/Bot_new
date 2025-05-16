@@ -7,7 +7,6 @@ from datetime import datetime
 from threading import Lock
 
 import pandas as pd
-import pytz
 import ta
 
 from common.config_loader import (
@@ -22,7 +21,6 @@ from common.config_loader import (
     DRY_RUN,
     ENABLE_BREAKEVEN,
     ENABLE_TRAILING,
-    HIGH_ACTIVITY_HOURS,
     LEVERAGE_MAP,
     MAX_MARGIN_PERCENT,
     MAX_OPEN_ORDERS,
@@ -58,6 +56,7 @@ from utils_core import (
     get_cached_balance,
     get_cached_positions,
     initialize_cache,
+    is_optimal_trading_hour,
     load_state,
     safe_call_retry,
 )
@@ -189,19 +188,6 @@ def safe_close_trade(binance_client, symbol, trade_data, reason="manual"):
         log(f"❌ Error during safe close for {symbol}: {str(e)}", level="ERROR")
 
 
-# Continue with all remaining functions in the original order...
-def is_optimal_trading_hour():
-    """
-    Determine if current time is during peak trading hours.
-    Returns True during high market activity hours.
-    """
-    current_time = datetime.now(pytz.UTC)
-    hour_utc = current_time.hour
-
-    # Check if current hour is in high activity hours list
-    return hour_utc in HIGH_ACTIVITY_HOURS
-
-
 def calculate_risk_amount(balance, risk_percent=None, symbol=None, atr_percent=None, volume_usdc=None, score=0):
     """
     Enhanced risk amount calculation using the optimized risk parameters
@@ -329,7 +315,6 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             return
 
     # Check position limits based on account size
-
     balance = get_cached_balance()
     if not can_open_new_position(balance):
         log(f"[Skip] Position limit reached for account balance: {balance:.2f} USDC", level="INFO")
@@ -416,20 +401,12 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             notional = adjusted_qty * entry_price
             log(f"[Enter Trade] Position size for {symbol} reduced from {old_qty:.6f} to {adjusted_qty:.6f} to stay under 40% balance limit", level="WARNING")
 
-        # Further protection: ensure all positions combined don't exceed 50% of balance
-        current_positions_value = 0
-        try:
-            positions = exchange.fetch_positions()
-            for pos in positions:
-                if float(pos.get("contracts", 0)) != 0:
-                    current_positions_value += abs(float(pos.get("contracts", 0)) * float(pos.get("entryPrice", 0)))
-        except Exception as e:
-            log(f"[Enter Trade] Failed to fetch current positions: {e}", level="ERROR")
+        # Use standardized capital utilization check - UPDATED FOR PHASE 1.5
+        from core.risk_utils import check_capital_utilization
 
-        # Check if this new position would exceed 50% total allocation
-        if (current_positions_value + notional) > (account_balance * 0.5):
-            log(f"[Enter Trade] Skipping {symbol} - total position value would exceed 50% of balance", level="WARNING")
-            send_telegram_message(f"⚠️ Skipping {symbol}: would exceed 50% balance limit", force=True)
+        if not check_capital_utilization(account_balance, notional):
+            log(f"[Enter Trade] Skipping {symbol} due to capital utilization risk", level="WARNING")
+            send_telegram_message(f"⚠️ Skipping {symbol}: capital utilization limit exceeded", force=True)
             return
 
         balance = get_cached_balance()
@@ -552,26 +529,14 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
             msg = f"DRY-RUN {'REENTRY ' if is_reentry else ''}{side.upper()}{symbol}@{entry_price:.2f} Qty:{qty:.3f}"
             send_telegram_message(msg, force=True, parse_mode=None)
         else:
+            # Use post-only limit orders for TP levels - UPDATED FOR PHASE 1.5
+            from core.order_utils import create_post_only_limit_order
+
             if qty_tp1 > 0:
-                safe_call_retry(
-                    exchange.create_limit_order,
-                    symbol,
-                    "sell" if side == "buy" else "buy",
-                    qty_tp1,
-                    tp1_price,
-                    params={"reduceOnly": True},
-                    label=f"create_limit_order TP1 {symbol}",
-                )
+                create_post_only_limit_order(symbol, "sell" if side == "buy" else "buy", qty_tp1, tp1_price)
             if tp2_price and qty_tp2 > 0:
-                safe_call_retry(
-                    exchange.create_limit_order,
-                    symbol,
-                    "sell" if side == "buy" else "buy",
-                    qty_tp2,
-                    tp2_price,
-                    params={"reduceOnly": True},
-                    label=f"create_limit_order TP2 {symbol}",
-                )
+                create_post_only_limit_order(symbol, "sell" if side == "buy" else "buy", qty_tp2, tp2_price)
+            # SL remains as STOP_MARKET order
             safe_call_retry(
                 exchange.create_order,
                 symbol,
