@@ -461,6 +461,8 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
+    from core.status_logger import log_symbol_activity_status
+
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
     scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
     scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
@@ -470,6 +472,7 @@ if __name__ == "__main__":
     scheduler.add_job(schedule_failure_decay, "interval", hours=1, id="failure_decay")
     scheduler.add_job(continuous_scan, "interval", hours=2, id="inactive_scanner")
     scheduler.add_job(adjust_score_relax_boost, "interval", hours=1, id="score_relax_adjustment")
+    scheduler.add_job(log_symbol_activity_status, "interval", minutes=10, id="status_logger")
 
     scheduler.start()
     log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, TP2 risk feedback, failure decay, and score relax adjustment", level="INFO")

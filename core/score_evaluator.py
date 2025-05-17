@@ -3,6 +3,7 @@ import threading
 from datetime import datetime
 
 import pytz
+from score_logger import log_score_components
 
 from common.config_loader import (
     ADAPTIVE_SCORE_ENABLED,
@@ -185,30 +186,23 @@ def detect_volume_spike(df, lookback=5, threshold=1.5):
 
 
 def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
-    """
-    Calculate final score based on weighted indicator system.
-    Enhanced with short-term momentum indicators and adaptive weights.
-    """
-    from utils_core import get_cached_balance
+    from symbol_activity_tracker import load_activity
+    from utils_core import get_cached_balance, get_runtime_config
+
+    config = get_runtime_config()
+    use_multi = config.get("USE_MULTITF_LOGIC", False)
+    rsi_threshold = config.get("rsi_threshold", 50)
 
     raw_score = 0.0
-    price = df["close"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    rsi = df["rsi"].iloc[-1]
-    macd = df["macd"].iloc[-1]
-    signal = df["macd_signal"].iloc[-1]
-    htf_trend = df.get("htf_trend", [False])[-1]
+    latest = df.iloc[-1]
+    price = latest["close"]
+    ema = latest.get("ema") or latest.get("ema_15m") or 0
+    balance = get_cached_balance()
 
-    # Get score weights, with fallback for new indicators
     score_weights = SCORE_WEIGHTS.copy()
-
-    # Add weights for new indicators if not present
-    if "EMA_CROSS" not in score_weights:
-        score_weights["EMA_CROSS"] = 2.0
-    if "VOL_SPIKE" not in score_weights:
-        score_weights["VOL_SPIKE"] = 1.5
-    if "PRICE_ACTION" not in score_weights:
-        score_weights["PRICE_ACTION"] = 1.5
+    score_weights.setdefault("EMA_CROSS", 2.0)
+    score_weights.setdefault("VOL_SPIKE", 1.5)
+    score_weights.setdefault("PRICE_ACTION", 1.5)
 
     max_raw_score = sum(score_weights.values())
 
@@ -223,98 +217,93 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
         "PRICE_ACTION": 0,
     }
 
-    # Wider RSI thresholds for short-term trading
-    rsi_lo, rsi_hi = (30, 70)  # Changed from (35, 65)
-    if ADAPTIVE_SCORE_ENABLED:
-        if price > ema:
-            rsi_lo, rsi_hi = (35, 75)  # Changed from (40, 70)
-        else:
-            rsi_lo, rsi_hi = (25, 65)  # Changed from (30, 60)
+    if use_multi:
+        for tf in ["rsi_3m", "rsi_5m", "rsi_15m"]:
+            if latest.get(tf, 0) > rsi_threshold:
+                raw_score += 0.5
+                breakdown["RSI"] += 0.5
 
-    # RSI: +score if RSI in oversold/overbought zone
-    if rsi < rsi_lo or rsi > rsi_hi:
-        raw_score += score_weights["RSI"]
-        breakdown["RSI"] = score_weights["RSI"]
+        if latest.get("macd_5m", 0) > latest.get("macd_signal_5m", 9999):
+            raw_score += 1.0
+            breakdown["MACD_EMA"] = 1.0
 
-    # MACD/RSI: +score if MACD confirms RSI
-    if (macd > signal and rsi < 50) or (macd < signal and rsi > 50):
-        raw_score += score_weights["MACD_RSI"]
-        breakdown["MACD_RSI"] = score_weights["MACD_RSI"]
+        if latest.get("atr_15m", 0) > 0:
+            raw_score += 0.5
+            breakdown["VOLUME"] = 0.5
 
-    # MACD/EMA: +score if MACD confirms EMA trend
-    if (macd > signal and price > ema) or (macd < signal and price < ema):
-        raw_score += score_weights["MACD_EMA"]
-        breakdown["MACD_EMA"] = score_weights["MACD_EMA"]
+    else:
+        rsi = latest["rsi"]
+        macd = latest["macd"]
+        signal = latest["macd_signal"]
+        htf_trend = latest.get("htf_trend", False)
 
-    # HTF: +score if higher timeframe trend confirms
-    if htf_trend and price > ema:
-        raw_score += score_weights["HTF"]
-        breakdown["HTF"] = score_weights["HTF"]
+        rsi_lo, rsi_hi = (30, 70)
+        if ADAPTIVE_SCORE_ENABLED:
+            if price > ema:
+                rsi_lo, rsi_hi = (35, 75)
+            else:
+                rsi_lo, rsi_hi = (25, 65)
 
-    # Volume: +score if volume above average
-    avg_volume = df["volume"].mean()
-    if df["volume"].iloc[-1] > avg_volume:
-        raw_score += score_weights["VOLUME"]
-        breakdown["VOLUME"] = score_weights["VOLUME"]
+        if rsi < rsi_lo or rsi > rsi_hi:
+            raw_score += score_weights["RSI"]
+            breakdown["RSI"] = score_weights["RSI"]
 
-    # Activity bonus for frequently signaling symbols
-    from symbol_activity_tracker import load_activity
+        if (macd > signal and rsi < 50) or (macd < signal and rsi > 50):
+            raw_score += score_weights["MACD_RSI"]
+            breakdown["MACD_RSI"] = score_weights["MACD_RSI"]
 
+        if (macd > signal and price > ema) or (macd < signal and price < ema):
+            raw_score += score_weights["MACD_EMA"]
+            breakdown["MACD_EMA"] = score_weights["MACD_EMA"]
+
+        if htf_trend and price > ema:
+            raw_score += score_weights["HTF"]
+            breakdown["HTF"] = score_weights["HTF"]
+
+        avg_volume = df["volume"].mean()
+        if latest["volume"] > avg_volume:
+            raw_score += score_weights["VOLUME"]
+            breakdown["VOLUME"] = score_weights["VOLUME"]
+
+    # Active symbol bonus
     activity_data = load_activity()
-    activity_timestamps = activity_data.get(symbol, [])
-    recent_count = len(activity_timestamps)
-
+    recent_count = len(activity_data.get(symbol, []))
     if recent_count >= 3:
         raw_score += 0.2
         breakdown["Activity"] = 0.2
         log(f"{symbol} 🔔 Active symbol bonus: {recent_count} signals (score +0.2)", level="DEBUG")
 
-    # NEW: EMA Crossover detection for short-term momentum
     has_crossover, direction = detect_ema_crossover(df)
-    if has_crossover:
-        # For buy signals (direction=1), we want price > ema
-        # For sell signals (direction=-1), we want price < ema
-        if (direction > 0 and price > ema) or (direction < 0 and price < ema):
-            raw_score += score_weights["EMA_CROSS"]
-            breakdown["EMA_CROSS"] = score_weights["EMA_CROSS"]
+    if has_crossover and ((direction > 0 and price > ema) or (direction < 0 and price < ema)):
+        raw_score += score_weights["EMA_CROSS"]
+        breakdown["EMA_CROSS"] = score_weights["EMA_CROSS"]
 
-    # NEW: Volume spike detection
     if detect_volume_spike(df, lookback=5, threshold=1.5):
         raw_score += score_weights["VOL_SPIKE"]
         breakdown["VOL_SPIKE"] = score_weights["VOL_SPIKE"]
 
-    # NEW: Price action pattern - recent strong candle
-    if len(df) >= 3:
-        # Check for strong bullish or bearish candle
-        last_candle_size = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
-        avg_candle_size = abs(df["close"].iloc[-6:-1] - df["open"].iloc[-6:-1]).mean()
-
-        if last_candle_size > avg_candle_size * 1.5:
-            # Strong candle in direction of trade
-            if ((df["close"].iloc[-1] > df["open"].iloc[-1]) and price > ema) or ((df["close"].iloc[-1] < df["open"].iloc[-1]) and price < ema):
+    if len(df) >= 6:
+        last_size = abs(latest["close"] - latest["open"])
+        avg_size = abs(df["close"].iloc[-6:-1] - df["open"].iloc[-6:-1]).mean()
+        if last_size > avg_size * 1.5:
+            if (latest["close"] > latest["open"] and price > ema) or (latest["close"] < latest["open"] and price < ema):
                 raw_score += score_weights["PRICE_ACTION"]
                 breakdown["PRICE_ACTION"] = score_weights["PRICE_ACTION"]
 
-    # Normalize score to 0-5 range
     normalized_score = (raw_score / max_raw_score) * 5
     final_score = round(normalized_score, 1)
 
-    # Get current balance for threshold adjustment
-    balance = get_cached_balance()
-
-    # Determine market volatility
+    atr = latest.get("atr") or latest.get("atr_15m") or 0
     market_volatility = "medium"
-    if "atr" in df.columns and not df["atr"].empty:
-        atr_pct = df["atr"].iloc[-1] / price
-        if atr_pct > 0.018:  # Reduced from 0.02 for earlier detection
+    if atr and price:
+        atr_pct = atr / price
+        if atr_pct > 0.018:
             market_volatility = "high"
         elif atr_pct < 0.005:
             market_volatility = "low"
 
-    # Get minimum threshold with enhanced function
     min_score = get_adaptive_min_score(balance, market_volatility, symbol)
 
-    # Store score details for later reference
     with last_score_lock:
         last_score_data[symbol] = {
             "symbol": symbol,
@@ -325,6 +314,8 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
             "timestamp": datetime.utcnow(),
             "market_volatility": market_volatility,
         }
+
+    log_score_components(symbol, final_score, breakdown)
 
     if DRY_RUN:
         log(

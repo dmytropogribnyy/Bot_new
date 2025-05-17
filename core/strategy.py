@@ -14,7 +14,6 @@ from common.config_loader import (
     LEVERAGE_MAP,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
-    MOMENTUM_LOOKBACK,
     PRIORITY_SMALL_BALANCE_PAIRS,
     SHORT_TERM_MODE,
     SL_PERCENT,
@@ -27,10 +26,12 @@ from common.config_loader import (
 )
 
 # Core module imports
+from core.binance_api import fetch_ohlcv
 from core.order_utils import calculate_order_quantity
 from core.risk_utils import get_adaptive_risk_percent
 from core.score_evaluator import calculate_score, get_adaptive_min_score
 from core.score_logger import log_score_history
+from core.symbol_priority_manager import determine_strategy_mode
 from core.tp_utils import calculate_tp_levels
 from core.trade_engine import get_position_size, trade_manager
 
@@ -50,103 +51,137 @@ last_trade_times_lock = threading.Lock()
 
 def fetch_data(symbol, tf="15m"):
     """
-    Fetch market data with enhanced indicators for short-term trading.
+    Simplified standard fetch_data: RSI(14), EMA(20), fast/slow EMA, MACD, ATR, rel_volume.
     """
-    from core.binance_api import fetch_ohlcv
-    from utils_logging import log
-
     try:
-        # Get more data for better indicator calculation
-        data = fetch_ohlcv(symbol, timeframe=tf, limit=100)  # Increased from 50
-        if not data:
-            log(f"No data returned for {symbol} on timeframe {tf}", level="ERROR")
-            return None
-        df = pd.DataFrame(
-            data,
-            columns=["time", "open", "high", "low", "close", "volume"],
-        )
-        if df.empty:
-            log(f"Empty DataFrame for {symbol} on timeframe {tf}", level="ERROR")
-            return None
-        if len(df) < 14:
-            log(f"Not enough data for {symbol} on timeframe {tf} (rows: {len(df)})", level="ERROR")
+        data = fetch_ohlcv(symbol, timeframe=tf, limit=100)
+        if not data or len(data) < 20:
+            log(f"Insufficient data for {symbol}", level="ERROR")
             return None
 
-        # Standard indicators
+        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume"])
+
+        # Core indicators
         df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
         df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
-        df["macd"] = ta.trend.MACD(df["close"]).macd()
-        df["macd_signal"] = ta.trend.MACD(df["close"]).macd_signal()
-        df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
-
-        # Enhanced short-term indicators
         df["fast_ema"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
         df["slow_ema"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
-        df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
 
-        # Bollinger Bands for breakout detection
-        bb = ta.volatility.BollingerBands(df["close"], window=20)
-        df["bb_width"] = bb.bollinger_hband() - bb.bollinger_lband()
-        df["bb_width_pct"] = df["bb_width"] / df["close"]  # Normalized width
-        df["bb_upper"] = bb.bollinger_hband()
-        df["bb_lower"] = bb.bollinger_lband()
+        macd = ta.trend.MACD(df["close"])
+        df["macd"] = macd.macd()
+        df["macd_signal"] = macd.macd_signal()
 
-        # Short-term momentum detection
-        if len(df) >= MOMENTUM_LOOKBACK + 1:
-            df["momentum"] = df["close"].pct_change(MOMENTUM_LOOKBACK) * 100
+        df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
-        # Calculate relative volume (compared to same time yesterday)
-        if len(df) >= 96:  # At least 24 hours of data (96 periods in 15m)
-            df["yesterday_vol"] = df["volume"].shift(96)  # 96 periods = 24h in 15m tf
-            df["rel_volume"] = df["volume"] / df["yesterday_vol"]
-        else:
-            df["rel_volume"] = df["volume"] / df["volume"].mean()
+        # Relative volume
+        df["volume_ma"] = df["volume"].rolling(window=20).mean()
+        df["rel_volume"] = df["volume"] / df["volume_ma"]
 
-        # Add HTF trend if enabled
+        # Optional HTF
         if USE_HTF_CONFIRMATION:
-            htf_trend = get_htf_trend(symbol)
-            df["htf_trend"] = htf_trend
+            df["htf_trend"] = get_htf_trend(symbol)
 
         return df
+
     except Exception as e:
-        log(f"Error fetching data for {symbol}: {e}", level="ERROR")
+        log(f"Error in fetch_data for {symbol}: {e}", level="ERROR")
         return None
 
 
 def fetch_data_optimized(symbol, tf="3m"):
-    from core.binance_api import fetch_ohlcv
-
+    """
+    Optimized data fetching with streamlined indicators for short-term trading.
+    Focuses on core indicators: RSI(9), EMA(9/21), MACD, VWAP, Volume, ATR.
+    Removes redundant indicators to improve performance and reduce noise.
+    """
     try:
+        # Fetch OHLCV data with sufficient history for indicators
         data = fetch_ohlcv(symbol, timeframe=tf, limit=100)
+        if data is None or len(data) < 20:
+            log(f"Insufficient data for {symbol} on {tf} timeframe", level="ERROR")
+            return None
         df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume"])
-
-        # VWAP
+        # VWAP (Volume Weighted Average Price)
         df["vwap"] = (df["volume"] * (df["high"] + df["low"] + df["close"]) / 3).cumsum() / df["volume"].cumsum()
-
-        # RSI
+        # RSI(9)
         df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=9).rsi()
-
-        # EMAs
+        # EMA(9) and EMA(21)
         df["ema_9"] = df["close"].ewm(span=9).mean()
         df["ema_21"] = df["close"].ewm(span=21).mean()
-        df["ema"] = df["ema_21"]  # For compatibility with legacy strategy logic
-
-        # MACD - Adding this to fix the 'macd' error
-        macd_indicator = ta.trend.MACD(df["close"])
-        df["macd"] = macd_indicator.macd()
-        df["macd_signal"] = macd_indicator.macd_signal()
-
-        # ATR
+        df["ema"] = df["ema_21"]  # For compatibility
+        # MACD
+        macd = ta.trend.MACD(df["close"])
+        df["macd"] = macd.macd()
+        df["macd_signal"] = macd.macd_signal()
+        df["macd_hist"] = macd.macd_diff()
+        # ATR(14)
         df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
-
-        # Volume analysis
-        df["volume_ma"] = df["volume"].rolling(window=24).mean()
+        # Relative Volume
+        df["volume_ma"] = df["volume"].rolling(window=20).mean()
         df["rel_volume"] = df["volume"] / df["volume_ma"]
-
+        # HTF trend (if enabled)
+        if USE_HTF_CONFIRMATION:
+            df["htf_trend"] = get_htf_trend(symbol)
+        # Final sanity check
+        if df[["rsi", "macd", "atr"]].isna().all().any():
+            log(f"{symbol} has NaN in core indicators", level="WARNING")
+            return None
+        log(f"{symbol} Optimized data fetched with {len(df)} candles, timeframe {tf}", level="DEBUG")
         return df
-
     except Exception as e:
         log(f"Error in fetch_data_optimized for {symbol}: {e}", level="ERROR")
+        return None
+
+
+def fetch_data_multiframe(symbol):
+    """
+    Fetch OHLCV and calculate indicators on 3m, 5m, and 15m timeframes.
+    Returns a merged dataframe with aligned multi-timeframe indicators.
+    """
+    try:
+        tf_map = {"3m": 100, "5m": 100, "15m": 100}
+        frames = {}
+
+        for tf, limit in tf_map.items():
+            raw = fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+            if not raw or len(raw) < 30:
+                log(f"[MultiTF] Insufficient {tf} data for {symbol}", level="WARNING")
+                return None
+            df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
+            df["time"] = pd.to_datetime(df["time"], unit="ms")
+            df.set_index("time", inplace=True)
+            frames[tf] = df
+
+        # === Индикаторы 3m ===
+        df_3m = frames["3m"]
+        df_3m["rsi_3m"] = ta.momentum.RSIIndicator(df_3m["close"], window=9).rsi()
+        df_3m["ema_3m"] = ta.trend.EMAIndicator(df_3m["close"], window=21).ema_indicator()
+
+        # === Индикаторы 5m ===
+        df_5m = frames["5m"]
+        df_5m["rsi_5m"] = ta.momentum.RSIIndicator(df_5m["close"], window=14).rsi()
+        macd = ta.trend.MACD(df_5m["close"])
+        df_5m["macd_5m"] = macd.macd()
+        df_5m["macd_signal_5m"] = macd.macd_signal()
+
+        # === Индикаторы 15m ===
+        df_15m = frames["15m"]
+        df_15m["rsi_15m"] = ta.momentum.RSIIndicator(df_15m["close"], window=14).rsi()
+        df_15m["atr_15m"] = ta.volatility.AverageTrueRange(df_15m["high"], df_15m["low"], df_15m["close"], window=14).average_true_range()
+        df_15m["volume_ma_15m"] = df_15m["volume"].rolling(window=20).mean()
+        df_15m["rel_volume_15m"] = df_15m["volume"] / df_15m["volume_ma_15m"]
+
+        # === Объединение по времени
+        df_final = df_3m.join([df_5m, df_15m], how="inner", rsuffix="_alt").dropna().reset_index()
+
+        # HTF (если включено)
+        if USE_HTF_CONFIRMATION:
+            df_final["htf_trend"] = get_htf_trend(symbol)
+
+        return df_final
+
+    except Exception as e:
+        log(f"[MultiTF] Error in fetch_data_multiframe for {symbol}: {e}", level="ERROR")
         return None
 
 
@@ -260,47 +295,36 @@ def get_enhanced_market_regime(symbol):
         return "neutral"
 
 
-def passes_filters(df, symbol):
+def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
     """
-    Dynamic filtering implementation using dynamic_filters module.
-    Uses runtime_config for flexible thresholds.
+    Multi-frame RSI filter + rel_volume + ATR
     """
-    from core.dynamic_filters import get_market_regime_from_indicators, should_filter_pair
-    from core.exchange_init import exchange
-    from utils_core import safe_call_retry
-
     try:
-        cfg = get_runtime_config()
-        atr_threshold = cfg.get("atr_threshold_percent", 19.0)
-        volume_threshold = cfg.get("volume_threshold_usdc", 16000)
-        adx_threshold = cfg.get("adx_threshold", 20)
+        config = get_runtime_config()
+        rsi_threshold = config.get("rsi_threshold", 50)
+        use_multi = config.get("USE_MULTITF_LOGIC", False)
 
-        price = df["close"].iloc[-1]
-        atr_percent = df["atr"].iloc[-1] / price if not pd.isna(df["atr"].iloc[-1]) else 0
+        latest = df.iloc[-1]
 
-        # Get 24h volume in USDC
-        ticker = safe_call_retry(exchange.fetch_ticker, symbol)
-        volume_usdc = ticker["baseVolume"] * ticker["last"] if ticker else 0
-
-        # Determine market regime
-        adx = df["adx"].iloc[-1] if not pd.isna(df["adx"].iloc[-1]) else 0
-        bb_width = df["bb_width"].iloc[-1] / price if not pd.isna(df["bb_width"].iloc[-1]) else 0
-        market_regime = get_market_regime_from_indicators(adx, bb_width)
-
-        # Apply basic safety thresholds before dynamic filter
-        if atr_percent < atr_threshold or volume_usdc < volume_threshold or adx < adx_threshold:
-            log(f"{symbol} ⛔️ Rejected by static filter: ATR%={atr_percent:.2f}, Volume={volume_usdc:.0f}, ADX={adx:.1f}", level="DEBUG")
-            return False
-
-        # Use dynamic filter
-        should_filter, reason = should_filter_pair(symbol, atr_percent, volume_usdc, market_regime)
-        if should_filter:
-            log(f"{symbol} ⛔️ Filtered out: {reason['reason']}", level="DEBUG")
-            return False
+        if use_multi:
+            for tf in ["rsi_3m", "rsi_5m", "rsi_15m"]:
+                if tf not in latest or latest[tf] < rsi_threshold:
+                    return False
+            if latest.get("rel_volume_15m", 0) < 0.9:
+                return False
+            if latest.get("atr_15m", 0) <= 0:
+                return False
+        else:
+            # fallback logic (например, rsi_15m и atr_15m)
+            if latest.get("rsi_15m", 0) < rsi_threshold:
+                return False
+            if latest.get("atr_15m", 0) <= 0:
+                return False
 
         return True
+
     except Exception as e:
-        log(f"Error in passes_filters for {symbol}: {e}", level="ERROR")
+        log(f"[Filter] Error in passes_filters for {symbol}: {e}", level="ERROR")
         return False
 
 
@@ -320,10 +344,10 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     """
     failure_reasons = []  # Initialize failure reasons list
 
-    from utils_core import get_runtime_config
-
-    runtime_config = get_runtime_config()
-    scalping_mode = runtime_config.get("scalping_mode", False)
+    get_runtime_config()
+    balance = get_cached_balance()  # Get balance once for both strategy selection and other uses
+    strategy_mode = determine_strategy_mode(symbol, balance)
+    scalping_mode = strategy_mode == "scalp"
 
     # ✅ Fetch data based on mode
     if scalping_mode:

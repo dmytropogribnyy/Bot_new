@@ -103,6 +103,9 @@ MAX_MARGIN_PERCENT = float(get_config("MAX_MARGIN_PERCENT", 0.2))
 MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
 MIN_NOTIONAL_ORDER = float(get_config("MIN_NOTIONAL_ORDER", 20))
 
+# ========== Strategy Mode Settings ==========
+GLOBAL_SCALPING_TEST = False  # Set to True temporarily for testing optimized function on all pairs
+
 # ========== TP/SL Settings ==========
 # Optimized for 15-minute timeframe with better risk/reward
 TP1_PERCENT = float(get_config("TP1_PERCENT", 0.007))  # Changed from 0.008 to 0.007
@@ -476,14 +479,41 @@ def set_bot_status(status):
         return False
 
 
-def get_max_positions():
+def get_max_positions(balance=None):
     """
-    Get the maximum allowed concurrent positions from runtime_config.
+    Get the maximum allowed concurrent positions based on account balance.
+    Falls back to runtime_config if balance is not provided.
+
+    Args:
+        balance (float, optional): Current account balance in USDC
+
+    Returns:
+        int: Maximum number of concurrent positions allowed
     """
-    from utils_core import get_runtime_config
+    from utils_core import get_cached_balance, get_runtime_config
 
     config = get_runtime_config()
-    return config.get("max_concurrent_positions", 5)
+    if balance is None:
+        # Check for manual override first
+        if "max_concurrent_positions" in config:
+            return config.get("max_concurrent_positions")
+        balance = get_cached_balance()
+
+    # Dynamic scaling logic
+    if balance < 60:
+        return 3
+    elif balance < 100:
+        return 5
+    elif balance < 150:
+        return 6
+    elif balance < 300:
+        return 8
+    elif balance < 500:
+        return 10
+    elif balance < 1000:
+        return 12
+    else:
+        return 15
 
 
 def set_filter_thresholds(atr, volume):

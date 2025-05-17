@@ -17,6 +17,13 @@ DEFAULT_STATE = {
     "allowed_user_id": 383821734,
 }
 
+RANGE_LIMITS = {
+    "score_threshold": (1.2, 3.5),
+    "momentum_min": (0.0, 2.5),
+    "wick_sensitivity": (0.0, 1.0),
+    "htf_required": (0, 1),
+}
+
 CACHE_TTL = 30
 api_cache = {
     "balance": {"value": None, "timestamp": 0},
@@ -74,6 +81,53 @@ def update_last_signal_time():
         log(f"Updated last signal time in {path}.", level="INFO")
     except Exception as e:
         log(f"Error updating last signal time in {path}: {e}", level="ERROR")
+
+
+def adjust_from_missed_opportunities():
+    """
+    Adapt runtime configuration based on missed trading opportunities.
+    Analyzes missed_opportunities.json to identify patterns and adjust parameters.
+    """
+    import json
+    from pathlib import Path
+
+    from utils_core import RANGE_LIMITS, get_runtime_config, update_runtime_config
+    from utils_logging import log
+
+    path = Path("data/missed_opportunities.json")
+    if not path.exists():
+        log("[MissedFeedback] missed_opportunities.json not found", level="WARNING")
+        return
+
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        if not data:
+            return
+
+        # Sort by profit descending
+        top = sorted(data.items(), key=lambda x: x[1].get("profit", 0), reverse=True)[:3]
+        avg_profit = sum(v.get("profit", 0) for _, v in top) / len(top)
+        log(f"[MissedFeedback] Top missed avg profit: {avg_profit:.2f}", level="DEBUG")
+
+        updates = {}
+        if avg_profit > 5:
+            config = get_runtime_config()
+
+            # Use RANGE_LIMITS from utils_core for parameter boundaries
+            if config.get("momentum_min", 0) > 0.3:
+                updates["momentum_min"] = max(config["momentum_min"] - 0.1, RANGE_LIMITS["momentum_min"][0])
+
+            if config.get("score_threshold", 0) > 2.0:
+                updates["score_threshold"] = max(config["score_threshold"] - 0.05, RANGE_LIMITS["score_threshold"][0])
+
+        if updates:
+            log(f"[MissedFeedback] Adapting config from missed opportunities: {updates}", level="INFO")
+            update_runtime_config(updates)
+
+    except Exception as e:
+        log(f"[MissedFeedback] Error processing missed_opportunities: {e}", level="ERROR")
 
 
 def get_open_symbols():
@@ -270,12 +324,18 @@ def update_runtime_config(new_values: dict):
             history = []
 
         history.append({"timestamp": datetime.utcnow().isoformat(), "updates": new_values})
-
-        # Keep last 100 entries
         with open(history_path, "w") as f:
             json.dump(history[-100:], f, indent=2)
     except Exception as e:
         log(f"⚠️ Error logging parameter history: {e}", level="WARNING")
+
+    # Telegram notification of changes
+    try:
+        summary = "\n".join([f"{k}: {v}" for k, v in new_values.items()])
+        send_telegram_message(f"🔧 *runtime_config updated:*\n```\n{summary}\n```", markdown=True)
+        log("[RuntimeConfig] Update notification sent to Telegram", level="INFO")
+    except Exception as e:
+        log(f"[RuntimeConfig] Telegram notification failed: {e}", level="WARNING")
 
 
 def set_leverage_for_symbols():

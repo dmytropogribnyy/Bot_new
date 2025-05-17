@@ -1,3 +1,5 @@
+from symbol_priority_manager import determine_strategy_mode
+
 from common.config_loader import (
     LEVERAGE_MAP,
     MARGIN_SAFETY_BUFFER,
@@ -9,7 +11,7 @@ from core.binance_api import convert_symbol  # Added import for symbol conversio
 from core.exchange_init import exchange
 from core.order_utils import calculate_order_quantity
 from core.score_evaluator import get_required_risk_reward_ratio, get_risk_percent_by_score
-from core.strategy import fetch_data, should_enter_trade
+from core.strategy import fetch_data, fetch_data_multiframe, fetch_data_optimized, should_enter_trade
 from core.tp_utils import calculate_tp_levels
 from core.trade_engine import (
     get_market_regime,
@@ -17,12 +19,7 @@ from core.trade_engine import (
     open_positions_lock,
 )
 from telegram.telegram_utils import send_telegram_message
-from utils_core import (
-    calculate_risk_reward_ratio,
-    check_min_profit,
-    get_max_positions,
-    get_min_net_profit,
-)
+from utils_core import calculate_risk_reward_ratio, check_min_profit, get_max_positions, get_min_net_profit, get_runtime_config
 from utils_logging import log
 
 
@@ -83,8 +80,21 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 send_telegram_message(f"⚠️ No available margin for {symbol}", force=True, parse_mode="")
                 return None
 
-            # Fetch market data
-            df = fetch_data(symbol)
+                # === Fetch market data based on strategy mode ===
+            config = get_runtime_config()
+            use_multitf = config.get("USE_MULTITF_LOGIC", False)
+            mode = determine_strategy_mode(symbol, balance)
+
+            if mode == "scalp":
+                df = fetch_data_optimized(symbol)
+                log(f"[ScalpingMode] Using optimized data for {symbol}", level="DEBUG")
+            elif use_multitf:
+                df = fetch_data_multiframe(symbol)
+                log(f"[MultiTF] Using fetch_data_multiframe() for {symbol}", level="DEBUG")
+            else:
+                df = fetch_data(symbol)
+                log(f"[StandardMode] Using fetch_data() for {symbol}", level="DEBUG")
+
             if df is None:
                 log(f"⚠️ Skipping {symbol} — fetch_data returned None", level="WARNING")
                 send_telegram_message(f"⚠️ Failed to fetch data for {symbol}", force=True, parse_mode="")

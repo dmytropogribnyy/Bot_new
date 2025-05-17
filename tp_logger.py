@@ -62,7 +62,8 @@ def log_trade_result(
     adx,
     bb_width,
     result_type="manual",
-    account_category=None,  # Added parameter
+    account_category=None,
+    exit_reason=None,
 ):
     """Log trade result with enhanced commission calculation and duplicate prevention."""
     try:
@@ -101,17 +102,23 @@ def log_trade_result(
             price_change_pct *= -1
 
         # Determine result type
-        result = result_type.upper() if result_type else "MANUAL"
-        if tp1_hit and result_type not in ["soft_exit", "trailing"]:
-            result = "TP1"
-        elif tp2_hit and result_type not in ["soft_exit", "trailing"]:
-            result = "TP2"
-        elif sl_hit and result_type not in ["soft_exit", "trailing"]:
-            result = "SL"
+        # Determine result type
+        if result_type == "bonus_profit":
+            result = "BONUS_PROFIT"
+        elif result_type == "auto_profit":
+            result = "AUTO_PROFIT"
         elif result_type == "soft_exit":
             result = "SOFT_EXIT"
         elif result_type == "trailing":
             result = "TRAILING"
+        elif tp1_hit and result_type not in ["soft_exit", "trailing", "auto_profit", "bonus_profit"]:
+            result = "TP1"
+        elif tp2_hit and result_type not in ["soft_exit", "trailing", "auto_profit", "bonus_profit"]:
+            result = "TP2"
+        elif sl_hit and result_type not in ["soft_exit", "trailing", "auto_profit", "bonus_profit"]:
+            result = "SL"
+        else:
+            result = result_type.upper() if result_type else "MANUAL"
 
         # Create unique trade ID with enhanced uniqueness
         timestamp = now_with_timezone()
@@ -230,12 +237,14 @@ def log_trade_result(
                 level="INFO",
             )
 
-        # Telegram notification with key metrics
+            # Telegram notification with key metrics
         from telegram.telegram_utils import send_telegram_message
 
         emoji = "✅" if net_pnl > 0 else "❌"
+        exit_reason_display = f" [{exit_reason.upper()}]" if exit_reason else ""
+
         msg = (
-            f"{emoji} Trade {result}: {symbol} {direction}\n"
+            f"{emoji} Trade {result}:{exit_reason_display} {symbol} {direction}\n"
             f"Entry: {entry_price:.6f} → Exit: {exit_price:.6f}\n"
             f"Net Profit: {net_pnl:.2f}% (${absolute_profit:.3f})\n"
             f"Commission: ${commission:.6f} | Held: {duration_minutes} min"

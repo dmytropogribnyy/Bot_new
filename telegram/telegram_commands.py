@@ -242,6 +242,24 @@ def handle_goals_command():
         log(f"Goals command error: {e}", level="ERROR")
 
 
+def handle_mtfstatus():
+    """
+    Telegram command handler for /mtfstatus
+    Shows current Multi-Timeframe strategy config
+    """
+    try:
+        config = get_runtime_config()
+        multitf_enabled = config.get("USE_MULTITF_LOGIC", False)
+        rsi_threshold = config.get("rsi_threshold", "N/A")
+
+        message = "\U0001f9e0 *Multi-Timeframe Status*\n" f"\n✅ Enabled: `{multitf_enabled}`" f"\n📊 Timeframes: `3m`, `5m`, `15m`" f"\n📈 RSI Threshold: `{rsi_threshold}`"
+
+        send_telegram_message(message, parse_mode="MarkdownV2")
+
+    except Exception as e:
+        send_telegram_message(f"❌ Error in /mtfstatus: {e}", force=True)
+
+
 @handle_errors
 def cmd_signalblocks(update, context):
     """Show currently blocked symbols."""
@@ -947,6 +965,22 @@ def handle_telegram_command(message, state, stop_event=None):
             handle_risk_command(message)
         elif text.startswith("/filters"):
             handle_filters_command(message)
+        elif text == "/statuslog":
+            from core.status_logger import log_symbol_activity_status_to_telegram
+        elif text == "/signalconfig":
+            from utils_core import get_runtime_config
+
+            try:
+                config = get_runtime_config()
+                summary = "\n".join([f"{k}: {v}" for k, v in config.items()])
+                send_telegram_message(f"🧠 *Current runtime_config:*\n```\n{summary}\n```", markdown=True)
+            except Exception as e:
+                send_telegram_message(f"❌ Error reading runtime_config: {e}")
+
+            try:
+                log_symbol_activity_status_to_telegram()
+            except Exception as e:
+                send_telegram_message(f"[StatusLog Error] Could not generate status log: {e}")
         elif text == "/help":
             help_msg = (
                 "🤖 Available Commands:\n\n"
@@ -981,10 +1015,12 @@ def handle_telegram_command(message, state, stop_event=None):
                 "❌ /reasons - Show signal rejection reasons\n"
                 "📈 /pairstoday - Show today's selected pairs\n"
                 "🧠 /signalconfig - Show adaptive signal config (balance-aware)\n"
+                "🧩 /statuslog - Show 10-minute activity report\n"
             )
 
             send_telegram_message(help_msg, force=True, parse_mode="")
             log("Sent help message.", level="INFO")
+
         elif text == "/summary":
             try:
                 summary = generate_summary()
@@ -1033,6 +1069,8 @@ def handle_telegram_command(message, state, stop_event=None):
             handle_status_command(state)
         elif text == "/signalconfig":
             handle_signalconfig_command()
+        elif text == "/mtfstatus":
+            handle_mtfstatus()
         elif text == "/resume_after_ip":
             state = load_state()
             if DRY_RUN:

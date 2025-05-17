@@ -457,7 +457,10 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
 
         if not DRY_RUN:
             try:
+                from threading import Thread
+
                 from core.binance_api import create_safe_market_order
+                from core.trade_engine import run_auto_profit_exit  # Ensure this is imported
 
                 result = create_safe_market_order(symbol, side.lower(), qty)
                 if not result["success"]:
@@ -469,6 +472,11 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                     f"[Enter Trade] Opened {side.upper()} position for {symbol}: qty={qty}, entry={entry_price}",
                     level="INFO",
                 )
+
+                # === Start Auto-Profit Thread ===
+                Thread(target=run_auto_profit_exit, args=(symbol, side, entry_price), daemon=True).start()
+                log(f"[Auto-Profit] Started monitoring thread for {symbol}", level="DEBUG")
+
             except Exception as e:
                 log(f"[Enter Trade] Failed to open position for {symbol}: {str(e)}", level="ERROR")
                 send_telegram_message(f"❌ Failed to open trade {symbol}: {str(e)}", force=True)
@@ -972,6 +980,10 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
 
 
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
+    """
+    Record trade result with enhanced exit reason categorization.
+    Adds support for 'flat' exit type for trades that don't hit TP/SL targets.
+    """
     global open_positions_count, dry_run_positions_count
 
     caller_stack = traceback.format_stack()[-2]
@@ -1004,6 +1016,15 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     final_result_type = result_type
     if trade.get("soft_exit_hit", False) and result_type in ["manual", "stop"]:
         final_result_type = "soft_exit"
+
+    # Determine exit reason
+    if trade.get("tp1_hit", False) or trade.get("tp2_hit", False):
+        exit_reason = "tp"
+    elif result_type == "sl":
+        exit_reason = "sl"
+    else:
+        # This is a flat exit - neither TP nor SL was hit
+        exit_reason = "flat"
 
     duration = int((time.time() - trade["start_time"].timestamp()) / 60)
     pnl = ((exit_price - entry_price) / entry_price) * 100
@@ -1042,12 +1063,16 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         result_type=final_result_type,
         account_category=account_category,
         net_profit_usdc=round(net_absolute_profit, 2) if account_category == "Small" else None,
+        exit_reason=exit_reason,  # Added exit_reason parameter
     )
+
+    # Enhanced notification with exit reason for better clarity
+    exit_reason_display = f" [{exit_reason.upper()}]" if exit_reason else ""
 
     # Enhanced notification with absolute profit for small accounts
     if account_category == "Small":
         msg = (
-            f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
+            f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}{exit_reason_display}]\n"
             f"• {symbol} — {side.upper()}\n"
             f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
             f"• PnL: {round(pnl, 2)}% | ${round(net_absolute_profit, 2)} USDC\n"
@@ -1055,7 +1080,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         )
     else:
         msg = (
-            f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}]\n"
+            f"📤 *Trade Closed* [{final_result_type.upper()}{' + Soft Exit' if trade.get('soft_exit_hit', False) else ''}{exit_reason_display}]\n"
             f"• {symbol} — {side.upper()}\n"
             f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
             f"• PnL: {round(pnl, 2)}% | Held: {duration} min"
@@ -1169,56 +1194,109 @@ def open_real_trade(symbol, direction, qty, entry_price):
 def run_auto_profit_exit(symbol, side, entry_price, check_interval=5):
     """
     Monitor position profit and automatically close when it reaches the profit threshold.
-
-    Args:
-        symbol: Trading pair symbol
-        side: Position side (buy/sell)
-        entry_price: Position entry price
-        check_interval: How often to check profit (in seconds)
+    Enhanced with TP1 protection and 60-minute time limit to avoid interfering with TP2.
     """
     log(f"[Auto-Profit] Starting profit monitoring for {symbol} with entry price {entry_price}", level="DEBUG")
+    time.time()
 
     while True:
         try:
-            # Check if trade still exists
+            # Get current trade object
             trade = trade_manager.get_trade(symbol)
             if not trade:
                 log(f"[Auto-Profit] Trade for {symbol} no longer exists, stopping auto-profit thread", level="INFO")
                 break
 
-            # Check if position is still open
+            # === TP1 Protection ===
+            if trade.get("tp1_hit"):
+                log(f"[Auto-Profit] TP1 already hit for {symbol}, stopping auto-profit to let TP2 work", level="INFO")
+                break
+
+            # === Time Limit Check ===
+            trade_start = trade.get("start_time")
+            if trade_start:
+                duration = (time.time() - trade_start.timestamp()) / 60
+                if duration > 60:
+                    log(f"[Auto-Profit] 60-minute time limit reached for {symbol}, stopping auto-profit thread", level="INFO")
+                    break
+
+            # Check if position still open
             position = get_position_size(symbol)
             if position <= 0:
                 log(f"[Auto-Profit] Position for {symbol} closed, stopping auto-profit thread", level="INFO")
                 break
 
-            # Get current price and calculate profit percentage
+            # Get current price
             price = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")["last"]
 
             if side.lower() == "buy":
                 profit_percentage = ((price - entry_price) / entry_price) * 100
-            else:  # side == "sell"
+            else:
                 profit_percentage = ((entry_price - price) / entry_price) * 100
 
             log(f"[Auto-Profit] {symbol} current profit: {profit_percentage:.2f}%", level="DEBUG")
 
-            # Check against thresholds
+            # === Profit Thresholds ===
             if profit_percentage >= BONUS_PROFIT_THRESHOLD:
                 log(f"🎉 BONUS PROFIT! Auto-closing {symbol} at +{profit_percentage:.2f}% 🚀", level="INFO")
                 safe_close_trade(exchange, symbol, trade, reason="bonus_profit")
-                send_telegram_message(f"🎉 *Bonus Profit!* {symbol} closed at +{profit_percentage:.2f}% 🚀\n" f"Reason: Exceeded {BONUS_PROFIT_THRESHOLD}% profit!")
+                send_telegram_message(f"🎉 *Bonus Profit!* {symbol} closed at +{profit_percentage:.2f}% 🚀\nReason: Exceeded {BONUS_PROFIT_THRESHOLD}% profit!")
                 break
             elif profit_percentage >= AUTO_CLOSE_PROFIT_THRESHOLD:
                 log(f"✅ Auto-closing {symbol} at +{profit_percentage:.2f}% (Threshold: {AUTO_CLOSE_PROFIT_THRESHOLD}%)", level="INFO")
                 safe_close_trade(exchange, symbol, trade, reason="auto_profit")
-                send_telegram_message(f"✅ *Auto-closed* {symbol} at +{profit_percentage:.2f}% profit 🚀\n" f"Reason: Reached profit target {AUTO_CLOSE_PROFIT_THRESHOLD}%")
+                send_telegram_message(f"✅ *Auto-closed* {symbol} at +{profit_percentage:.2f}% profit 🚀\nReason: Reached profit target {AUTO_CLOSE_PROFIT_THRESHOLD}%")
                 break
 
-            # Wait before checking again
             time.sleep(check_interval)
+
         except Exception as e:
             log(f"[ERROR] Auto-profit error for {symbol}: {e}", level="ERROR")
             break
+
+
+def check_auto_profit(trade, threshold=AUTO_CLOSE_PROFIT_THRESHOLD):
+    """
+    Advanced auto-profit check:
+    - Skips if TP1 already hit (let TP2 work)
+    - Applies only if position open less than 60 min
+    - Applies only if profit threshold is reached
+    """
+    if not trade:
+        return False
+
+    # TP1 protection
+    if trade.get("tp1_hit"):
+        return False
+
+    # Time limit protection
+    start_time = trade.get("start_time")
+    if not start_time:
+        return False
+
+    duration = (time.time() - start_time.timestamp()) / 60
+    if duration > 60:
+        return False
+
+    # Get current price
+    symbol = trade.get("symbol")
+    entry_price = trade.get("entry", 0)
+    side = trade.get("side")
+
+    ticker = safe_call_retry(exchange.fetch_ticker, symbol)
+    current_price = ticker["last"] if ticker else 0
+
+    if not entry_price or not current_price:
+        return False
+
+    # Calculate profit percentage
+    pnl = (current_price - entry_price) / entry_price if side == "buy" else (entry_price - current_price) / entry_price
+
+    if pnl >= threshold:
+        log(f"[AutoProfit] Triggered for {symbol}: pnl={pnl:.2%}, duration={duration:.1f} min", level="INFO")
+        return True
+
+    return False
 
 
 def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check_interval=5):

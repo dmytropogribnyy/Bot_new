@@ -37,3 +37,35 @@ def log_score_history(symbol, score):
 
     except Exception as e:
         log(f"[ScoreHistory] Failed to log score for {symbol}: {e}", level="ERROR")
+
+
+def log_score_components(symbol, score, breakdown):
+    """
+    Log detailed score component breakdown for analysis and optimization.
+
+    Args:
+        symbol: Trading pair symbol
+        score: Final calculated score
+        breakdown: Dictionary of component contributions
+    """
+    try:
+        if DRY_RUN:
+            return  # Don't log in DRY_RUN
+
+        os.makedirs("data", exist_ok=True)
+        filepath = "data/score_components.csv"
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        file_exists = os.path.isfile(filepath)
+        components = list(breakdown.keys())
+
+        with open(filepath, "a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                headers = ["Symbol", "Score", "Timestamp"] + components
+                writer.writerow(headers)
+            row_data = [symbol, score, now_str] + [breakdown.get(k, 0) for k in components]
+            writer.writerow(row_data)
+
+    except Exception as e:
+        log(f"[ScoreComponents] Failed to log components for {symbol}: {e}", level="ERROR")

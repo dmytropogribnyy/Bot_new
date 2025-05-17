@@ -147,8 +147,10 @@ def run_trading_cycle(symbols, stop_event):
     Process trading cycle with enhanced position quality evaluation and switching.
     """
     # Lazy imports to break circular dependencies
+    from common.config_loader import AUTO_PROFIT_ENABLED
     from core.symbol_processor import process_symbol
     from core.trade_engine import (
+        check_auto_profit,
         close_dry_trade,
         close_real_trade,
         enter_trade,
@@ -168,13 +170,11 @@ def run_trading_cycle(symbols, stop_event):
     if not hasattr(run_trading_cycle, "last_symbols") or run_trading_cycle.last_symbols != symbols:
         log("Setting leverage for symbols due to symbol list change", level="DEBUG")
         set_leverage_for_symbols()
-        run_trading_cycle.last_symbols = symbols.copy()  # Store a copy of the symbols
+        run_trading_cycle.last_symbols = symbols.copy()
 
-    # Adaptive risk and position management
     balance = get_cached_balance()
     max_positions = get_max_positions(balance)
 
-    # Handle stopping flag
     if state.get("stopping"):
         open_trades = sum(get_position_size(sym) > 0 for sym in symbols)
         log(f"Open trades count: {open_trades}", level="DEBUG")
@@ -188,38 +188,26 @@ def run_trading_cycle(symbols, stop_event):
             log(f"Waiting for {open_trades} open positions...", level="INFO")
         return
 
-    # Main trading cycle
-    # Efficiently check position count once
     positions = get_cached_positions()
     active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
 
-    # Check against max_positions before processing
     if active_positions >= max_positions:
         log(f"Max positions ({max_positions}) reached. Active: {active_positions}. Skipping cycle.", level="INFO")
         return
 
-    # Evaluate current positions for potential switching
     current_positions = []
-    if MICRO_PROFIT_ENABLED:  # Use same flag for position quality evaluation
+    if MICRO_PROFIT_ENABLED:
         for sym in symbols:
             trade_data = trade_manager.get_trade(sym)
             if trade_data:
                 try:
                     current_price = safe_call_retry(exchange.fetch_ticker, sym)["last"]
                     duration_minutes = int((time.time() - trade_data["start_time"].timestamp()) / 60)
-
-                    # Calculate current P&L
                     side = trade_data["side"]
                     entry = trade_data["entry"]
-                    if side.lower() == "buy":
-                        current_pnl = ((current_price - entry) / entry) * 100
-                    else:
-                        current_pnl = ((entry - current_price) / entry) * 100
-
+                    current_pnl = ((current_price - entry) / entry) * 100 if side.lower() == "buy" else ((entry - current_price) / entry) * 100
                     quality = evaluate_position_quality(sym, side, entry, current_price, duration_minutes, trade_data.get("score"))
-
                     current_positions.append({"symbol": sym, "quality": quality, "duration": duration_minutes, "pnl": current_pnl})
-
                     log(f"{sym} Position quality: {quality:.1f}/10 (duration: {duration_minutes} min, PnL: {current_pnl:.2f}%)", level="DEBUG")
                 except Exception as e:
                     log(f"Error evaluating position {sym}: {e}", level="ERROR")
@@ -233,7 +221,6 @@ def run_trading_cycle(symbols, stop_event):
             log(f"[Trading Cycle] Stop signal received, aborting cycle for {symbol}.", level="INFO")
             break
 
-        # Skip if max positions reached during iteration
         positions = get_cached_positions()
         current_active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
         if current_active_positions >= max_positions:
@@ -243,6 +230,14 @@ def run_trading_cycle(symbols, stop_event):
         try:
             log(f"🔍 Checking {symbol}", level="DEBUG")
 
+            # === Auto-Profit Check (early exit) ===
+            current_trade = trade_manager.get_trade(symbol)
+            if AUTO_PROFIT_ENABLED and current_trade:
+                if check_auto_profit(current_trade):
+                    log(f"[AutoProfit] Closing {symbol} early due to profit threshold", level="INFO")
+                    safe_close_trade(exchange, symbol, current_trade, reason="auto_profit")
+                    continue
+
             trade_data = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
             if not trade_data:
                 continue
@@ -250,37 +245,24 @@ def run_trading_cycle(symbols, stop_event):
             score = trade_data["score"]
             is_reentry = trade_data["is_reentry"]
 
-            # Check if we should switch positions
-            if MICRO_PROFIT_ENABLED and current_positions and score > 3.5:  # Only consider good signals
+            if MICRO_PROFIT_ENABLED and current_positions and score > 3.5:
                 for pos in current_positions:
                     if should_switch_position(pos["quality"], score, balance, pos["pnl"]):
                         log(f"🔄 Switching {pos['symbol']} (quality: {pos['quality']:.1f}) for better opportunity {symbol} (score: {score:.1f})", level="INFO")
                         send_telegram_message(f"🔄 Switching from {pos['symbol']} to {symbol} for better opportunity", force=True)
-
-                        # Correctly close position with safe_close_trade
                         pos_trade_data = trade_manager.get_trade(pos["symbol"])
                         if pos_trade_data:
                             safe_close_trade(exchange, pos["symbol"], pos_trade_data)
-
-                        # Remove from list to avoid closing multiple positions
                         current_positions = [p for p in current_positions if p["symbol"] != pos["symbol"]]
                         break
 
-            # Smart switch logic for same symbol
             current_trade = trade_manager.get_trade(symbol)
             if current_trade:
                 current_score = current_trade.get("score", 0)
                 if score - current_score >= MIN_SCORE_DELTA_SWITCH:
                     if smart_switch_count < switch_limit:
-                        log(
-                            f"🧠 Smart Switch: {symbol} ({current_score}→{score})",
-                            level="INFO",
-                        )
-                        send_telegram_message(
-                            f"🔄 *Smart Switch* `{symbol}`: {current_score}→{score}",
-                            force=True,
-                            parse_mode="MarkdownV2",
-                        )
+                        log(f"🧠 Smart Switch: {symbol} ({current_score}→{score})", level="INFO")
+                        send_telegram_message(f"🔄 *Smart Switch* `{symbol}`: {current_score}→{score}", force=True, parse_mode="MarkdownV2")
                         if DRY_RUN:
                             close_dry_trade(symbol)
                         else:
@@ -289,15 +271,11 @@ def run_trading_cycle(symbols, stop_event):
                         is_reentry = True
                         time.sleep(1)
                     else:
-                        log(
-                            f"⚠️ Smart Switch skipped for {symbol} — limit reached ({switch_limit})",
-                            level="WARNING",
-                        )
+                        log(f"⚠️ Smart Switch skipped for {symbol} — limit reached ({switch_limit})", level="WARNING")
                         continue
                 else:
                     continue
 
-            # Enter trade
             if DRY_RUN:
                 notify_dry_trade(trade_data)
                 log_entry(trade_data, status="SUCCESS", mode="DRY_RUN")

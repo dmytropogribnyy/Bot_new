@@ -5,6 +5,8 @@ import time
 from collections import defaultdict
 from typing import List, Tuple
 
+from common.config_loader import GLOBAL_SCALPING_TEST
+from constants import PRIORITY_SMALL_BALANCE_PAIRS
 from utils_logging import log
 
 
@@ -114,3 +116,53 @@ class SymbolPriorityManager:
             self.event_history[symbol] = []
             log(f"Priority reset for {symbol}", level="INFO")
             self.save_priority_data()
+
+
+def determine_strategy_mode(symbol, balance):
+    """
+    Determine whether to use 'scalp' or 'standard' mode for a given symbol and balance.
+    """
+    # 1. Global scalping toggle for testing all pairs
+    if GLOBAL_SCALPING_TEST:
+        return "scalp"
+
+    # 2. Full scalping for very small balances
+    if balance < 300:
+        return "scalp"
+
+    # 3. Priority pairs use scalping up to moderate balance
+    if balance < 500 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+        return "scalp"
+
+    # 4. Manual whitelist for volatile pairs
+    if symbol in ["DOGE/USDC", "XRP/USDC", "SUI/USDC", "ARB/USDC"]:
+        return "scalp"
+
+    # 5. Default to standard mode
+    return "standard"
+
+
+def dynamic_scalping_mode(symbol, balance, volatility_score=0.0, priority_score=0.0):
+    """
+    Dynamically determine if scalping (3m) mode should be enabled for this symbol.
+    Uses balance, volatility and performance score as criteria.
+    """
+    if GLOBAL_SCALPING_TEST:
+        return True
+
+    # Малые балансы — всегда скальпинг
+    if balance < 300:
+        return True
+
+    # Средние балансы — только при приоритете или высокой волатильности
+    if balance < 600:
+        if symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+            return True
+        if volatility_score >= 0.8 or priority_score >= 0.8:
+            return True
+
+    # Крупные балансы — только при очень высокой активности
+    if balance >= 600:
+        return volatility_score >= 0.95 and priority_score >= 0.95
+
+    return False
