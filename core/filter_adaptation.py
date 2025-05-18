@@ -1,30 +1,10 @@
-import json
 import os
 
 from constants import FILTER_ADAPTATION_FILE
-from utils_core import get_runtime_config
+from utils_core import get_runtime_config, load_json_file
 from utils_logging import log
 
 DEFAULT_RELAX_FACTOR = 0.3
-
-
-def load_json_file(path):
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        log(f"[FilterAdapt] Failed to load {path}: {e}", level="ERROR")
-        return {}
-
-
-def save_json_file(path, data):
-    try:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-        log(f"[FilterAdapt] Saved data to {path}", level="DEBUG")
-    except Exception as e:
-        log(f"[FilterAdapt] Failed to save {path}: {e}", level="ERROR")
-        raise
 
 
 def get_adaptive_relax_factor(symbol):

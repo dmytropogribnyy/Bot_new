@@ -427,6 +427,12 @@ if __name__ == "__main__":
     if config.get("volume_threshold_usdc", 0) > 5000:
         log("⚠️ Warning: Volume threshold not optimized for small accounts", level="WARNING")
 
+    # Add continuous scanner here
+    from tools.continuous_scanner import continuous_scan
+
+    log("Running initial continuous scan to populate candidate list...", level="INFO")
+    continuous_scan()  # Populate inactive_candidates.json at startup
+
     # ✅ Инициализируем scheduler заранее
     from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -439,7 +445,7 @@ if __name__ == "__main__":
 
     # Запуск фоновых задач
     threading.Thread(
-        target=lambda: process_telegram_commands(state, lambda message: telegram_commands.handle_telegram_command(message, state, stop_event=stop_event)),
+        target=lambda: process_telegram_commands(state, lambda message, _state: telegram_commands.handle_telegram_command(message, state, stop_event=stop_event)),
         daemon=True,
     ).start()
 
@@ -470,7 +476,8 @@ if __name__ == "__main__":
     scheduler.add_job(auto_adjust_relax_factors_from_missed, "interval", minutes=30)
     scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
     scheduler.add_job(schedule_failure_decay, "interval", hours=1, id="failure_decay")
-    scheduler.add_job(continuous_scan, "interval", hours=2, id="inactive_scanner")
+    scheduler.add_job(continuous_scan, "interval", minutes=15, id="symbol_scanner")
+
     scheduler.add_job(adjust_score_relax_boost, "interval", hours=1, id="score_relax_adjustment")
     scheduler.add_job(log_symbol_activity_status, "interval", minutes=10, id="status_logger")
 

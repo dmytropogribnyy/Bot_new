@@ -313,3 +313,37 @@ def get_max_total_exposure(balance):
     else:
         # Standard for larger accounts
         return balance * 0.90  # Maximum 90% total exposure
+
+
+def calculate_current_risk():
+    """
+    Calculate the total risk exposure of all open positions as a percentage of balance.
+
+    Returns:
+        float: Total risk exposure percentage
+    """
+    try:
+        from utils_core import get_cached_balance
+
+        # Get current balance
+        balance = get_cached_balance()
+        if not balance or balance == 0:
+            return 0.0
+
+        # Get all open positions
+        positions = exchange.fetch_positions()
+
+        # Calculate total notional value
+        total_notional = 0.0
+        for pos in positions:
+            if float(pos.get("contracts", 0)) > 0:
+                contracts = float(pos.get("contracts", 0))
+                entry_price = float(pos.get("entryPrice", 0))
+                notional = contracts * entry_price
+                total_notional += notional
+
+        # Calculate percentage of balance
+        return (total_notional / balance) * 100
+    except Exception as e:
+        log(f"Error calculating current risk: {e}", level="ERROR")
+        return 0.0

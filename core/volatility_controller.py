@@ -29,7 +29,7 @@ def get_filter_relax_factor():
 
 
 def get_volatility_filters(symbol, base_filters):
-    from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
+    from common.config_loader import get_priority_small_balance_pairs
     from utils_core import get_cached_balance, get_runtime_config
 
     balance = get_cached_balance()
@@ -47,8 +47,8 @@ def get_volatility_filters(symbol, base_filters):
     filters["relax_factor"] = runtime_relax
 
     # Special treatment for small balance accounts
-    if balance < 150:
-        if symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+    if balance < 300:
+        if symbol in get_priority_small_balance_pairs():
             filters["atr"] *= 0.9
             filters["adx"] *= 0.9
             filters["bb"] *= 0.9

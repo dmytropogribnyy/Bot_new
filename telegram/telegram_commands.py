@@ -34,6 +34,7 @@ from missed_tracker import flush_best_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import generate_summary
 from symbol_activity_tracker import get_most_active_symbols
+from telegram.registry import COMMAND_REGISTRY
 
 # Add this import at the top of telegram_commands.py
 from telegram.telegram_handler import handle_errors  # or wherever it's defined
@@ -208,224 +209,101 @@ def _initiate_stop(reason, stop_event=None):
     return True
 
 
-# --- Command Handlers ---------------------------------------------------
-def handle_goals_command():
-    """
-    Show progress towards daily/weekly profit goals
-    """
-    try:
-        from common.config_loader import DAILY_PROFIT_TARGET, WEEKLY_PROFIT_TARGET
-
-        # Fetch today's and week's profit from stats
-        from stats import get_trades_for_past_days
-
-        today_trades = get_trades_for_past_days(1)
-        today_profit = today_trades["PnL (%)"].sum() if not today_trades.empty else 0
-        week_trades = get_trades_for_past_days(7)
-        week_profit = week_trades["PnL (%)"].sum() if not week_trades.empty else 0
-
-        # Calculate progress
-        daily_progress = (today_profit / DAILY_PROFIT_TARGET) * 100 if DAILY_PROFIT_TARGET else 0
-        weekly_progress = (week_profit / WEEKLY_PROFIT_TARGET) * 100 if WEEKLY_PROFIT_TARGET else 0
-
-        msg = (
-            f"🎯 *Profit Goals Progress*\n"
-            f"Daily Target: {DAILY_PROFIT_TARGET:.2f} USDC\n"
-            f"Today's Profit: {today_profit:.2f} USDC ({daily_progress:.1f}%)\n"
-            f"Weekly Target: {WEEKLY_PROFIT_TARGET:.2f} USDC\n"
-            f"This Week's Profit: {week_profit:.2f} USDC ({weekly_progress:.1f}%)"
-        )
-        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-        log("Sent profit goals progress via /goals command.", level="INFO")
-    except Exception as e:
-        send_telegram_message(f"❌ Failed to fetch goals: {e}", force=True)
-        log(f"Goals command error: {e}", level="ERROR")
+# --- Converted Commands in New Format -----------------------------------
 
 
-def handle_mtfstatus():
-    """
-    Telegram command handler for /mtfstatus
-    Shows current Multi-Timeframe strategy config
-    """
-    try:
-        config = get_runtime_config()
-        multitf_enabled = config.get("USE_MULTITF_LOGIC", False)
-        rsi_threshold = config.get("rsi_threshold", "N/A")
-
-        message = "\U0001f9e0 *Multi-Timeframe Status*\n" f"\n✅ Enabled: `{multitf_enabled}`" f"\n📊 Timeframes: `3m`, `5m`, `15m`" f"\n📈 RSI Threshold: `{rsi_threshold}`"
-
-        send_telegram_message(message, parse_mode="MarkdownV2")
-
-    except Exception as e:
-        send_telegram_message(f"❌ Error in /mtfstatus: {e}", force=True)
-
-
+@register_command("/regenpriority")
 @handle_errors
-def cmd_signalblocks(update, context):
-    """Show currently blocked symbols."""
-    try:
-        from utils_core import get_runtime_config
-
-        runtime_config = get_runtime_config()
-        blocked_symbols = runtime_config.get("blocked_symbols", {})
-
-        if not blocked_symbols:
-            update.message.reply_text("No symbols are currently blocked. ✅")
-            return
-
-        msg = "🚫 Currently Blocked Symbols:\n\n"
-
-        for symbol, block_info in blocked_symbols.items():
-            is_blocked, _ = is_symbol_blocked(symbol)
-            if is_blocked:
-                block_until = block_info.get("block_until", "unknown")
-                failures = block_info.get("total_failures", 0)
-                block_count = block_info.get("block_count", 0)
-
-                # Calculate remaining time
-                try:
-                    from dateutil import parser
-
-                    until_dt = parser.parse(block_until)
-                    from stats import now_with_timezone
-
-                    now = now_with_timezone()
-                    remaining = until_dt - now
-                    hours_remaining = remaining.total_seconds() / 3600
-
-                    msg += f"• {symbol}\n" f"  Failures: {failures}\n" f"  Block #: {block_count}\n" f"  Expires: {hours_remaining:.1f}h\n\n"
-                except Exception as e:
-                    msg += f"• {symbol} (error parsing: {e})\n\n"
-
-        update.message.reply_text(msg)
-    except Exception as e:
-        update.message.reply_text(f"Error fetching block info: {e}")
-
-
-@handle_errors
-def cmd_unblock(update, context):
-    """Manually unblock a symbol: /unblock BTCUSDC"""
-    try:
-        if not context.args:
-            update.message.reply_text("Usage: /unblock SYMBOL (e.g., /unblock BTCUSDC)")
-            return
-
-        # Handle both formats: BTCUSDC and BTC/USDC
-        input_symbol = context.args[0].upper()
-
-        # Convert to standard format (with slash) if needed
-        if "/" not in input_symbol and "USDC" in input_symbol:
-            # Convert BTCUSDC to BTC/USDC
-            symbol = input_symbol.replace("USDC", "/USDC")
-        else:
-            symbol = input_symbol
-
-        from utils_core import get_runtime_config, update_runtime_config
-
-        runtime_config = get_runtime_config()
-        blocked_symbols = runtime_config.get("blocked_symbols", {})
-
-        if symbol not in blocked_symbols:
-            update.message.reply_text(f"{symbol} is not blocked.")
-            return
-
-        # Remove block
-        del blocked_symbols[symbol]
-        runtime_config["blocked_symbols"] = blocked_symbols
-        update_runtime_config(runtime_config)
-
-        # Reset failure count
-        reset_failure_count(symbol)
-
-        update.message.reply_text(f"✅ {symbol} has been unblocked and failure count reset.")
-    except Exception as e:
-        update.message.reply_text(f"Error unblocking symbol: {e}")
-
-
-@handle_errors
-def cmd_failstats(update, context):
-    """Show failure statistics for all symbols."""
-    try:
-        from core.fail_stats_tracker import get_signal_failure_stats
-
-        failure_stats = get_signal_failure_stats()
-
-        if not failure_stats:
-            update.message.reply_text("No failure statistics available. ✅")
-            return
-
-        msg = "📊 Signal Failure Statistics:\n\n"
-
-        # Sort by total failures descending
-        sorted_symbols = sorted(failure_stats.items(), key=lambda x: sum(x[1].values()), reverse=True)
-
-        for symbol, reasons in sorted_symbols[:10]:  # Show top 10
-            total_failures = sum(reasons.values())
-
-            msg += f"• {symbol}: {total_failures} failures\n"
-
-            # Show breakdown of reasons
-            sorted_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)
-            for reason, count in sorted_reasons[:3]:  # Top 3 reasons
-                msg += f"  - {reason}: {count}\n"
-            msg += "\n"
-
-        if len(sorted_symbols) > 10:
-            msg += f"... and {len(sorted_symbols) - 10} more symbols"
-
-        update.message.reply_text(msg)
-    except Exception as e:
-        update.message.reply_text(f"Error fetching failure stats: {e}")
-
-
-def handle_risk_command(message):
+def cmd_regenpriority(message, state=None, stop_event=None):
     """
-    Adjust risk level with balance-aware limits
+    Regenerate priority pairs based on current market conditions.
+    Usage: /regenpriority
     """
     try:
-        parts = message.get("text", "").strip().split()
-        balance = get_cached_balance()
-        tier = get_deposit_tier()
-        max_recommended_risk = get_adaptive_risk_percent(tier)
+        from core.priority_evaluator import regenerate_priority_pairs
 
-        if len(parts) == 1:
-            current_risk = RISK_PERCENT if RISK_PERCENT else get_adaptive_risk_percent(tier)
-            msg = (
-                f"Current Risk Level: {current_risk*100:.1f}%\n"
-                f"Your Balance: ${balance:.2f} (Tier: {tier})\n"
-                f"Recommended Max Risk: {max_recommended_risk*100:.1f}%\n"
-                "Use /risk <value> to set new risk (e.g., /risk 0.02 for 2%)"
-            )
-            send_telegram_message(msg, force=True)
-        else:
-            new_risk = float(parts[1])
+        result = regenerate_priority_pairs()
+        send_telegram_message(result, force=True, parse_mode="MarkdownV2")
+        log("[Telegram] Priority pairs regenerated via command", level="INFO")
+        return True
+    except Exception as e:
+        log(f"[Telegram] Error regenerating priority pairs: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error: {e}", force=True)
+        return False
 
-            # Balance-aware limits
-            if balance < 150:
-                max_allowed_risk = 0.025  # 2.5% max for small accounts
-            elif balance < 300:
-                max_allowed_risk = 0.035  # 3.5% max for medium accounts
+
+@register_command("/prioritypairs")
+@handle_errors
+def cmd_prioritypairs(message, state=None, stop_event=None):
+    """
+    Show current priority pairs and their scores.
+    Usage: /prioritypairs
+    """
+    try:
+        from core.priority_evaluator import gather_symbol_data, get_priority_score, load_priority_pairs
+
+        # Load current priority pairs
+        priority_pairs = load_priority_pairs()
+
+        # Get fresh data to show current scores
+        symbols_data = gather_symbol_data() if "gather_symbol_data" in dir() else {}
+
+        # Calculate scores for display
+        pairs_with_scores = []
+        for symbol in priority_pairs:
+            if symbol in symbols_data:
+                score = get_priority_score(symbol, symbols_data[symbol])
+                price = symbols_data[symbol].get("price", 0)
+                pairs_with_scores.append((symbol, score, price))
             else:
-                max_allowed_risk = 0.05  # 5% max for larger accounts
+                pairs_with_scores.append((symbol, "N/A", "N/A"))
 
-            if new_risk < 0.005:  # 0.5% minimum
-                send_telegram_message("❌ Risk must be at least 0.005 (0.5%)", force=True)
-            elif new_risk > max_allowed_risk:
-                send_telegram_message(f"❌ For your balance (${balance:.2f}), maximum risk is {max_allowed_risk*100:.1f}%\n" f"Recommended: {max_recommended_risk*100:.1f}%", force=True)
-            else:
-                from utils_core import update_runtime_config
+        # Sort by score
+        pairs_with_scores.sort(key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)
 
-                update_runtime_config({"risk_percent": new_risk})
-                send_telegram_message(f"✅ Risk level set to {new_risk*100:.1f}%\n" f"(Recommended for ${balance:.2f}: {max_recommended_risk*100:.1f}%)", force=True)
-                log(f"Risk level set to {new_risk*100:.1f}% via /risk command", level="INFO")
+        # Format message
+        if pairs_with_scores:
+            message = "📊 *Current Priority Pairs*\n\n"
+            for i, (symbol, score, price) in enumerate(pairs_with_scores):
+                if score == "N/A":
+                    message += f"{i+1}. `{symbol}`: Score N/A\n"
+                else:
+                    message += f"{i+1}. `{symbol}`: Score {score:.3f} | ${price:.4f}\n"
+
+            # Add update time
+            import json
+            import os
+            from datetime import datetime
+
+            PRIORITY_JSON_PATH = "data/priority_pairs.json"
+            if os.path.exists(PRIORITY_JSON_PATH):
+                with open(PRIORITY_JSON_PATH, "r") as f:
+                    data = json.load(f)
+                update_time = data.get("updated_at", "Unknown")
+                if update_time != "Unknown":
+                    try:
+                        dt = datetime.fromisoformat(update_time)
+                        update_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except (ValueError, TypeError):
+                        pass
+                message += f"\nLast updated: {update_time}"
+        else:
+            message = "❌ No priority pairs found"
+
+        send_telegram_message(message, force=True, parse_mode="MarkdownV2")
+        return True
     except Exception as e:
-        send_telegram_message(f"❌ Failed to set risk: {e}", force=True)
-        log(f"Risk command error: {e}", level="ERROR")
+        log(f"[TelegramCommand] Error in prioritypairs: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error retrieving priority pairs: {str(e)}", force=True)
+        return False
 
 
-def handle_status_command(state):
+@register_command("/status")
+@handle_errors
+def cmd_status(message, state=None, stop_event=None):
     """
-    Report current bot status with balance-aware parameters and enhanced risk display
+    Display current bot status including balance, risk tier, open positions, and risk metrics.
+    Usage: /status
     """
     try:
         mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
@@ -482,7 +360,7 @@ def handle_status_command(state):
             f"TP1/TP2/SL: `{current_tp1*100:.1f}%/{current_tp2*100:.1f}%/{current_sl*100:.1f}%`"
         )
 
-        # Get open positions details (unchanged from original)
+        # Get open positions details
         if DRY_RUN:
             open_trades = [_format_pos_dry(t) for t in trade_manager._trades.values()]
         else:
@@ -494,10 +372,440 @@ def handle_status_command(state):
             msg += "\n" + "\n".join(open_trades)
 
         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-        log("Sent enhanced bot status via /status", level="INFO")
+        log("[Telegram] Status report sent", level="INFO")
+        return True
     except Exception as e:
+        log(f"[Telegram] Error in status command: {e}", level="ERROR")
         send_telegram_message(f"❌ Failed to get bot status: {e}", force=True)
-        log(f"Status command error: {e}", level="ERROR")
+        return False
+
+
+@register_command("/help")
+@handle_errors
+def cmd_help(message, state=None, stop_event=None):
+    """
+    Display available commands and their descriptions.
+    Usage: /help [command_name]
+    """
+    try:
+        command_parts = message.get("text", "").strip().split()
+
+        # If specific command help requested
+        if len(command_parts) > 1:
+            specific_cmd = f"/{command_parts[1].lower().lstrip('/')}"
+            cmd_entry = COMMAND_REGISTRY.get(specific_cmd)
+
+            if cmd_entry:
+                help_text = cmd_entry["help"] or "No description available."
+                send_telegram_message(f"Help for {specific_cmd}:\n\n{help_text}", force=True)
+                return True
+            else:
+                send_telegram_message(f"Command {specific_cmd} not found. Try /help for a list of commands.", force=True)
+                return False
+
+        # General help - list all registered commands first
+        help_msg = "🤖 *Available Commands:*\n\n"
+
+        # Add registered commands
+        for cmd, entry in sorted(COMMAND_REGISTRY.items()):
+            doc = entry["help"] or ""
+            # Extract first line of docstring as short description
+            short_desc = doc.split("\n")[0].strip() if doc else "No description"
+            help_msg += f"{cmd} - {short_desc}\n"
+
+        # Legacy commands - this section will be removed as commands are migrated
+        legacy_commands = """
+📡 /forceipcheck - Force immediate IP check
+📉 /last - Show last closed trade
+📜 /log - Export today's log to Telegram
+⚖️ /mode - Show strategy bias and score
+📈 /open - Show open positions
+🔄 /restart - Restart bot after closing positions
+⚠️ /risk - Adjust risk level (balance-aware)
+🔄 /router_reboot - Plan router reboot
+🚪 /shutdown - Exit bot after positions close
+🛑 /stop - Stop after all positions close
+🚨 /panic - Force close all trades (confirmation)
+📊 /summary - Show performance summary
+⚙️ /filters - Adjust pair filters (with dynamic values)
+🔧 /runtime - Show current runtime config
+🚫 /signalblocks - Show currently blocked symbols
+🔓 /unblock - Manually unblock a symbol
+📉 /failstats - Show failure statistics for all symbols
+❌ /reasons - Show signal rejection reasons
+📈 /pairstoday - Show today's selected pairs
+🧠 /signalconfig - Show adaptive signal config
+🧩 /statuslog - Show 10-minute activity report
+"""
+
+        send_telegram_message(help_msg + legacy_commands, force=True, parse_mode="MarkdownV2")
+        log("[Telegram] Help information sent", level="INFO")
+        return True
+    except Exception as e:
+        log(f"[Telegram] Error in help command: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error displaying help: {e}", force=True)
+        return False
+
+
+@register_command("/stop")
+@handle_errors
+def cmd_stop(message, state=None, stop_event=None):
+    """
+    Stop the bot after closing all positions.
+    Usage: /stop
+    """
+    try:
+        # Make sure we load the latest state
+        state = load_state()
+        log(f"[Stop] Current state before update: stopping={state.get('stopping', False)}", level="DEBUG")
+
+        # Update the stopping flag and save immediately
+        state["stopping"] = True
+        save_state(state)
+        log("[Stop] Updated state file with stopping=True", level="INFO")
+
+        # Verify state was saved correctly
+        verification_state = load_state()
+        log(f"[Stop] Verified state after update: stopping={verification_state.get('stopping', False)}", level="DEBUG")
+
+        # Set the global stop event
+        if stop_event:
+            stop_event.set()
+            log("[Stop] Setting global stop_event for stop command", level="INFO", important=True)
+
+        try:
+            if DRY_RUN:
+                open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+            else:
+                # Use our new function to get actual exchange positions
+                from core.binance_api import get_open_positions
+
+                positions = get_open_positions()
+                open_details = [_format_pos_real(p) for p in positions]
+
+                # Actively close positions in real mode
+                for pos in positions:
+                    if float(pos.get("contracts", 0)) > 0:
+                        try:
+                            close_real_trade(pos["symbol"])
+                            log(f"[Stop] Closing position for {pos['symbol']}", level="INFO")
+                        except Exception as e:
+                            log(f"[Stop] Failed to close position: {e}", level="ERROR")
+        except Exception as e:
+            log(f"[Stop] Failed to fetch positions: {e}", level="ERROR")
+            send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
+            open_details = []
+
+        if open_details:
+            msg = "🛑 *Stop command received*.\n" "Closing the following positions:\n" + "\n".join(open_details) + "\nNo new trades will be opened."
+            Thread(target=_monitor_stop_timeout, args=("Stop command", state), daemon=True).start()
+        else:
+            msg = "🛑 *Stop command received*.\nNo open positions. Bot will stop shortly."
+            # Note: We're NOT resetting stopping flag here - let the main loop handle shutdown
+            log("[Stop] No open positions. Bot will stop shortly.", level="INFO")
+
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("[Stop] Stop command processed.", level="INFO")
+        return True
+    except Exception as e:
+        log(f"[Telegram] Error in stop command: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error stopping bot: {e}", force=True)
+        return False
+
+
+@register_command("/signalconfig")
+@handle_errors
+def cmd_signalconfig(message, state=None, stop_event=None):
+    """
+    Show current adaptive signal configuration with key trading parameters and relax factors.
+    Usage: /signalconfig
+    """
+    try:
+        config = get_runtime_config()
+
+        # Add current trading parameters
+        balance = get_cached_balance()
+        tier = get_deposit_tier()
+
+        # Get effective values if not in runtime config
+        effective_tp1 = config.get("tp1_percent", TP1_PERCENT)
+        effective_tp2 = config.get("tp2_percent", TP2_PERCENT)
+        effective_sl = config.get("sl_percent", SL_PERCENT)
+        effective_risk = config.get("risk_percent", get_adaptive_risk_percent(tier))
+
+        msg = (
+            "*Current Adaptive Signal Config:*\n"
+            f"Balance: ${balance:.2f} (Tier: {tier})\n"
+            f"Risk Percent: {effective_risk*100:.1f}%\n"
+            f"TP1 Percent: {effective_tp1*100:.1f}%\n"
+            f"TP2 Percent: {effective_tp2*100:.1f}%\n"
+            f"SL Percent: {effective_sl*100:.1f}%\n"
+            f"Max Positions: {get_max_positions()}\n"
+            f"Min Score: {get_adaptive_score_threshold(tier):.1f}\n"
+            "\n*Runtime Config:*\n"
+        )
+
+        # Add all runtime config items
+        for k, v in config.items():
+            msg += f"`{k}` = `{v}`\n"
+
+        # Add per-symbol relax factors
+        import os
+
+        from common.config_loader import SYMBOLS_FILE
+        from utils_core import load_json_file
+
+        if os.path.exists(SYMBOLS_FILE):
+            with open(SYMBOLS_FILE, "r") as f:
+                active_symbols = json.load(f)
+        else:
+            active_symbols = []
+
+        filter_data = load_json_file("data/filter_adaptation.json")
+        if filter_data:
+            msg += "\n*Per-Symbol Relax Factors:*\n"
+            for symbol in active_symbols:
+                norm = symbol.replace("/", "").upper()
+                rf = filter_data.get(norm, {}).get("relax_factor", config.get("relax_factor", "N/A"))
+                msg += f"`{symbol}`: `{rf}`\n"
+
+        send_telegram_message(msg, parse_mode="MarkdownV2")
+        log("[Telegram] Signal config information sent", level="INFO")
+        return True
+    except Exception as e:
+        log(f"[Telegram] Error in signalconfig command: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error fetching signal config: {e}", force=True)
+        return False
+
+
+@register_command("/mtfstatus")
+@handle_errors
+def cmd_mtfstatus(message, state=None, stop_event=None):
+    """
+    Show current Multi-Timeframe strategy configuration.
+    Usage: /mtfstatus
+    """
+    try:
+        config = get_runtime_config()
+        multitf_enabled = config.get("USE_MULTITF_LOGIC", False)
+        rsi_threshold = config.get("rsi_threshold", "N/A")
+
+        message = "\U0001f9e0 *Multi-Timeframe Status*\n" f"\n✅ Enabled: `{multitf_enabled}`" f"\n📊 Timeframes: `3m`, `5m`, `15m`" f"\n📈 RSI Threshold: `{rsi_threshold}`"
+
+        send_telegram_message(message, parse_mode="MarkdownV2")
+        log("[Telegram] MTF status information sent", level="INFO")
+        return True
+    except Exception as e:
+        log(f"[Telegram] Error in mtfstatus command: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error in /mtfstatus: {e}", force=True)
+        return False
+
+
+# --- Legacy Command Handlers (to be migrated) --------------------------
+
+# These functions will be maintained until they're migrated to the new format
+# This ensures backward compatibility during the transition
+
+
+def handle_goals_command():
+    """
+    Show progress towards daily/weekly profit goals
+    """
+    try:
+        from common.config_loader import DAILY_PROFIT_TARGET, WEEKLY_PROFIT_TARGET
+
+        # Fetch today's and week's profit from stats
+        from stats import get_trades_for_past_days
+
+        today_trades = get_trades_for_past_days(1)
+        today_profit = today_trades["PnL (%)"].sum() if not today_trades.empty else 0
+        week_trades = get_trades_for_past_days(7)
+        week_profit = week_trades["PnL (%)"].sum() if not week_trades.empty else 0
+
+        # Calculate progress
+        daily_progress = (today_profit / DAILY_PROFIT_TARGET) * 100 if DAILY_PROFIT_TARGET else 0
+        weekly_progress = (week_profit / WEEKLY_PROFIT_TARGET) * 100 if WEEKLY_PROFIT_TARGET else 0
+
+        msg = (
+            f"🎯 *Profit Goals Progress*\n"
+            f"Daily Target: {DAILY_PROFIT_TARGET:.2f} USDC\n"
+            f"Today's Profit: {today_profit:.2f} USDC ({daily_progress:.1f}%)\n"
+            f"Weekly Target: {WEEKLY_PROFIT_TARGET:.2f} USDC\n"
+            f"This Week's Profit: {week_profit:.2f} USDC ({weekly_progress:.1f}%)"
+        )
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+        log("Sent profit goals progress via /goals command.", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to fetch goals: {e}", force=True)
+        log(f"Goals command error: {e}", level="ERROR")
+
+
+@register_command("/signalblocks")
+@handle_errors
+def cmd_signalblocks(_message=None, _state=None, _stop_event=None):
+    """Show currently blocked symbols."""
+    try:
+        from utils_core import get_runtime_config
+
+        runtime_config = get_runtime_config()
+        blocked_symbols = runtime_config.get("blocked_symbols", {})
+
+        if not blocked_symbols:
+            send_telegram_message("No symbols are currently blocked. ✅")
+            return True
+
+        msg = "🚫 Currently Blocked Symbols:\n\n"
+
+        for symbol, block_info in blocked_symbols.items():
+            is_blocked, _ = is_symbol_blocked(symbol)
+            if is_blocked:
+                block_until = block_info.get("block_until", "unknown")
+                failures = block_info.get("total_failures", 0)
+                block_count = block_info.get("block_count", 0)
+
+                # Calculate remaining time
+                try:
+                    from dateutil import parser
+
+                    until_dt = parser.parse(block_until)
+                    from stats import now_with_timezone
+
+                    now = now_with_timezone()
+                    remaining = until_dt - now
+                    hours_remaining = remaining.total_seconds() / 3600
+
+                    msg += f"• {symbol}\n" f"  Failures: {failures}\n" f"  Block #: {block_count}\n" f"  Expires: {hours_remaining:.1f}h\n\n"
+                except Exception as e:
+                    msg += f"• {symbol} (error parsing: {e})\n\n"
+
+        send_telegram_message(msg)
+        return True
+    except Exception as e:
+        send_telegram_message(f"Error fetching block info: {e}")
+        return False
+
+
+@handle_errors
+def cmd_unblock(update, context):
+    """Manually unblock a symbol: /unblock BTCUSDC"""
+    try:
+        if not context.args:
+            update.message.reply_text("Usage: /unblock SYMBOL (e.g., /unblock BTCUSDC)")
+            return
+
+        # Handle both formats: BTCUSDC and BTC/USDC
+        input_symbol = context.args[0].upper()
+
+        # Convert to standard format (with slash) if needed
+        if "/" not in input_symbol and "USDC" in input_symbol:
+            # Convert BTCUSDC to BTC/USDC
+            symbol = input_symbol.replace("USDC", "/USDC")
+        else:
+            symbol = input_symbol
+
+        from utils_core import get_runtime_config, update_runtime_config
+
+        runtime_config = get_runtime_config()
+        blocked_symbols = runtime_config.get("blocked_symbols", {})
+
+        if symbol not in blocked_symbols:
+            update.message.reply_text(f"{symbol} is not blocked.")
+            return
+
+        # Remove block
+        del blocked_symbols[symbol]
+        runtime_config["blocked_symbols"] = blocked_symbols
+        update_runtime_config(runtime_config)
+
+        # Reset failure count
+        reset_failure_count(symbol)
+
+        update.message.reply_text(f"✅ {symbol} has been unblocked and failure count reset.")
+    except Exception as e:
+        update.message.reply_text(f"Error unblocking symbol: {e}")
+
+
+@handle_errors
+def cmd_failstats(_message=None, _state=None, _stop_event=None):
+    """Show failure statistics for all symbols."""
+    try:
+        from core.fail_stats_tracker import get_signal_failure_stats
+
+        failure_stats = get_signal_failure_stats()
+
+        if not failure_stats:
+            send_telegram_message("No failure statistics available. ✅")
+            return
+
+        msg = "📊 Signal Failure Statistics:\n\n"
+
+        # Sort by total failures descending
+        sorted_symbols = sorted(failure_stats.items(), key=lambda x: sum(x[1].values()), reverse=True)
+
+        for symbol, reasons in sorted_symbols[:10]:  # Show top 10
+            total_failures = sum(reasons.values())
+
+            msg += f"• {symbol}: {total_failures} failures\n"
+
+            # Show breakdown of reasons
+            sorted_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)
+            for reason, count in sorted_reasons[:3]:  # Top 3 reasons
+                msg += f"  - {reason}: {count}\n"
+            msg += "\n"
+
+        if len(sorted_symbols) > 10:
+            msg += f"... and {len(sorted_symbols) - 10} more symbols"
+
+        send_telegram_message(msg)
+        return True
+    except Exception as e:
+        send_telegram_message(f"Error fetching failure stats: {e}")
+        return False
+
+
+def handle_risk_command(message):
+    """
+    Adjust risk level with balance-aware limits
+    """
+    try:
+        parts = message.get("text", "").strip().split()
+        balance = get_cached_balance()
+        tier = get_deposit_tier()
+        max_recommended_risk = get_adaptive_risk_percent(tier)
+
+        if len(parts) == 1:
+            current_risk = RISK_PERCENT if RISK_PERCENT else get_adaptive_risk_percent(tier)
+            msg = (
+                f"Current Risk Level: {current_risk*100:.1f}%\n"
+                f"Your Balance: ${balance:.2f} (Tier: {tier})\n"
+                f"Recommended Max Risk: {max_recommended_risk*100:.1f}%\n"
+                "Use /risk <value> to set new risk (e.g., /risk 0.02 for 2%)"
+            )
+            send_telegram_message(msg, force=True)
+        else:
+            new_risk = float(parts[1])
+
+            # Balance-aware limits
+            if balance < 150:
+                max_allowed_risk = 0.025  # 2.5% max for small accounts
+            elif balance < 300:
+                max_allowed_risk = 0.035  # 3.5% max for medium accounts
+            else:
+                max_allowed_risk = 0.05  # 5% max for larger accounts
+
+            if new_risk < 0.005:  # 0.5% minimum
+                send_telegram_message("❌ Risk must be at least 0.005 (0.5%)", force=True)
+            elif new_risk > max_allowed_risk:
+                send_telegram_message(f"❌ For your balance (${balance:.2f}), maximum risk is {max_allowed_risk*100:.1f}%\n" f"Recommended: {max_recommended_risk*100:.1f}%", force=True)
+            else:
+                from utils_core import update_runtime_config
+
+                update_runtime_config({"risk_percent": new_risk})
+                send_telegram_message(f"✅ Risk level set to {new_risk*100:.1f}%\n" f"(Recommended for ${balance:.2f}: {max_recommended_risk*100:.1f}%)", force=True)
+                log(f"Risk level set to {new_risk*100:.1f}% via /risk command", level="INFO")
+    except Exception as e:
+        send_telegram_message(f"❌ Failed to set risk: {e}", force=True)
+        log(f"Risk command error: {e}", level="ERROR")
 
 
 def handle_filters_command(message):
@@ -554,124 +862,72 @@ def handle_filters_command(message):
         log(f"Filters command error: {e}", level="ERROR")
 
 
-@register_command("/signalconfig")
-def handle_signalconfig_command():
+def handle_open_command(state):
     """
-    Show current adaptive signal configuration with key trading parameters and relax factors
+    Show all open positions (DRY or REAL) with potential TP1/TP2 profit
     """
     try:
-        config = get_runtime_config()
+        from core.strategy import calculate_tp_targets
+        from utils_core import get_cached_balance
 
-        # Add current trading parameters
-        balance = get_cached_balance()
-        tier = get_deposit_tier()
+        balance = float(get_cached_balance())
+        tp1_total, tp2_total = 0.0, 0.0
 
-        # Get effective values if not in runtime config
-        effective_tp1 = config.get("tp1_percent", TP1_PERCENT)
-        effective_tp2 = config.get("tp2_percent", TP2_PERCENT)
-        effective_sl = config.get("sl_percent", SL_PERCENT)
-        effective_risk = config.get("risk_percent", get_adaptive_risk_percent(tier))
-
-        msg = (
-            "*Current Adaptive Signal Config:*\n"
-            f"Balance: ${balance:.2f} (Tier: {tier})\n"
-            f"Risk Percent: {effective_risk*100:.1f}%\n"
-            f"TP1 Percent: {effective_tp1*100:.1f}%\n"
-            f"TP2 Percent: {effective_tp2*100:.1f}%\n"
-            f"SL Percent: {effective_sl*100:.1f}%\n"
-            f"Max Positions: {get_max_positions()}\n"
-            f"Min Score: {get_adaptive_score_threshold(tier):.1f}\n"
-            "\n*Runtime Config:*\n"
-        )
-
-        # Add all runtime config items
-        for k, v in config.items():
-            msg += f"`{k}` = `{v}`\n"
-
-        # ─── Add per-symbol relax factors ───
-        import os
-
-        from common.config_loader import SYMBOLS_FILE
-        from utils_core import load_json_file
-
-        if os.path.exists(SYMBOLS_FILE):
-            with open(SYMBOLS_FILE, "r") as f:
-                active_symbols = json.load(f)
-        else:
-            active_symbols = []
-
-        filter_data = load_json_file("data/filter_adaptation.json")
-        if filter_data:
-            msg += "\n*Per-Symbol Relax Factors:*\n"
-            for symbol in active_symbols:
-                norm = symbol.replace("/", "").upper()
-                rf = filter_data.get(norm, {}).get("relax_factor", config.get("relax_factor", "N/A"))
-                msg += f"`{symbol}`: `{rf}`\n"
-
-        send_telegram_message(msg, parse_mode="MarkdownV2")
-    except Exception as e:
-        send_telegram_message(f"❌ Error fetching signal config: {e}", force=True)
-        log(f"Signal config error: {e}", level="ERROR")
-
-
-def handle_stop_command(stop_event=None):
-    """
-    Enhanced stop command with active position closing and stop_event triggering
-    """
-    # Remove this line to break the circular import
-    # from main import stop_event
-
-    # Make sure we load the latest state
-    state = load_state()
-    log(f"[Stop] Current state before update: stopping={state.get('stopping', False)}", level="DEBUG")
-
-    # Update the stopping flag and save immediately
-    state["stopping"] = True
-    save_state(state)
-    log("[Stop] Updated state file with stopping=True", level="INFO")
-
-    # Verify state was saved correctly
-    verification_state = load_state()
-    log(f"[Stop] Verified state after update: stopping={verification_state.get('stopping', False)}", level="DEBUG")
-
-    # Set the global stop event
-    if stop_event:
-        stop_event.set()
-        log("[Stop] Setting global stop_event for stop command", level="INFO", important=True)
-
-    try:
         if DRY_RUN:
-            open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+            open_list = []
+            trades = [t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+            for t in trades:
+                symbol = t["symbol"]
+                qty = float(t["qty"])
+                entry = float(t["entry"])
+                side = t["side"].lower()
+
+                tp1, tp2 = calculate_tp_targets(symbol, side, entry)
+
+                profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
+                profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
+                tp1_total += profit1
+                tp2_total += profit2
+
+                pos_str = _format_pos_dry(t)
+                open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f} USDC")
+
+            header = "🔍 *Open DRY positions:*"
         else:
-            # Use our new function to get actual exchange positions
-            from core.binance_api import get_open_positions
+            open_list = []
+            positions = exchange.fetch_positions()
+            real_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
+            for p in real_positions:
+                symbol = p["symbol"]
+                qty = float(p["contracts"])
+                entry = float(p["entryPrice"])
+                side = p["side"].lower()
 
-            positions = get_open_positions()
-            open_details = [_format_pos_real(p) for p in positions]
+                tp1, tp2 = calculate_tp_targets(symbol, side, entry)
 
-            # Actively close positions in real mode
-            for pos in positions:
-                if float(pos.get("contracts", 0)) > 0:
-                    try:
-                        close_real_trade(pos["symbol"])
-                        log(f"[Stop] Closing position for {pos['symbol']}", level="INFO")
-                    except Exception as e:
-                        log(f"[Stop] Failed to close position: {e}", level="ERROR")
+                profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
+                profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
+                tp1_total += profit1
+                tp2_total += profit2
+
+                pos_str = _format_pos_real(p)
+                open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f} USDC")
+
+            header = "🔍 *Open positions:*"
+
+        if not open_list:
+            send_telegram_message(f"{header} none.", force=True)
+        else:
+            msg = (
+                f"{header}\n\n" + "\n\n".join(open_list) + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({tp1_total / balance * 100:.2f}%)\n"
+                f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({tp2_total / balance * 100:.2f}%)"
+            )
+            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+
+        log("Sent /open positions with potential PnL.", level="INFO")
     except Exception as e:
-        log(f"[Stop] Failed to fetch positions: {e}", level="ERROR")
-        send_telegram_message(f"❌ Failed to fetch positions: {e}", force=True)
-        open_details = []
-
-    if open_details:
-        msg = "🛑 *Stop command received*.\n" "Closing the following positions:\n" + "\n".join(open_details) + "\nNo new trades will be opened."
-        Thread(target=_monitor_stop_timeout, args=("Stop command", state), daemon=True).start()
-    else:
-        msg = "🛑 *Stop command received*.\nNo open positions. Bot will stop shortly."
-        # Note: We're NOT resetting stopping flag here - let the main loop handle shutdown
-        log("[Stop] No open positions. Bot will stop shortly.", level="INFO")
-
-    send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-    log("[Stop] Stop command processed.", level="INFO")
+        send_telegram_message(f"❌ Failed to fetch open positions: {e}", force=True)
+        log(f"Open positions error: {e}", level="ERROR")
 
 
 def handle_panic(message, state, stop_event=None):
@@ -767,7 +1023,6 @@ def handle_panic(message, state, stop_event=None):
         # Don't cancel timeout - let it force exit
 
 
-# -----------------------------------------------------------------------
 def handle_shutdown(message, state, stop_event=None):
     """
     Gracefully shutdown bot with proper position and order closure
@@ -850,86 +1105,22 @@ def handle_runtime_command():
         send_telegram_message(f"❌ Error fetching runtime config: {e}", force=True)
 
 
-def handle_open_command(state):
-    """
-    Show all open positions (DRY or REAL) with potential TP1/TP2 profit
-    """
-    try:
-        from core.strategy import calculate_tp_targets
-        from utils_core import get_cached_balance
-
-        balance = float(get_cached_balance())
-        tp1_total, tp2_total = 0.0, 0.0
-
-        if DRY_RUN:
-            open_list = []
-            trades = [t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
-            for t in trades:
-                symbol = t["symbol"]
-                qty = float(t["qty"])
-                entry = float(t["entry"])
-                side = t["side"].lower()
-
-                tp1, tp2 = calculate_tp_targets(symbol, side, entry)
-
-                profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
-                profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
-                tp1_total += profit1
-                tp2_total += profit2
-
-                pos_str = _format_pos_dry(t)
-                open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f} USDC")
-
-            header = "🔍 *Open DRY positions:*"
-        else:
-            open_list = []
-            positions = exchange.fetch_positions()
-            real_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
-            for p in real_positions:
-                symbol = p["symbol"]
-                qty = float(p["contracts"])
-                entry = float(p["entryPrice"])
-                side = p["side"].lower()
-
-                tp1, tp2 = calculate_tp_targets(symbol, side, entry)
-
-                profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
-                profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
-                tp1_total += profit1
-                tp2_total += profit2
-
-                pos_str = _format_pos_real(p)
-                open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f} USDC")
-
-            header = "🔍 *Open positions:*"
-
-        if not open_list:
-            send_telegram_message(f"{header} none.", force=True)
-        else:
-            msg = (
-                f"{header}\n\n" + "\n\n".join(open_list) + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({tp1_total / balance * 100:.2f}%)\n"
-                f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({tp2_total / balance * 100:.2f}%)"
-            )
-            send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-
-        log("Sent /open positions with potential PnL.", level="INFO")
-    except Exception as e:
-        send_telegram_message(f"❌ Failed to fetch open positions: {e}", force=True)
-        log(f"Open positions error: {e}", level="ERROR")
+# --- Main Command Handler (Updated) ------------------------------------
 
 
 def handle_telegram_command(message, state, stop_event=None):
     """
-    Main Telegram command handler with thread safety and enhanced reliability
+    Main Telegram command handler using registry lookup with fallback to legacy handlers.
     """
-    # Get message timestamp (Telegram provides this in UTC seconds)
+    # At the beginning of the function
+    log(f"All registered commands: {list(COMMAND_REGISTRY.keys())}", level="DEBUG")
+    # Skip stale messages
     message_date = message.get("date", 0)
     session_start_time = state.get("session_start_time", 0)
-
-    # Skip commands sent before current session started
     if message_date and session_start_time and message_date < session_start_time:
         log(f"Ignoring stale command from previous session: {message.get('text', '').strip()}", level="DEBUG")
         return
+
     text = message.get("text", "").strip().lower()
     chat_id = message.get("chat", {}).get("id", 0)
     log(f"Received command: {text} from chat ID {chat_id}", level="DEBUG")
@@ -938,6 +1129,7 @@ def handle_telegram_command(message, state, stop_event=None):
         state["last_command"] = None
 
     with command_lock:  # Thread-safe command processing
+        # First check for IP and misc commands (legacy handling for now)
         if text in [
             "/router_reboot",
             "/cancel_reboot",
@@ -951,7 +1143,33 @@ def handle_telegram_command(message, state, stop_event=None):
         ] or text.startswith("/close_dry"):
             handle_ip_and_misc_commands(text, _initiate_stop)
             return
-        elif text == "/signalblocks":
+
+        # Check command registry for registered commands
+        cmd_entry = COMMAND_REGISTRY.get(text)
+        if cmd_entry:
+            try:
+                cmd_entry["handler"](message, state, stop_event)
+                return
+            except Exception as e:
+                log(f"[Telegram] Error executing {text}: {e}", level="ERROR")
+                send_telegram_message(f"❌ Error executing {text}: {e}", force=True)
+                return
+
+        # Check for commands with arguments
+        command_parts = text.split()
+        base_command = command_parts[0] if command_parts else ""
+
+        for cmd_text, cmd_entry in COMMAND_REGISTRY.items():
+            if base_command == cmd_text:
+                try:
+                    cmd_entry["handler"](message, state, stop_event)
+                except Exception as e:
+                    log(f"[Telegram] Error executing {base_command}: {e}", level="ERROR")
+                    send_telegram_message(f"❌ Error executing {base_command}: {e}", force=True)
+                return
+
+        # Legacy command handling (to be migrated)
+        if text == "/signalblocks":
             cmd_signalblocks({"message": message}, {})
         elif text.startswith("/unblock"):
             # Parse the command arguments
@@ -967,127 +1185,11 @@ def handle_telegram_command(message, state, stop_event=None):
             handle_filters_command(message)
         elif text == "/statuslog":
             from core.status_logger import log_symbol_activity_status_to_telegram
-        elif text == "/signalconfig":
-            from utils_core import get_runtime_config
-
-            try:
-                config = get_runtime_config()
-                summary = "\n".join([f"{k}: {v}" for k, v in config.items()])
-                send_telegram_message(f"🧠 *Current runtime_config:*\n```\n{summary}\n```", markdown=True)
-            except Exception as e:
-                send_telegram_message(f"❌ Error reading runtime_config: {e}")
 
             try:
                 log_symbol_activity_status_to_telegram()
             except Exception as e:
                 send_telegram_message(f"[StatusLog Error] Could not generate status log: {e}")
-        elif text == "/help":
-            help_msg = (
-                "🤖 Available Commands:\n\n"
-                "💰 /balance - Show current USDC balance\n"
-                "❌ /cancel_reboot - Cancel router reboot mode\n"
-                "⛔ /cancel_stop - Cancel stop process if pending\n"
-                "🔒 /close_dry - Close a DRY position (e.g., /close_dry BTC/USDC)\n"
-                "🧾 /debuglog - Show last 50 logs (DRY_RUN only)\n"
-                "📡 /forceipcheck - Force immediate IP check\n"
-                "🎯 /goals - Show progress towards daily/weekly profit goals\n"
-                "📊 /heatmap - Generate 7-day score heatmap\n"
-                "📖 /help - Show this message\n"
-                "🌐 /ipstatus - Show current/previous IP + router mode\n"
-                "📉 /last - Show last closed trade\n"
-                "📜 /log - Export today's log to Telegram\n"
-                "⚖️ /mode - Show strategy bias and score\n"
-                "📈 /open - Show open positions\n"
-                "🔄 /restart - Restart bot after closing positions\n"
-                "⚠️ /risk - Adjust risk level (balance-aware)\n"
-                "🔄 /router_reboot - Plan router reboot\n"
-                "▶️ /resume_after_ip - Resume after IP change\n"
-                "🚪 /shutdown - Exit bot after positions close\n"
-                "🛑 /stop - Stop after all positions close\n"
-                "🚨 /panic - Force close all trades (confirmation)\n"
-                "🔍 /status - Show bot status with risk tier & trading params\n"
-                "📊 /summary - Show performance summary\n"
-                "⚙️ /filters - Adjust pair filters (with dynamic values)\n"
-                "🔧 /runtime - Show current runtime config\n"
-                "🚫 /signalblocks - Show currently blocked symbols\n"
-                "🔓 /unblock - Manually unblock a symbol (e.g., /unblock BTCUSDC)\n"
-                "📉 /failstats - Show failure statistics for all symbols\n"
-                "❌ /reasons - Show signal rejection reasons\n"
-                "📈 /pairstoday - Show today's selected pairs\n"
-                "🧠 /signalconfig - Show adaptive signal config (balance-aware)\n"
-                "🧩 /statuslog - Show 10-minute activity report\n"
-            )
-
-            send_telegram_message(help_msg, force=True, parse_mode="")
-            log("Sent help message.", level="INFO")
-
-        elif text == "/summary":
-            try:
-                summary = generate_summary()
-                # Add balance-aware context
-                balance = get_cached_balance()
-                tier = get_deposit_tier()
-                runtime_config = get_runtime_config()
-                current_risk = runtime_config.get("risk_percent", get_adaptive_risk_percent(tier))
-
-                if DRY_RUN:
-                    open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
-                else:
-                    positions = exchange.fetch_positions()
-                    open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-
-                msg = (
-                    summary + f"\n\n*Account Info*:\n"
-                    f"Balance: {balance:.2f} USDC\n"
-                    f"Risk Tier: {tier}\n"
-                    f"Active Risk: {current_risk*100:.1f}%\n"
-                    f"Max Positions: {get_max_positions()}\n"
-                    "\n*Open Positions*:\n" + ("\n".join(open_details) if open_details else "None")
-                )
-                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                log("Sent enhanced summary via /summary.", level="INFO")
-            except Exception as e:
-                send_telegram_message(f"❌ Failed to generate summary: {e}", force=True)
-                log(f"Summary error: {e}", level="ERROR")
-        elif text == "/heatmap":
-            if DRY_RUN:
-                send_telegram_message("Heatmap unavailable in DRY_RUN mode.", force=True)
-            else:
-                try:
-                    generate_score_heatmap(days=7)
-                    log("Generated heatmap.", level="INFO")
-                except Exception as e:
-                    send_telegram_message(f"❌ Failed to generate heatmap: {e}", force=True)
-                    log(f"Heatmap error: {e}", level="ERROR")
-        elif text == "/stop":
-            handle_stop_command(stop_event)
-        elif text in ("/panic", "yes"):
-            handle_panic(message, state, stop_event)
-        elif text == "/shutdown":
-            handle_shutdown(message, state, stop_event)
-        elif text == "/status":
-            handle_status_command(state)
-        elif text == "/signalconfig":
-            handle_signalconfig_command()
-        elif text == "/mtfstatus":
-            handle_mtfstatus()
-        elif text == "/resume_after_ip":
-            state = load_state()
-            if DRY_RUN:
-                if state.get("stopping"):
-                    state["stopping"] = False
-                    save_state(state)
-                    send_telegram_message("✅ DRY_RUN resumed after IP change.", force=True)
-                else:
-                    send_telegram_message("DRY_RUN: Bot already running.", force=True)
-                return
-            if not state.get("stopping"):
-                send_telegram_message("ℹ️ Bot already running.", force=True)
-                return
-            state["stopping"] = False
-            save_state(state)
-            send_telegram_message("✅ Resumed after IP change.", force=True)
-            log("Resumed after IP change.", level="INFO")
         elif text == "/mode":
             try:
                 score = round(get_aggressiveness_score(), 2)
@@ -1136,14 +1238,51 @@ def handle_telegram_command(message, state, stop_event=None):
             top = get_most_active_symbols(top_n=5)
             msg = "*Top 5 Active Symbols (Last Hour):*\n" + "\n".join(f"- {s}" for s in top)
             send_telegram_message(msg)
-
         elif text == "/missedlog":
             flush_best_missed_opportunities(top_n=5)
-
         elif text == "/runtime":
             handle_runtime_command()
             log("Handled /runtime command.", level="INFO")
+        elif text == "/panic" or text == "yes":
+            handle_panic(message, state, stop_event)
+        elif text == "/heatmap":
+            if DRY_RUN:
+                send_telegram_message("Heatmap unavailable in DRY_RUN mode.", force=True)
+            else:
+                try:
+                    generate_score_heatmap(days=7)
+                    log("Generated heatmap.", level="INFO")
+                except Exception as e:
+                    send_telegram_message(f"❌ Failed to generate heatmap: {e}", force=True)
+                    log(f"Heatmap error: {e}", level="ERROR")
+        elif text == "/summary":
+            try:
+                summary = generate_summary()
+                # Add balance-aware context
+                balance = get_cached_balance()
+                tier = get_deposit_tier()
+                runtime_config = get_runtime_config()
+                current_risk = runtime_config.get("risk_percent", get_adaptive_risk_percent(tier))
 
+                if DRY_RUN:
+                    open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+                else:
+                    positions = exchange.fetch_positions()
+                    open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
+
+                msg = (
+                    summary + f"\n\n*Account Info*:\n"
+                    f"Balance: {balance:.2f} USDC\n"
+                    f"Risk Tier: {tier}\n"
+                    f"Active Risk: {current_risk*100:.1f}%\n"
+                    f"Max Positions: {get_max_positions()}\n"
+                    "\n*Open Positions*:\n" + ("\n".join(open_details) if open_details else "None")
+                )
+                send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+                log("Sent enhanced summary via /summary.", level="INFO")
+            except Exception as e:
+                send_telegram_message(f"❌ Failed to generate summary: {e}", force=True)
+                log(f"Summary error: {e}", level="ERROR")
         elif text == "/restart":
             state["stopping"] = True
             state["restart_pending"] = True
@@ -1225,3 +1364,23 @@ def handle_telegram_command(message, state, stop_event=None):
                 save_state(state)
                 send_telegram_message(f"❌ Restart failed: {e}", force=True)
                 log(f"Restart error: {e}", level="ERROR")
+        elif text == "/resume_after_ip":
+            state = load_state()
+            if DRY_RUN:
+                if state.get("stopping"):
+                    state["stopping"] = False
+                    save_state(state)
+                    send_telegram_message("✅ DRY_RUN resumed after IP change.", force=True)
+                else:
+                    send_telegram_message("DRY_RUN: Bot already running.", force=True)
+                return
+            if not state.get("stopping"):
+                send_telegram_message("ℹ️ Bot already running.", force=True)
+                return
+            state["stopping"] = False
+            save_state(state)
+            send_telegram_message("✅ Resumed after IP change.", force=True)
+            log("Resumed after IP change.", level="INFO")
+        else:
+            # Command not recognized
+            send_telegram_message("Command not recognized. Try /help for a list of commands.", force=True)

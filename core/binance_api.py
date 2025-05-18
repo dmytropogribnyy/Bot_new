@@ -191,6 +191,19 @@ def get_open_positions():
         return []
 
 
+def get_ticker_data(symbol):
+    """
+    Get ticker data for a symbol. Wrapper around fetch_ticker for compatibility.
+
+    Args:
+        symbol (str): Trading pair symbol
+
+    Returns:
+        dict: Ticker data with price, volume, etc.
+    """
+    return fetch_ticker(symbol)
+
+
 def handle_rate_limits(func):
     """Декоратор для обработки лимитов API с повторными попытками."""
 

@@ -13,6 +13,16 @@ from dotenv import load_dotenv
 
 from utils_logging import log
 
+# Import SYMBOLS_FILE from constants.py
+try:
+    from constants import SYMBOLS_FILE
+except ImportError:
+    try:
+        # Try with different path if needed
+        from constants import SYMBOLS_FILE
+    except ImportError:
+        # Define a fallback if import fails
+        SYMBOLS_FILE = "data/dynamic_symbols.json"
 # Load environment variables
 load_dotenv()
 
@@ -67,15 +77,27 @@ USDC_SYMBOLS = [
     "SUI/USDC",
 ]
 
-# Priority symbols for small deposits - expanded with more low-price options
-PRIORITY_SMALL_BALANCE_PAIRS = [
-    "XRP/USDC",  # Low price, high liquidity
-    "DOGE/USDC",  # Low price, good volatility
-    "ADA/USDC",  # Low price, steady volatility
-    "SOL/USDC",  # Medium price, good volume
-    "MATIC/USDC",  # Added: Low price, high liquidity
-    "DOT/USDC",  # Added: Good volatility profile
+# Default priority pairs (fallback)
+DEFAULT_PRIORITY_SMALL_BALANCE_PAIRS = [
+    "XRP/USDC",
+    "DOGE/USDC",
+    "ADA/USDC",
+    "SOL/USDC",
+    "MATIC/USDC",
+    "DOT/USDC",
 ]
+
+
+# Dynamic priority pairs
+def get_priority_small_balance_pairs():
+    try:
+        from core.priority_evaluator import load_priority_pairs
+
+        return load_priority_pairs()
+    except Exception as e:
+        log(f"Error loading dynamic priority pairs: {e}. Using defaults.", level="WARNING")
+        return DEFAULT_PRIORITY_SMALL_BALANCE_PAIRS
+
 
 # Symbol selection will be dynamic, but these serve as fallback
 SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMBOLS_ACTIVE") else USDC_SYMBOLS
@@ -333,7 +355,7 @@ def get_min_net_profit(balance):
 def get_priority_pairs(balance):
     """Get appropriate trading pairs based on account size."""
     if balance < 150:
-        return PRIORITY_SMALL_BALANCE_PAIRS
+        return get_priority_small_balance_pairs()
     else:
         return USDC_SYMBOLS
 

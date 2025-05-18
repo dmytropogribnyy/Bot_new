@@ -276,3 +276,89 @@ def get_signal_failure_stats():
         except Exception as e:
             log(f"[FailStats] Error retrieving failure stats: {e}", level="ERROR")
             return {}
+
+
+def get_symbols_failure_count():
+    """
+    Get total failure count for each symbol.
+
+    Returns:
+        dict: Dictionary mapping symbols to their total failure counts
+    """
+    with fail_stats_lock:
+        try:
+            if os.path.exists(FAIL_STATS_FILE):
+                with open(FAIL_STATS_FILE, "r") as f:
+                    data = json.load(f)
+
+                # Create a dictionary of symbol -> total failures
+                symbol_failures = {}
+                for symbol, reasons in data.items():
+                    symbol_failures[symbol] = sum(reasons.values())
+
+                return symbol_failures
+            else:
+                return {}
+        except Exception as e:
+            log(f"[FailStats] Error retrieving symbol failure counts: {e}", level="ERROR")
+            return {}
+
+
+def get_symbol_risk_factor(symbol):
+    """
+    Instead of binary blocking, return a risk factor that scales position size.
+
+    Returns:
+        tuple: (risk_factor: float 0.0-1.0, info: dict or None)
+        - 1.0 means full position size (no risk reduction)
+        - 0.0-0.25 means high risk reduction
+    """
+    runtime_config = get_runtime_config()
+    blocked_symbols = runtime_config.get("blocked_symbols", {})
+
+    if symbol not in blocked_symbols:
+        return 1.0, None  # Full position size
+
+    block_info = blocked_symbols[symbol]
+    total_failures = block_info.get("total_failures", 0)
+
+    try:
+        # Parse the block_until timestamp
+        from dateutil import parser
+
+        block_until = parser.parse(block_info["block_until"])
+        block_start = parser.parse(block_info.get("blocked_at", block_info["block_until"]))
+
+        # Make timezone-aware comparison
+        now = now_with_timezone()
+
+        if now >= block_until:
+            # Block expired, remove from blocked list
+            _remove_block(symbol)
+            return 1.0, None
+
+        # Calculate how far we are through the block period
+        total_period = (block_until - block_start).total_seconds()
+        elapsed = (now - block_start).total_seconds()
+        progress = elapsed / total_period if total_period > 0 else 0
+
+        # Calculate base risk factor based on failures
+        if total_failures < 30:
+            base_factor = max(0.5, 1.0 - (total_failures / 60))
+        elif total_failures < 50:
+            base_factor = max(0.25, 0.5 - ((total_failures - 30) / 80))
+        else:
+            base_factor = max(0.1, 0.25 - ((total_failures - 50) / 200))
+
+        # Gradually recover throughout the block period
+        recovery = progress * 0.5  # Up to 50% recovery
+
+        # Combined risk factor (never below 0.1)
+        risk_factor = min(1.0, base_factor + recovery)
+
+        return risk_factor, block_info
+
+    except Exception as e:
+        log(f"Error calculating risk factor for {symbol}: {e}", level="ERROR")
+        # On error, use conservative 50% position size
+        return 0.5, None

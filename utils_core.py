@@ -536,6 +536,63 @@ def update_cached_symbol_open_interest(symbol, value):
     _symbol_oi_cache[symbol] = value
 
 
+# Add to utils_core.py
+def load_json_file(path, default=None):
+    """
+    Load data from a JSON file with error handling.
+
+    Args:
+        path: Path to the JSON file
+        default: Default value to return if loading fails
+
+    Returns:
+        dict: The loaded JSON data or default value
+    """
+    import json
+    import os
+
+    try:
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+        else:
+            log(f"File not found: {path}", level="WARNING")
+            return default if default is not None else {}
+    except Exception as e:
+        log(f"Error loading JSON file {path}: {e}", level="ERROR")
+        return default if default is not None else {}
+
+
+def save_json_file(path, data, indent=2):
+    """
+    Save data to a JSON file with error handling.
+
+    Args:
+        path: Path to the JSON file
+        data: Data to save (must be JSON serializable)
+        indent: Indentation level for the JSON file
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    import json
+    import os
+
+    try:
+        # Create directory if it doesn't exist
+        directory = os.path.dirname(path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory)
+
+        with open(path, "w") as f:
+            json.dump(data, f, indent=indent)
+        log(f"Successfully saved data to {path}", level="DEBUG")
+        return True
+    except Exception as e:
+        log(f"Error saving JSON file {path}: {e}", level="ERROR")
+        return False
+
+
 def is_optimal_trading_hour():
     """
     Centralized check for optimal trading hours.

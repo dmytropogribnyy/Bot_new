@@ -13,20 +13,20 @@ from common.config_loader import (
     MISSED_OPPORTUNITIES_FILE,
     PAIR_COOLING_PERIOD_HOURS,
     PAIR_ROTATION_MIN_INTERVAL,
-    PRIORITY_SMALL_BALANCE_PAIRS,
     USDC_SYMBOLS,
     USDT_SYMBOLS,
     USE_TESTNET,
+    get_priority_small_balance_pairs,
 )
 from constants import INACTIVE_CANDIDATES_FILE, PERFORMANCE_FILE, SIGNAL_FAILURES_FILE, SYMBOLS_FILE
 from core.binance_api import convert_symbol
 from core.dynamic_filters import get_market_regime_from_indicators, should_filter_pair
 from core.exchange_init import exchange
-from core.fail_stats_tracker import FAIL_STATS_FILE, is_symbol_blocked
-from core.filter_adaptation import load_json_file, save_json_file
+from core.fail_stats_tracker import FAIL_STATS_FILE, get_symbol_risk_factor
+from core.priority_evaluator import generate_priority_pairs, save_priority_pairs
 from symbol_activity_tracker import SIGNAL_ACTIVITY_FILE
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, get_market_volatility_index, get_runtime_config, is_optimal_trading_hour, safe_call_retry
+from utils_core import get_cached_balance, get_market_volatility_index, get_runtime_config, is_optimal_trading_hour, load_json_file, safe_call_retry, save_json_file
 from utils_logging import log
 
 # Adaptive rotation interval - more frequent for small accounts and high volatility
@@ -359,17 +359,68 @@ def get_performance_score(symbol):
     return score
 
 
+def update_priority_pairs(force=False):
+    """
+    Update priority pairs periodically.
+
+    Args:
+        force: Force update regardless of time elapsed
+
+    Returns:
+        bool: Success status
+    """
+    try:
+        # Check last update time to avoid frequent regeneration
+        import json
+        import os
+        from datetime import datetime
+
+        PRIORITY_JSON_PATH = "data/priority_pairs.json"
+        update_needed = True
+
+        if not force and os.path.exists(PRIORITY_JSON_PATH):
+            try:
+                with open(PRIORITY_JSON_PATH, "r") as f:
+                    data = json.load(f)
+                last_update = datetime.fromisoformat(data.get("updated_at", "2000-01-01T00:00:00"))
+                hours_since_update = (datetime.now() - last_update).total_seconds() / 3600
+
+                # Only update if more than 6 hours have passed
+                update_needed = hours_since_update >= 6
+
+                if not update_needed:
+                    log(f"[PriorityUpdate] Last update was {hours_since_update:.1f} hours ago, skipping", level="DEBUG")
+            except Exception as e:
+                log(f"[PriorityUpdate] Error checking update time: {e}", level="WARNING")
+                update_needed = True
+
+        if update_needed or force:
+            pairs = generate_priority_pairs()
+            if pairs:
+                save_priority_pairs(pairs)
+                log("[PriorityUpdate] Priority pairs updated successfully", level="INFO")
+                return True
+
+        return False
+    except Exception as e:
+        log(f"[PriorityUpdate] Error updating priority pairs: {e}", level="ERROR")
+        return False
+
+
 def select_active_symbols():
     """
     Select the most promising symbols for trading.
-    Enhanced for short-term trading and small account optimization.
-    Now using adaptive filtering instead of fallback mechanism.
+    Enhanced with graduated risk approach and relaxation stages integration.
     """
     # Initialize rejection tracking
     rejected_pairs = {}
+    recovery_triggered = False  # Flag to prevent duplicate logging
 
     # Load performance data
     load_pair_performance()
+
+    # Update priority pairs periodically
+    update_priority_pairs()
 
     # Get runtime config for failure threshold and blocked symbols
     runtime_config = get_runtime_config()
@@ -386,10 +437,13 @@ def select_active_symbols():
     missed_data = load_json_file(MISSED_OPPORTUNITIES_FILE)
     activity_data = load_json_file(SIGNAL_ACTIVITY_FILE)
 
-    # Get all available symbols
+    # Get all available symbols (primary method)
     all_symbols = fetch_all_symbols()
+    if not all_symbols:
+        log("⚠️ fetch_all_symbols returned empty, aborting symbol selection.", level="ERROR")
+        return []
 
-    # 🔎 Mass block check before selection
+    # 🔎 Mass block check before selection - for monitoring only
     from datetime import datetime, timezone
 
     current_time = datetime.now(timezone.utc)
@@ -409,7 +463,7 @@ def select_active_symbols():
             except Exception:
                 continue
 
-    # Dynamic thresholds for blocking detection
+    # Dynamic thresholds for blocking detection - for monitoring only
     MIN_REQUIRED_PAIRS = 3
     WARNING_THRESHOLD = 0.3  # 30% blocked triggers warning
     CRITICAL_THRESHOLD = 0.5  # 50% blocked triggers critical alert
@@ -425,22 +479,26 @@ def select_active_symbols():
             active_blocked_details.sort()
             examples = active_blocked_details[:10]
 
-            message = f"⚠️ Mass blocking detected: {active_blocked_count} of {len(all_symbols)} " f"symbols ({block_ratio:.1%})\n" f"Only {unblocked_count} symbols available for trading.\n"
+            message = (
+                f"⚠️ High risk symbols detected: {active_blocked_count} of {len(all_symbols)} "
+                f"symbols ({block_ratio:.1%}) with risk factor < 0.25\n"
+                f"Using graduated risk approach for trading.\n"
+            )
 
             if examples:
-                message += "Next unblocks:\n" + "\n".join(examples)
+                message += "Highest risk symbols:\n" + "\n".join(examples)
 
             if is_critical:
-                message = "🛑 CRITICAL: " + message
+                message = "🛑 NOTE: " + message
             elif is_insufficient:
-                message += f"\n⚡ Below recommended minimum ({MIN_REQUIRED_PAIRS * 2} pairs)"
+                message += f"\n⚡ Below recommended minimum ({MIN_REQUIRED_PAIRS * 2} safe pairs)"
 
             send_telegram_message(message, force=True)
 
-            log_level = "ERROR" if is_critical else "WARNING"
-            log(f"Mass blocking: {active_blocked_count}/{len(all_symbols)} " f"({block_ratio:.1%}) symbols blocked", level=log_level)
+            log_level = "WARNING" if is_critical else "INFO"
+            log(f"High risk symbols: {active_blocked_count}/{len(all_symbols)} " f"({block_ratio:.1%}) at risk factor < 0.25", level=log_level)
 
-    # Determine pair limits based on account size using new function
+    # Determine pair limits based on account size
     balance = get_cached_balance()
     min_dyn, max_dyn = get_pair_limits()
 
@@ -459,7 +517,7 @@ def select_active_symbols():
 
     # Fixed pairs and priority pairs
     fixed = FIXED_PAIRS
-    priority_pairs = PRIORITY_SMALL_BALANCE_PAIRS if balance < 150 else []
+    priority_pairs = get_priority_small_balance_pairs() if balance < 300 else []
 
     # Dictionary to store price data for correlation analysis
     price_data = {}
@@ -471,13 +529,14 @@ def select_active_symbols():
             rejected_pairs[s] = "fixed_pair"
             continue
 
-        # Check if symbol is auto-blocked
-        is_blocked, block_info = is_symbol_blocked(s)
-        if is_blocked:
-            block_until = block_info.get("block_until", "unknown")
-            rejected_pairs[s] = f"auto_blocked_until_{block_until}"
-            log(f"{s} is auto-blocked until {block_until} (failures: {block_info.get('total_failures', 0)})", level="DEBUG")
-            continue
+        # Use risk factor instead of binary blocking
+        risk_factor, block_info = get_symbol_risk_factor(s)
+        if risk_factor < 0.25:
+            # For very high risk symbols, log but still include with warning
+            failures = block_info.get("total_failures", 0) if block_info else 0
+            log(f"{s} has high risk factor: {risk_factor:.2f} (failures: {failures})", level="WARNING")
+
+            # Note: We continue processing this symbol rather than skipping it
 
         # Fetch 15min data for general analysis
         df_15m = fetch_symbol_data(s, timeframe="15m", limit=100)
@@ -536,6 +595,7 @@ def select_active_symbols():
             "rsi_signal": st_metrics["rsi_signal"],
             "price_trend": st_metrics["price_trend"],
             "performance_score": perf_score,
+            "risk_factor": risk_factor,  # Store risk factor for position sizing
         }
 
         # Boost for missed opportunities
@@ -594,7 +654,7 @@ def select_active_symbols():
     corr_matrix = calculate_correlation(price_data) if len(price_data) > 1 else None
 
     # Different selection strategy based on account size
-    if balance < 150:
+    if balance < 300:
         # For small accounts: prioritize short-term momentum and low price
         sorted_dyn = []
 
@@ -624,10 +684,14 @@ def select_active_symbols():
             # Price factor - strongly prefer lower-priced assets
             price_factor = 1 / (data["price"] + 0.1)
 
-            # Final score combines short-term signals and price factor
-            final_score = short_term_score * price_factor
+            # Apply risk factor to score
+            risk_factor = data.get("risk_factor", 1.0)
 
-            # Skip pairs in cooling period
+            # Final score combines short-term signals, price factor and risk factor
+            final_score = short_term_score * price_factor * risk_factor
+
+            # Adjust for cooling period but don't exclude
+            in_cooling_period = False
             if "trade_history" in pair_performance.get(s, {}) and len(pair_performance[s]["trade_history"]) >= 3:
                 last_3 = pair_performance[s]["trade_history"][-3:]
                 if all(not t.get("win", False) for t in last_3):
@@ -637,13 +701,14 @@ def select_active_symbols():
 
                     # Check if still in cooling period
                     if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
-                        log(f"Skipping {s} due to cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="INFO")
-                        rejected_pairs[s] = "cooling_period"
-                        continue
+                        log(f"{s} ⏳ In cooling period: {hours_since_traded:.1f}/{PAIR_COOLING_PERIOD_HOURS}h after 3+ losses. Reducing score.", level="INFO")
+                        in_cooling_period = True
+                        # Reduce score by 50% but don't exclude
+                        final_score *= 0.5
                     else:
-                        log(f"Pair {s} had 3+ losses but cooling period ({PAIR_COOLING_PERIOD_HOURS}h) has expired", level="INFO")
+                        log(f"{s} ♻️ Cooling period expired: {hours_since_traded:.1f}h > {PAIR_COOLING_PERIOD_HOURS}h", level="INFO")
 
-            sorted_dyn.append((s, final_score))
+            sorted_dyn.append((s, final_score, in_cooling_period))
 
         # Sort by final score
         sorted_dyn.sort(key=lambda x: x[1], reverse=True)
@@ -662,7 +727,7 @@ def select_active_symbols():
         if remaining_slots > 0:
             added_pairs = set(final_pairs)
 
-            for pair, score in sorted_dyn:
+            for pair, score, cooling in sorted_dyn:
                 if pair in added_pairs or pair in fixed:
                     rejected_pairs[pair] = "already_added"
                     continue
@@ -686,7 +751,12 @@ def select_active_symbols():
                 final_pairs.append(pair)
                 added_pairs.add(pair)
                 remaining_slots -= 1
-                log(f"Added dynamic pair: {pair} (score: {score:.2f})", level="DEBUG")
+
+                # Log with cooling period info if applicable
+                if cooling:
+                    log(f"Added dynamic pair with reduced score (cooling): {pair} (score: {score:.2f})", level="DEBUG")
+                else:
+                    log(f"Added dynamic pair: {pair} (score: {score:.2f})", level="DEBUG")
 
                 if remaining_slots <= 0:
                     break
@@ -697,6 +767,9 @@ def select_active_symbols():
         pairs_with_scores = []
 
         for s, data in filtered_data.items():
+            # Get risk factor
+            risk_factor = data.get("risk_factor", 1.0)
+
             # Composite score balancing short-term and standard metrics
             composite_score = (
                 data["volatility"] * data["volume"] * 0.5  # Standard volatility & volume (50%)
@@ -704,7 +777,11 @@ def select_active_symbols():
                 + data["performance_score"] * 0.2  # Historical performance (20%)
             )
 
-            # Skip pairs in cooling period
+            # Apply risk factor to composite score
+            composite_score *= risk_factor
+
+            # Adjust for cooling period but don't exclude
+            in_cooling_period = False
             if "trade_history" in pair_performance.get(s, {}) and len(pair_performance[s]["trade_history"]) >= 3:
                 last_3 = pair_performance[s]["trade_history"][-3:]
                 if all(not t.get("win", False) for t in last_3):
@@ -714,13 +791,14 @@ def select_active_symbols():
 
                     # Check if still in cooling period
                     if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
-                        log(f"Skipping {s} due to cooling period: {hours_since_traded:.1f} of {PAIR_COOLING_PERIOD_HOURS} hours after 3+ losses", level="INFO")
-                        rejected_pairs[s] = "cooling_period"
-                        continue
+                        log(f"{s} ⏳ In cooling period: {hours_since_traded:.1f}/{PAIR_COOLING_PERIOD_HOURS}h after 3+ losses. Reducing score.", level="INFO")
+                        in_cooling_period = True
+                        # Reduce score by 50% but don't exclude
+                        composite_score *= 0.5
                     else:
-                        log(f"Pair {s} had 3+ losses but cooling period ({PAIR_COOLING_PERIOD_HOURS}h) has expired", level="INFO")
+                        log(f"{s} ♻️ Cooling period expired: {hours_since_traded:.1f}h > {PAIR_COOLING_PERIOD_HOURS}h", level="INFO")
 
-            pairs_with_scores.append((s, composite_score))
+            pairs_with_scores.append((s, composite_score, in_cooling_period))
 
         # Sort by composite score
         sorted_dyn = sorted(pairs_with_scores, key=lambda x: x[1], reverse=True)
@@ -729,7 +807,7 @@ def select_active_symbols():
         uncorrelated_pairs = []
         added_pairs = set()
 
-        for pair, score in sorted_dyn:
+        for pair, score, cooling in sorted_dyn:
             if pair in added_pairs:
                 rejected_pairs[pair] = "already_added"
                 continue
@@ -763,72 +841,62 @@ def select_active_symbols():
     # Combine fixed and dynamic pairs
     active_symbols = fixed + selected_dyn
 
-    # 🆘 EMERGENCY RECOVERY: Check if too few pairs remain
-    MIN_ACTIVE_PAIRS = 3
-    if len(active_symbols) < MIN_ACTIVE_PAIRS:
-        log(f"🛑 Only {len(active_symbols)} pairs passed filtering. Triggering emergency recovery...", level="WARNING")
+    # ⚠️ Check if minimum pairs threshold is met
+    MIN_ACTIVE_PAIRS = 5  # Changed from 3 to 5
+    if len(active_symbols) < MIN_ACTIVE_PAIRS and not recovery_triggered:
+        recovery_triggered = True
+        log(f"⚠️ Only {len(active_symbols)} active symbols - using graduated fallback approach", level="WARNING")
 
-        # Get blocked symbols to avoid them in recovery
-        blocked_symbols = get_runtime_config().get("blocked_symbols", {})
-
-        # 🔁 Try to recover from inactive_candidates.json if needed
+        # First try to get pairs from inactive_candidates.json (priority)
         inactive_candidates = load_json_file(INACTIVE_CANDIDATES_FILE)
+        pairs_with_risk = []
+
+        # Get risk factors for all candidates
         for entry in inactive_candidates:
             symbol = entry.get("symbol")
-            if symbol and symbol not in active_symbols and symbol not in blocked_symbols:
-                active_symbols.append(symbol)
-                log(f"[Fallback] Added {symbol} from inactive_candidates.json", level="INFO")
-                if len(active_symbols) >= MIN_ACTIVE_PAIRS:
-                    break
-
-        # ✅ If recovery worked — skip manual fallback
-        if len(active_symbols) >= MIN_ACTIVE_PAIRS:
-            log(f"✅ Emergency recovery succeeded using inactive_candidates.json. Total: {len(active_symbols)}", level="INFO")
-        else:
-            # Temporarily relax filters
-            emergency_thresholds = {
-                "min_atr_percent": 0.002,  # 0.2% ATR minimum
-                "min_volume_usdc": 400,  # 400 USDC minimum volume
-            }
-
-            # Look for fallback candidates
-            fallback_candidates = []
-
-        for symbol in rejected_pairs:
-            if symbol in active_symbols or symbol in blocked_symbols:
+            if not symbol or symbol in active_symbols:
                 continue
 
-            # Re-evaluate with relaxed thresholds
-            if symbol in dynamic_data:
-                data = dynamic_data[symbol]
-                atr = data.get("volatility", 0)
-                volume = data.get("volume", 0)
+            risk_factor, _ = get_symbol_risk_factor(symbol)
+            stage = entry.get("stage", "Standard")
+            score = entry.get("score", 0)
 
-                # Check against emergency thresholds
-                should_filter, reason = should_filter_pair(symbol, atr, volume, market_regime="neutral", thresholds=emergency_thresholds)
+            # Adjust score based on stage and risk factor
+            adjusted_score = score * risk_factor
+            if stage == "Relaxed":
+                adjusted_score *= 0.8  # 20% reduction
+            elif stage == "Minimum":
+                adjusted_score *= 0.6  # 40% reduction
 
-                if not should_filter:
-                    # Sort by volume for priority
-                    vol_usdc = volume * data.get("price", 0)
-                    fallback_candidates.append((symbol, vol_usdc))
+            pairs_with_risk.append((symbol, adjusted_score, stage))
 
-        # Sort by volume (highest first)
-        fallback_candidates.sort(key=lambda x: x[1], reverse=True)
+        # Sort by adjusted score (highest first)
+        pairs_with_risk.sort(key=lambda x: x[1], reverse=True)
 
-        # Add best candidates up to minimum required
-        needed = MIN_ACTIVE_PAIRS - len(active_symbols)
-        recovered = [s for s, _ in fallback_candidates[:needed]]
+        # Add top candidates
+        added_candidates = []
+        for symbol, score, stage in pairs_with_risk[: MIN_ACTIVE_PAIRS - len(active_symbols)]:
+            if symbol not in active_symbols:
+                active_symbols.append(symbol)
+                added_candidates.append(f"{symbol} ({stage}, score={score:.2f})")
 
-        if recovered:
-            active_symbols.extend(recovered)
+        if added_candidates:
+            log(f"✅ Added {len(added_candidates)} symbols from continuous scanner: {', '.join(added_candidates)}", level="INFO")
 
-            # Send Telegram notification
-            send_telegram_message(f"🆘 Emergency fallback triggered:\n" f"Recovered symbols: {', '.join(recovered)}\n" f"Total active pairs now: {len(active_symbols)}", force=True)
+        # If still not enough, use absolute fallback pairs
+        if len(active_symbols) < MIN_ACTIVE_PAIRS:
+            fallback_pairs = ["BTC/USDC", "ETH/USDC", "SOL/USDC", "DOGE/USDC", "ADA/USDC"]
+            log(f"⚠️ Still need more pairs. Using absolute fallback pool: {fallback_pairs}", level="INFO")
 
-            log(f"Emergency recovery added: {recovered}. Total pairs: {len(active_symbols)}", level="INFO")
-        else:
-            log("No suitable symbols found for emergency recovery", level="ERROR")
-            send_telegram_message(f"⚠️ CRITICAL: Only {len(active_symbols)} active pairs and no recovery candidates found", force=True)
+            added_fallback = []
+            for pair in fallback_pairs:
+                if pair not in active_symbols:
+                    active_symbols.append(pair)
+                    added_fallback.append(pair)
+
+            if added_fallback:
+                log(f"🔄 Added absolute fallback pairs: {', '.join(added_fallback)}", level="WARNING")
+                send_telegram_message(f"⚠️ Added essential fallback pairs: {', '.join(added_fallback)}\n" f"These will trade with reduced risk factors for safety.", force=True)
 
     # Initialize relax_factor for new active symbols
     try:
@@ -849,30 +917,32 @@ def select_active_symbols():
     except Exception as e:
         log(f"[FilterAdapt] Error initializing relax_factor for active symbols: {e}", level="ERROR")
 
-    # Calculate final rejection statistics
-    final_selected = set(selected_dyn)
-    total_analyzed = len(all_symbols)
-    total_selected = len(selected_dyn)
-    total_ultimately_rejected = total_analyzed - total_selected
+    # Only calculate final rejection statistics if not in recovery mode
+    if not recovery_triggered:
+        # Calculate final rejection statistics
+        final_selected = set(selected_dyn)
+        total_analyzed = len(all_symbols)
+        total_selected = len(selected_dyn)
+        total_ultimately_rejected = total_analyzed - total_selected
 
-    # Count rejection reasons for final rejected pairs only
-    final_rejection_reasons = {}
-    for symbol in all_symbols:
-        if symbol not in final_selected and symbol not in fixed:
-            # Find the last rejection reason for this symbol
-            if symbol in rejected_pairs:
-                reason = rejected_pairs[symbol]
-                final_rejection_reasons[reason] = final_rejection_reasons.get(reason, 0) + 1
+        # Count rejection reasons for final rejected pairs only
+        final_rejection_reasons = {}
+        for symbol in all_symbols:
+            if symbol not in final_selected and symbol not in fixed:
+                # Find the last rejection reason for this symbol
+                if symbol in rejected_pairs:
+                    reason = rejected_pairs[symbol]
+                    final_rejection_reasons[reason] = final_rejection_reasons.get(reason, 0) + 1
 
-    # Log clearer statistics
-    log(f"[Pair Selector] {total_analyzed} pairs analyzed, {total_selected} selected, {total_ultimately_rejected} ultimately rejected", level="INFO")
-    log(f"[Pair Selector] {len(filtered_data)} pairs passed filters", level="INFO")
+        # Log clearer statistics
+        log(f"[Pair Selector] {total_analyzed} pairs analyzed, {total_selected} selected, {total_ultimately_rejected} ultimately rejected", level="INFO")
+        log(f"[Pair Selector] {len(filtered_data)} pairs passed filters", level="INFO")
 
-    # Log final rejection reasons
-    if final_rejection_reasons:
-        log("[Final Rejection Stats]:", level="INFO")
-        for reason, count in final_rejection_reasons.items():
-            log(f"  {reason}: {count} pairs", level="INFO")
+        # Log final rejection reasons
+        if final_rejection_reasons:
+            log("[Final Rejection Stats]:", level="INFO")
+            for reason, count in final_rejection_reasons.items():
+                log(f"  {reason}: {count} pairs", level="INFO")
 
     # Log and save results
     log(f"Selected {len(active_symbols)} active symbols: {active_symbols}", level="INFO")
@@ -894,7 +964,7 @@ def select_active_symbols():
         f"Market volatility: {market_volatility:.2f}"
     )
 
-    if balance < 150 and priority_pairs:
+    if balance < 300 and priority_pairs:
         priority_in_selection = [p for p in priority_pairs if p in active_symbols]
         if priority_in_selection:
             msg += f"\nPriority pairs included: {', '.join(priority_in_selection)}"
@@ -911,7 +981,7 @@ def get_pair_limits():
     balance = get_cached_balance()
     if balance < 150:
         return 6, 8
-    elif balance < 250:
+    elif balance < 300:  # Updated from 250 to 300
         return 8, 10
     else:
         return 10, 12

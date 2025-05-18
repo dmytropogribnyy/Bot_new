@@ -3,14 +3,14 @@ import threading
 from datetime import datetime
 
 import pytz
-from score_logger import log_score_components
 
 from common.config_loader import (
     ADAPTIVE_SCORE_ENABLED,
     DRY_RUN,
-    PRIORITY_SMALL_BALANCE_PAIRS,
     SCORE_WEIGHTS,
+    get_priority_small_balance_pairs,
 )
+from core.score_logger import log_score_components
 from utils_core import get_runtime_config
 from utils_logging import log
 
@@ -96,7 +96,7 @@ def get_risk_percent_by_score(balance, score, win_streak=0, symbol=None):
 
     # Priority pair bonus for small accounts
     priority_bonus = 0.0
-    if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+    if balance < 150 and symbol in get_priority_small_balance_pairs():
         priority_bonus = 0.002  # +0.2% for priority pairs
 
     # Score-based adjustment
@@ -137,7 +137,7 @@ def get_required_risk_reward_ratio(score, symbol=None, balance=None):
         base_rr = 0.6  # Снижено с 1.2
 
     # Повышаем скидку для приоритетных пар
-    if balance and balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+    if balance and balance < 150 and symbol in get_priority_small_balance_pairs():
         base_rr *= 0.6  # 40% скидка вместо 10%
 
     # Дополнительная скидка для очень малых депозитов

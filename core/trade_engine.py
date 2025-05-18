@@ -31,7 +31,6 @@ from common.config_loader import (
     MICRO_TRADE_TIMEOUT_MINUTES,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
-    PRIORITY_SMALL_BALANCE_PAIRS,
     SHORT_TERM_MODE,
     SL_PERCENT,
     SOFT_EXIT_ENABLED,
@@ -41,6 +40,7 @@ from common.config_loader import (
     TP1_PERCENT,
     TP2_PERCENT,
     USE_TESTNET,
+    get_priority_small_balance_pairs,
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.binance_api import fetch_ohlcv
@@ -216,9 +216,32 @@ def calculate_risk_amount(balance, risk_percent=None, symbol=None, atr_percent=N
     return balance * risk_percent
 
 
-def calculate_position_size(entry_price, stop_price, risk_amount):
-    risk_per_unit = abs(entry_price - stop_price)
-    return round(risk_amount / risk_per_unit, 3) if risk_per_unit > 0 else 0
+def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None):
+    """Calculate position size with graduated risk adjustment."""
+    if entry_price <= 0 or stop_price <= 0:
+        return 0
+
+    # Apply risk factor if symbol provided
+    risk_factor = 1.0
+    if symbol:
+        # Import here to avoid circular imports
+        from core.fail_stats_tracker import get_symbol_risk_factor
+
+        risk_factor, _ = get_symbol_risk_factor(symbol)
+
+        if risk_factor < 1.0:
+            log(f"Applied risk reduction to {symbol}: {risk_factor:.2f}x position size", level="INFO")
+
+    # Adjust risk amount by risk factor
+    adjusted_risk = risk_amount * risk_factor
+
+    # Standard position size calculation
+    price_delta = abs(entry_price - stop_price)
+    if price_delta == 0:
+        return 0
+
+    position_size = adjusted_risk / price_delta
+    return position_size
 
 
 def get_position_size(symbol):
@@ -307,7 +330,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     if SHORT_TERM_MODE and not is_optimal_trading_hour():
         # For small accounts, still allow priority pairs during non-optimal hours
         balance = get_cached_balance()
-        if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+        if balance < 150 and symbol in get_priority_small_balance_pairs():
             log(f"{symbol} Priority pair allowed during non-optimal hours", level="INFO")
         else:
             log(f"{symbol} ⏰ Skipping trade during non-optimal trading hours", level="INFO")
@@ -336,9 +359,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     # Get balance to determine account category
     balance = get_cached_balance()
     account_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
-
-    # Check if symbol is a priority pair for small accounts
-    is_priority_pair = symbol in PRIORITY_SMALL_BALANCE_PAIRS if balance < 150 else False
+    is_priority_pair = symbol in get_priority_small_balance_pairs() if account_category in ("Small", "Medium") else False
 
     if account_category == "Small" and is_priority_pair:
         log(f"[Enter Trade] Priority pair {symbol} for small account", level="INFO")
@@ -369,6 +390,22 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
         leverage_key = symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")
         leverage = LEVERAGE_MAP.get(leverage_key, 1)
         adjusted_qty = qty * leverage
+
+        # === INSERT HERE ===
+        from core.fail_stats_tracker import get_symbol_risk_factor
+        from telegram.telegram_utils import escape_markdown_v2
+
+        risk_factor, _ = get_symbol_risk_factor(symbol)
+        from core.risk_utils import get_adaptive_risk_percent
+
+        risk_percent = get_adaptive_risk_percent(balance, symbol=symbol)
+
+        adjusted_risk = balance * risk_percent * risk_factor
+
+        log(f"🧠 {symbol} | risk_factor={risk_factor:.2f} → scaled risk={adjusted_risk:.2f} USDC", level="INFO")
+
+        if risk_factor < 0.9:
+            send_telegram_message(f"🔹 *{escape_markdown_v2(symbol)}* opened with `risk_factor={risk_factor:.2f}`\\n" f"💰 Adjusted position risk: *{adjusted_risk:.2f} USDC*", force=True)
 
         notional = adjusted_qty * entry_price
         while notional < MIN_NOTIONAL_OPEN:

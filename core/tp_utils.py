@@ -1,5 +1,7 @@
 # tp_utils.py
 
+import os
+
 import pandas as pd
 
 from common.config_loader import (
@@ -175,3 +177,63 @@ def adjust_microprofit_exit(current_pnl_percent, balance=None, duration_minutes=
     micro_profit_target = max(0.2, micro_profit_target)
 
     return current_pnl_percent >= micro_profit_target
+
+
+def get_tp_performance_stats():
+    """
+    Get performance statistics for trading pairs based on TP history.
+
+    Returns:
+        dict: Dictionary mapping symbols to their performance statistics
+            {
+                "BTC/USDC": {
+                    "winrate": 0.75,
+                    "tp1_count": 10,
+                    "tp2_count": 5,
+                    "tp2_winrate": 0.6,
+                    "total_trades": 20
+                },
+                ...
+            }
+    """
+    try:
+        import pandas as pd
+
+        from tp_logger import TP_LOG_FILE
+
+        # Check if the file exists
+        if not os.path.exists(TP_LOG_FILE):
+            return {}
+
+        # Load the TP performance data
+        df = pd.read_csv(TP_LOG_FILE)
+
+        # Group by symbol and calculate statistics
+        stats = {}
+        for symbol in df["Symbol"].unique():
+            symbol_data = df[df["Symbol"] == symbol]
+
+            # Total trades
+            total_trades = len(symbol_data)
+
+            # Win count (TP1 or TP2)
+            tp_hits = symbol_data[symbol_data["Result"].isin(["TP1", "TP2"])]
+            win_count = len(tp_hits)
+
+            # TP1 and TP2 counts
+            tp1_count = len(symbol_data[symbol_data["Result"] == "TP1"])
+            tp2_count = len(symbol_data[symbol_data["Result"] == "TP2"])
+
+            # Calculate winrates
+            winrate = win_count / total_trades if total_trades > 0 else 0
+            tp2_opportunities = tp1_count + tp2_count  # TP2 can only be hit after TP1
+            tp2_winrate = tp2_count / tp2_opportunities if tp2_opportunities > 0 else 0
+
+            stats[symbol] = {"winrate": winrate, "tp1_count": tp1_count, "tp2_count": tp2_count, "tp2_winrate": tp2_winrate, "total_trades": total_trades}
+
+        return stats
+    except Exception as e:
+        from utils_logging import log
+
+        log(f"[TPUtils] Error getting TP performance stats: {e}", level="ERROR")
+        return {}

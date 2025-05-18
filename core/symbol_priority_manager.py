@@ -5,8 +5,7 @@ import time
 from collections import defaultdict
 from typing import List, Tuple
 
-from common.config_loader import GLOBAL_SCALPING_TEST
-from constants import PRIORITY_SMALL_BALANCE_PAIRS
+from common.config_loader import GLOBAL_SCALPING_TEST, get_priority_small_balance_pairs
 from utils_logging import log
 
 
@@ -131,7 +130,7 @@ def determine_strategy_mode(symbol, balance):
         return "scalp"
 
     # 3. Priority pairs use scalping up to moderate balance
-    if balance < 500 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+    if balance < 500 and symbol in get_priority_small_balance_pairs():
         return "scalp"
 
     # 4. Manual whitelist for volatile pairs
@@ -156,7 +155,7 @@ def dynamic_scalping_mode(symbol, balance, volatility_score=0.0, priority_score=
 
     # Средние балансы — только при приоритете или высокой волатильности
     if balance < 600:
-        if symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+        if symbol in get_priority_small_balance_pairs():
             return True
         if volatility_score >= 0.8 or priority_score >= 0.8:
             return True

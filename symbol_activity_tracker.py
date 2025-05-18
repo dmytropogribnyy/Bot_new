@@ -4,7 +4,8 @@ import time
 from collections import defaultdict
 from threading import Lock
 
-from core.filter_adaptation import get_runtime_config, load_json_file, save_json_file
+from core.filter_adaptation import get_runtime_config
+from utils_core import load_json_file, save_json_file
 from utils_logging import log
 
 FILE_PATH = "data/symbol_signal_activity.json"
@@ -84,3 +85,29 @@ def auto_adjust_relax_factors_from_missed(min_count_threshold=3, max_relax=0.5):
             log("[AutoRelax] Updated relax_factor values based on missed opportunities", level="INFO")
     except Exception as e:
         log(f"[AutoRelax] Error adjusting relax factors: {e}", level="ERROR")
+
+
+def get_symbol_activity_data():
+    """
+    Return signal activity data in the expected format:
+    {
+        "DOGE/USDC": {"signal_count_24h": 5},
+        ...
+    }
+    """
+    from pathlib import Path
+
+    from utils_core import load_json_file
+
+    path = Path("data/symbol_signal_activity.json")
+    if not path.exists():
+        return {}
+
+    try:
+        raw = load_json_file(path)
+        return {k: {"signal_count_24h": v.get("count_1h", 0) * 24} for k, v in raw.items()}
+    except Exception as e:
+        from utils_logging import log
+
+        log(f"[SymbolActivity] Error loading activity data: {e}", level="ERROR")
+        return {}

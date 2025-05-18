@@ -14,7 +14,6 @@ from common.config_loader import (
     LEVERAGE_MAP,
     MIN_NOTIONAL_OPEN,
     MIN_NOTIONAL_ORDER,
-    PRIORITY_SMALL_BALANCE_PAIRS,
     SHORT_TERM_MODE,
     SL_PERCENT,
     TAKER_FEE_RATE,
@@ -23,10 +22,12 @@ from common.config_loader import (
     USE_HTF_CONFIRMATION,
     USE_TESTNET,
     VOLUME_SPIKE_THRESHOLD,
+    get_priority_small_balance_pairs,
 )
 
 # Core module imports
 from core.binance_api import fetch_ohlcv
+from core.exchange_init import exchange
 from core.order_utils import calculate_order_quantity
 from core.risk_utils import get_adaptive_risk_percent
 from core.score_evaluator import calculate_score, get_adaptive_min_score
@@ -367,7 +368,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
         # Only skip non-priority pairs during non-optimal hours
         balance = get_cached_balance()
-        if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+        if balance < 150 and symbol in get_priority_small_balance_pairs():
             # Allow priority pairs for small accounts even in non-optimal hours
             log(f"{symbol} Priority pair allowed during non-optimal hours", level="DEBUG")
         else:
@@ -425,6 +426,17 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     score *= 1 + (htf_confidence - 0.5) * 0.4  # +/-20% impact based on HTF confidence
     score = round(score, 2)
     log(f"{symbol} ⚙️ HTF confidence applied: {htf_confidence:.2f} → score adjustment: {original_score:.2f} to {score:.2f}", level="DEBUG")
+
+    # Add risk factor logging here
+
+    from core.fail_stats_tracker import get_symbol_risk_factor
+
+    risk_factor, risk_info = get_symbol_risk_factor(symbol)
+    if risk_factor < 0.5:  # Only log when risk is substantially reduced
+        failures = risk_info.get("total_failures", 0) if risk_info else 0
+        log(f"{symbol} ⚠️ Trading with reduced risk: {risk_factor:.2f}x (failures: {failures})", level="INFO")
+    elif risk_factor < 0.9:  # Log less significant reductions at DEBUG level
+        log(f"{symbol} Trading with slightly reduced risk: {risk_factor:.2f}x", level="DEBUG")
 
     from open_interest_tracker import fetch_open_interest
     from utils_core import get_cached_symbol_open_interest, update_cached_symbol_open_interest
@@ -693,3 +705,34 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         send_telegram_message(msg, force=True, parse_mode="")
 
     return ("buy" if direction == "BUY" else "sell", score, False), []
+
+
+def calculate_tp_targets():
+    """
+    Calculate Take Profit targets for active positions.
+    """
+    try:
+        positions = exchange.fetch_positions()  # Получаем все активные позиции
+        tp_targets = []  # Список целевых значений TP
+
+        for pos in positions:
+            if float(pos.get("contracts", 0)) > 0:  # Убедимся, что позиция активна
+                entry_price = float(pos.get("entryPrice", 0))
+                symbol = pos.get("symbol")
+
+                if entry_price > 0:  # Если цена входа валидна
+                    tp_price = entry_price * 1.05  # Пример расчёта TP на 5% выше
+
+                    tp_targets.append({"symbol": symbol, "entry_price": entry_price, "tp_price": tp_price})
+
+                    log(f"Calculated TP for {symbol}: {entry_price} -> {tp_price}", level="DEBUG")  # Лог для отладки
+
+        # Логируем итоговые TP цели
+        log(f"Calculated TP targets: {tp_targets}", level="DEBUG")
+
+        # Возвращаем список TP целей
+        return tp_targets
+
+    except Exception as e:
+        log(f"Error calculating TP targets: {e}", level="ERROR")
+        return []  # В случае ошибки возвращаем пустой список

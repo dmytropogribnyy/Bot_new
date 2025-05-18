@@ -2,8 +2,7 @@
 from datetime import datetime
 from statistics import mean
 
-from telegram_utils import send_telegram_message
-
+from telegram.telegram_utils import send_telegram_message
 from utils_core import get_runtime_config
 from utils_logging import log
 
