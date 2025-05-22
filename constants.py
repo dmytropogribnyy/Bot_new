@@ -30,3 +30,7 @@ ENTRY_LOG_FILE = "data/entry_log.csv"
 SCORE_HISTORY_FILE = "data/score_history.csv"
 SCORE_HISTORY_FILE = "data/score_history.csv"
 OUTPUT_IMAGE_PATH = "data/score_heatmap.png"
+
+# === Signal Optimization Files ===
+COMPONENT_TRACKER_LOG_FILE = "data/component_tracker_log.json"
+MISSED_SIGNALS_LOG_FILE = "data/missed_signals.json"

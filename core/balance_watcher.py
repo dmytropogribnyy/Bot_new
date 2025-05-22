@@ -56,7 +56,7 @@ def check_balance_change(current_balance, last_balance):
 
             # Check growth milestones
             milestone_reached = False
-            for milestone in [150, 200, 300, 500, 1000]:
+            for milestone in [120, 300, 500, 1000]:  # Updated milestones to match new tier structure
                 if current_balance >= milestone and last_balance < milestone:
                     milestone_reached = True
                     notify_milestone(milestone, growth_pct)

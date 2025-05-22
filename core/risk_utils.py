@@ -26,12 +26,12 @@ def get_adaptive_risk_percent(balance, atr_percent=None, volume_usdc=None, win_s
         float: Risk percentage (0.02-0.038) based on inputs
     """
     # Base risk - conservative foundation
-    if balance < 100:
-        base_risk = 0.020  # 2.0% base for very small accounts
-    elif balance < 150:
-        base_risk = 0.023  # 2.3% base for small accounts
+    if balance < 120:
+        base_risk = 0.020  # Micro tier: 2.0% base risk (0-119 USDC)
+    elif balance < 300:
+        base_risk = 0.023  # Small tier: 2.3% base risk (120-299 USDC)
     else:
-        base_risk = 0.028  # 2.8% base for larger accounts
+        base_risk = 0.028  # Standard tier: 2.8% base risk (300+ USDC)
 
     # Quality bonuses for exceptional opportunities
     asset_quality_bonus = 0.0
@@ -96,14 +96,12 @@ def get_max_positions(balance):
     Returns:
         int: Maximum number of positions
     """
-    if balance < 100:
-        return 2  # Limit to 2 positions for ultra-small accounts
-    elif balance < 150:
-        return 2  # Limit to 2 positions for small accounts (stricter than before)
+    if balance < 120:
+        return 2  # Micro tier: max 2 positions (0-119 USDC)
     elif balance < 300:
-        return 3  # Limited to 3 for medium accounts (reduced from 4)
+        return 3  # Small tier: max 3 positions (120-299 USDC)
     else:
-        return 4  # Limited to 4 for larger accounts (reduced from 5)
+        return 4  # Standard tier: max 4 positions (300+ USDC)
 
 
 def get_max_risk():
@@ -280,15 +278,12 @@ def calculate_position_value_limit(balance):
     Returns:
         float: Maximum position value in USDC
     """
-    if balance < 100:
-        # Very conservative for ultra-small accounts
+    if balance < 120:
+        # Very conservative for micro accounts
         return balance * 0.35  # Maximum 35% of balance per position
-    elif balance < 150:
+    elif balance < 300:
         # Conservative for small accounts
         return balance * 0.40  # Maximum 40% of balance per position
-    elif balance < 300:
-        # Moderate for medium accounts
-        return balance * 0.45  # Maximum 45% of balance per position
     else:
         # Standard for larger accounts
         return balance * 0.50  # Maximum 50% of balance per position
@@ -304,12 +299,9 @@ def get_max_total_exposure(balance):
     Returns:
         float: Maximum total exposure in USDC
     """
-    if balance < 150:
-        # Very conservative for small accounts
+    if balance < 300:
+        # Conservative for small accounts
         return balance * 0.70  # Maximum 70% total exposure
-    elif balance < 300:
-        # Moderate for medium accounts
-        return balance * 0.80  # Maximum 80% total exposure
     else:
         # Standard for larger accounts
         return balance * 0.90  # Maximum 90% total exposure

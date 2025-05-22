@@ -30,7 +30,7 @@ def get_open_positions_count():
 
 def can_open_new_position(balance):
     """
-    Limit simultaneous positions based on account size
+    Limit simultaneous positions based on account size.
 
     Args:
         balance (float): Current account balance in USDC
@@ -38,18 +38,12 @@ def can_open_new_position(balance):
     Returns:
         bool: True if a new position can be opened, False otherwise
     """
+    from common.config_loader import get_max_positions
+
     current_positions = get_open_positions_count()
+    max_positions = get_max_positions(balance)
 
-    # Limit to 2 positions for micro-deposits (< 150 USDC)
-    if balance < 150:
-        max_positions = 2
-    elif balance < 300:
-        max_positions = 3
-    else:
-        max_positions = 4
-
-    # Add log to track position limits
-    log(f"Position check: {current_positions}/{max_positions} positions used. " + f"Balance: {balance:.2f} USDC", level="DEBUG")
+    log(f"Position check: {current_positions}/{max_positions} positions used. " f"Balance: {balance:.2f} USDC", level="DEBUG")
 
     return current_positions < max_positions
 

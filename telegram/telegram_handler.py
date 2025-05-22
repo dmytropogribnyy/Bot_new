@@ -1,4 +1,3 @@
-# telegram_handler.py
 """
 Telegram bot handler for BinanceBot
 Processes Telegram updates and dispatches commands
@@ -47,6 +46,9 @@ if last_update_id is None:
 
 
 def process_telegram_commands(state: dict, handler_fn):
+    # Correct import for the 'cmd_missedlog' function
+    from telegram.telegram_commands import cmd_missedlog, cmd_signalstats
+
     global last_update_id
     while True:
         try:
@@ -75,7 +77,7 @@ def process_telegram_commands(state: dict, handler_fn):
                     continue
 
                 if "text" in message:
-                    message["text"] = message["text"].encode("utf-8", errors="ignore").decode("utf-8")
+                    message["text"] = message.get("text", "").strip()
 
                 chat_id = message.get("chat", {}).get("id", 0)
                 if str(chat_id) != TELEGRAM_CHAT_ID:
@@ -88,7 +90,15 @@ def process_telegram_commands(state: dict, handler_fn):
                     continue
 
                 log(f"🛰 Got command: {message.get('text')} from {user_id}", level="INFO")
-                handler_fn(message, state)
+
+                # Check for new commands
+                command_handlers = {"/signalstats": cmd_signalstats, "/missedlog": cmd_missedlog}
+
+                command = message.get("text")
+                if command in command_handlers:
+                    command_handlers[command](message, state)
+                else:
+                    handler_fn(message, state)
 
                 last_update_id = update_id + 1
                 save_last_update_id(last_update_id)

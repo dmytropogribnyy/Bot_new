@@ -37,7 +37,7 @@ def rewrite_config_param(param, value):
 
 def get_min_trades_required(balance, total_trades):
     """Get minimum trades required based on balance size"""
-    if balance < 150:
+    if balance < 300:
         initial = 6
         full = 12
     else:
@@ -55,7 +55,7 @@ def auto_adapt_thresholds(df, balance):
     sl_rate = len(recent[recent["Result"] == "SL"]) / num_trades if num_trades else 0
 
     # Adjust initial trades requirement
-    if balance < 150:
+    if balance < 300:
         if num_trades < 8:
             rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 5)
         elif num_trades > 15:
@@ -67,7 +67,7 @@ def auto_adapt_thresholds(df, balance):
             rewrite_config_param("TP_ML_MIN_TRADES_INITIAL", 15)
 
     # Adjust thresholds based on performance - more aggressive for small accounts
-    if balance < 150:
+    if balance < 300:
         if sl_rate > 0.4:  # Lower threshold for small accounts
             rewrite_config_param("TP_ML_THRESHOLD", 0.06)
         elif winrate > 0.65:  # Lower threshold for small accounts
@@ -79,7 +79,7 @@ def auto_adapt_thresholds(df, balance):
             rewrite_config_param("TP_ML_THRESHOLD", 0.03)
 
     # Adjust switch threshold
-    if balance < 150:
+    if balance < 300:
         if winrate < 0.35:
             rewrite_config_param("TP_ML_SWITCH_THRESHOLD", 0.08)
         else:
@@ -144,7 +144,7 @@ def analyze_and_optimize_tp():
             avg_sl = sl_hits["PnL (%)"].mean() if not sl_hits.empty else 0
 
             # Adjust optimization range based on balance
-            if balance < 150:
+            if balance < 300:
                 # More aggressive bounds for small accounts
                 best_tp1 = round(min(max(avg_tp1 / 100, 0.005), 0.012), 4)
                 best_tp2 = round(min(max(avg_tp2 / 100, 0.008), 0.025), 4)
@@ -167,7 +167,7 @@ def analyze_and_optimize_tp():
             report_lines.append("\n⏭️ Skipped (not enough data): " + ", ".join(skipped_symbols))
 
         # Add balance-specific recommendations
-        if balance < 150:
+        if balance < 300:
             report_lines.append("\n💡 *Small Account Optimization Active*")
             report_lines.append("• Lower trade requirements enabled")
             report_lines.append("• More aggressive TP adjustments")

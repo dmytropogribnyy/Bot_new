@@ -134,7 +134,7 @@ def should_switch_position(current_quality, new_score, balance, current_pnl=None
     new_quality = 5.0 + (new_score - 3) * 1.2
 
     # More aggressive switching for small accounts
-    if balance < 150:
+    if balance < 300:
         switch_threshold = 1.8  # Lower threshold = more switching
     else:
         switch_threshold = 2.5

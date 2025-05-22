@@ -56,6 +56,8 @@ TP_LOG_FILE = get_config("TP_LOG_FILE", "C:/Bots/BinanceBot/data/tp_performance.
 LOG_FILE_PATH = get_config("LOG_FILE_PATH", "C:/Bots/BinanceBot/logs/main.log")
 LOG_LEVEL = get_config("LOG_LEVEL", "INFO")
 
+ENABLE_FULL_DEBUG_MONITORING = get_config("ENABLE_FULL_DEBUG_MONITORING", "False") == "True"
+
 
 if not Path(TP_LOG_FILE).exists():
     log(f"TP_LOG_FILE not found at: {TP_LOG_FILE}", level="WARNING")
@@ -102,8 +104,8 @@ def get_priority_small_balance_pairs():
 # Symbol selection will be dynamic, but these serve as fallback
 SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMBOLS_ACTIVE") else USDC_SYMBOLS
 FIXED_PAIRS = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
-MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 10))
-MIN_DYNAMIC_PAIRS = int(get_config("MIN_DYNAMIC_PAIRS", 5))
+MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 15))
+MIN_DYNAMIC_PAIRS = int(get_config("MIN_DYNAMIC_PAIRS", 6))
 
 # ========== Micro-Trade Optimization ==========
 # Updated: Extended timeout for micro trades to capture more opportunities
@@ -342,19 +344,17 @@ def initialize_risk_percent():
 
 def get_min_net_profit(balance):
     """Get minimum acceptable net profit based on balance."""
-    if balance < 100:
-        return 0.12
-    elif balance < 150:
-        return 0.18
+    if balance < 120:
+        return 0.12  # Micro accounts (0-119 USDC)
     elif balance < 300:
-        return 0.25
+        return 0.18  # Small accounts (120-299 USDC)
     else:
-        return 0.4
+        return 0.4  # Standard accounts (300+ USDC)
 
 
 def get_priority_pairs(balance):
     """Get appropriate trading pairs based on account size."""
-    if balance < 150:
+    if balance < 300:
         return get_priority_small_balance_pairs()
     else:
         return USDC_SYMBOLS
@@ -417,8 +417,8 @@ def get_adaptive_leverage(symbol, volatility_ratio=1.0, balance=None, market_reg
 
             balance = get_cached_balance()
 
-        # Conservative adjustment for micro-deposits
-        if balance and balance < 150:
+        # Conservative adjustment for small accounts
+        if balance and balance < 300:
             balance_factor = 1.2  # +20% for small deposits for more efficient capital use
         else:
             balance_factor = 1.0
@@ -526,10 +526,10 @@ def get_max_positions(balance=None):
         return 3
     elif balance < 100:
         return 5
-    elif balance < 150:
+    elif balance < 120:
         return 6
-    elif balance < 300:
-        return 8
+    elif balance < 300:  # Updated to align with new small account upper threshold
+        return 7  # Adjusted the positions limit for this tier
     elif balance < 500:
         return 10
     elif balance < 1000:

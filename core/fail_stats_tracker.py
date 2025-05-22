@@ -1,31 +1,27 @@
 # core/fail_stats_tracker.py
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from threading import Lock
 
 from constants import FAIL_STATS_FILE
-from stats import now_with_timezone
 from utils_core import get_runtime_config, update_runtime_config
 from utils_logging import log
 
 fail_stats_lock = Lock()
 
 # Configuration constants
-MAX_FAILURES_THRESHOLD = get_runtime_config().get("FAILURE_BLOCK_THRESHOLD", 15)
+MAX_FAILURES_THRESHOLD = 30  # For warnings only, not blocking
 
-BLOCK_DURATION_HOURS = 6  # Initial blocking duration
-MAX_BLOCK_DURATION_HOURS = 12  # Maximum blocking duration for repeat offenders
-
-# NEW: Temporal decay configuration
+# Temporal decay configuration
 FAILURE_DECAY_HOURS = 3  # Failures decay every 3 hours
 FAILURE_DECAY_AMOUNT = 1  # Reduce by 1 per period
-SHORT_BLOCK_DURATION = 2  # Short blocking for 2 hours
 
 
 def record_failure_reason(symbol, reasons):
     """
-    Increment counters for failure reasons by symbol and check for auto-blocking.
+    Increment counters for failure reasons by symbol.
+    No longer triggers any blocking mechanism.
 
     Args:
         symbol (str): Trading pair symbol
@@ -48,12 +44,21 @@ def record_failure_reason(symbol, reasons):
             for reason in reasons:
                 data[symbol][reason] = data[symbol].get(reason, 0) + 1
 
-            # Calculate total failures for the symbol
+            # Calculate total failures for logging purposes
             total_failures = sum(data[symbol].values())
 
-            # Check if symbol should be auto-blocked
+            # Log high failure counts but do not block
             if total_failures >= MAX_FAILURES_THRESHOLD:
-                _check_and_apply_autoblock(symbol, total_failures)
+                log(f"[HighRisk] {symbol} has {total_failures} failures - trading with reduced risk", level="WARNING")
+
+                # Optional notification for very high risk
+                if total_failures % 10 == 0:  # Send every 10 failures to avoid spam
+                    from telegram.telegram_utils import send_telegram_message
+
+                    risk_factor, _ = get_symbol_risk_factor(symbol)
+                    send_telegram_message(
+                        f"⚠️ {symbol} marked high risk (risk_factor={risk_factor:.2f}, failures: {total_failures})\n" f"Position size will be reduced accordingly.", force=True
+                    )
 
             with open(FAIL_STATS_FILE, "w") as f:
                 json.dump(data, f, indent=2)
@@ -64,8 +69,8 @@ def record_failure_reason(symbol, reasons):
 
 def schedule_failure_decay(scheduler=None):
     """
-    NEW FUNCTION: Schedule periodic failure decay
-    Call this from main.py to enable automatic decay
+    Schedule periodic failure decay.
+    Call this from main.py to enable automatic decay.
 
     Args:
         scheduler: APScheduler instance (optional)
@@ -84,10 +89,13 @@ def schedule_failure_decay(scheduler=None):
         apply_failure_decay()
 
 
-def apply_failure_decay():
+def apply_failure_decay(accelerated=False):
     """
-    Apply temporal decay to failure counters
-    NEW FUNCTION: Reduces failure counts over time
+    Apply temporal decay to failure counters.
+    Reduces failure counts over time for recovery.
+
+    Args:
+        accelerated (bool): Apply stronger decay for faster recovery
     """
     with fail_stats_lock:
         try:
@@ -108,6 +116,13 @@ def apply_failure_decay():
             current_time = datetime.now()
             updated = False
 
+            # Enhanced decay amount for accelerated recovery
+            decay_amount = FAILURE_DECAY_AMOUNT * 3 if accelerated else FAILURE_DECAY_AMOUNT
+
+            # Log accelerated decay if active
+            if accelerated:
+                log(f"Applying accelerated decay ({decay_amount}x) to all symbols", level="INFO")
+
             for symbol in data:
                 last_decay = timestamps.get(symbol)
                 if last_decay:
@@ -120,7 +135,7 @@ def apply_failure_decay():
 
                         for reason in data[symbol]:
                             current_count = data[symbol][reason]
-                            new_count = max(0, current_count - (FAILURE_DECAY_AMOUNT * decay_cycles))
+                            new_count = max(0, current_count - (decay_amount * decay_cycles))
                             data[symbol][reason] = new_count
 
                         timestamps[symbol] = current_time.isoformat()
@@ -138,107 +153,58 @@ def apply_failure_decay():
                 with open(decay_timestamps_file, "w") as f:
                     json.dump(timestamps, f, indent=2)
 
-                log("Applied failure decay to statistics", level="DEBUG")
+                # Calculate statistics for logging
+                reduced_symbols = sum(1 for s in data if any(data[s].values()))
+                zero_symbols = sum(1 for s in data if not any(data[s].values()))
+
+                log(f"Applied failure decay to {reduced_symbols} symbols, {zero_symbols} reset to zero", level="INFO" if accelerated else "DEBUG")
 
         except Exception as e:
             log(f"Error applying failure decay: {e}", level="ERROR")
 
 
-def _check_and_apply_autoblock(symbol, total_failures):
+def get_symbol_risk_factor(symbol):
     """
-    Check if a symbol should be auto-blocked based on failure count.
-    MODIFIED: Uses progressive blocking with shorter initial periods
-
-    Args:
-        symbol (str): Trading pair symbol
-        total_failures (int): Total number of failures for the symbol
-    """
-    runtime_config = get_runtime_config()
-    blocked_symbols = runtime_config.get("blocked_symbols", {})
-
-    # Progressive blocking: start with short periods
-    previous_blocks = blocked_symbols.get(symbol, {}).get("block_count", 0)
-
-    if total_failures < 30:
-        block_duration = SHORT_BLOCK_DURATION  # 2 hours for first blocks
-    elif total_failures < 50:
-        block_duration = 4  # 4 hours for medium violations
-    else:
-        block_duration = min(6 + previous_blocks * 2, 12)  # From 6 to 12 hours
-
-    # Apply blocking using proper timezone
-    now = now_with_timezone()
-    block_until = (now + timedelta(hours=block_duration)).isoformat()
-
-    blocked_symbols[symbol] = {"block_until": block_until, "block_count": previous_blocks + 1, "total_failures": total_failures, "blocked_at": now.isoformat()}
-
-    # Update runtime configuration
-    runtime_config["blocked_symbols"] = blocked_symbols
-    update_runtime_config(runtime_config)
-
-    log(f"[AutoBlock] {symbol} blocked for {block_duration}h (failures: {total_failures})", level="WARNING")
-
-    # Send notification
-    from telegram.telegram_utils import send_telegram_message
-
-    send_telegram_message(f"⚫️ Auto-blocked {symbol} for {block_duration} hours\n" f"Failures: {total_failures}, Block #: {previous_blocks + 1}", force=True)
-
-
-def is_symbol_blocked(symbol):
-    """
-    Check if a symbol is currently blocked.
-
-    Args:
-        symbol (str): Trading pair symbol
+    Calculate risk factor based on failure count.
+    Returns a value between 0.1-1.0 with 1.0 being full risk.
 
     Returns:
-        tuple: (is_blocked: bool, block_info: dict or None)
+        tuple: (risk_factor: float 0.0-1.0, info: dict or None)
+        - 1.0 means full position size (no risk reduction)
+        - 0.0-0.25 means high risk reduction
     """
-    runtime_config = get_runtime_config()
-    blocked_symbols = runtime_config.get("blocked_symbols", {})
-
-    if symbol not in blocked_symbols:
-        return False, None
-
-    block_info = blocked_symbols[symbol]
-
     try:
-        # Parse the block_until timestamp
-        from dateutil import parser
+        # Get total failures for the symbol
+        stats = get_signal_failure_stats()
+        if symbol not in stats:
+            return 1.0, None  # No failures = full risk
 
-        block_until = parser.parse(block_info["block_until"])
+        total_failures = sum(stats[symbol].values())
 
-        # Make timezone-aware comparison
-        now = now_with_timezone()
-
-        if now < block_until:
-            return True, block_info
+        # Progressive risk factor calculation
+        if total_failures <= 5:
+            risk_factor = 1.0  # Normal risk for few failures
+        elif total_failures <= 15:
+            risk_factor = max(0.7, 1.0 - (total_failures - 5) / 30)
+        elif total_failures <= 30:
+            risk_factor = max(0.4, 0.7 - (total_failures - 15) / 50)
         else:
-            # Block expired, remove from blocked list
-            _remove_block(symbol)
-            return False, None
+            risk_factor = max(0.1, 0.4 - (total_failures - 30) / 100)
+
+        # Return risk factor and info dict for reference
+        info = {"total_failures": total_failures}
+        return risk_factor, info
+
     except Exception as e:
-        log(f"[AutoBlock] Error parsing block time for {symbol}: {e}", level="ERROR")
-        # On error, consider block expired to avoid permanent blocking
-        _remove_block(symbol)
-        return False, None
-
-
-def _remove_block(symbol):
-    """Remove expired block for a symbol."""
-    runtime_config = get_runtime_config()
-    blocked_symbols = runtime_config.get("blocked_symbols", {})
-
-    if symbol in blocked_symbols:
-        del blocked_symbols[symbol]
-        runtime_config["blocked_symbols"] = blocked_symbols
-        update_runtime_config(runtime_config)
-        log(f"[AutoBlock] Block expired for {symbol}", level="INFO")
+        log(f"Error calculating risk factor for {symbol}: {e}", level="ERROR")
+        # On error, use conservative position size
+        return 0.5, None
 
 
 def reset_failure_count(symbol):
     """
     Reset failure count for a symbol after successful trading.
+    Also useful for manual intervention.
 
     Args:
         symbol (str): Trading pair symbol
@@ -250,10 +216,18 @@ def reset_failure_count(symbol):
                     data = json.load(f)
 
                 if symbol in data:
+                    old_failures = sum(data[symbol].values()) if symbol in data else 0
                     data[symbol] = {}
                     with open(FAIL_STATS_FILE, "w") as f:
                         json.dump(data, f, indent=2)
-                    log(f"[FailStats] Reset failure count for {symbol}", level="INFO")
+
+                    log(f"[FailStats] Reset failure count for {symbol} (was: {old_failures})", level="INFO")
+
+                    # Notify for significant resets
+                    if old_failures > 20:
+                        from telegram.telegram_utils import send_telegram_message
+
+                        send_telegram_message(f"✅ {symbol} risk reset after successful trading (cleared {old_failures} failures)", force=True)
         except Exception as e:
             log(f"[FailStats] Error resetting failures for {symbol}: {e}", level="ERROR")
 
@@ -304,61 +278,116 @@ def get_symbols_failure_count():
             return {}
 
 
-def get_symbol_risk_factor(symbol):
+def get_high_risk_symbols(threshold=0.5):
     """
-    Instead of binary blocking, return a risk factor that scales position size.
+    Get a list of symbols with risk factor below threshold.
+
+    Args:
+        threshold (float): Risk factor threshold (0.0-1.0)
 
     Returns:
-        tuple: (risk_factor: float 0.0-1.0, info: dict or None)
-        - 1.0 means full position size (no risk reduction)
-        - 0.0-0.25 means high risk reduction
+        list: List of symbol tuples (symbol, risk_factor)
     """
-    runtime_config = get_runtime_config()
-    blocked_symbols = runtime_config.get("blocked_symbols", {})
-
-    if symbol not in blocked_symbols:
-        return 1.0, None  # Full position size
-
-    block_info = blocked_symbols[symbol]
-    total_failures = block_info.get("total_failures", 0)
-
     try:
-        # Parse the block_until timestamp
-        from dateutil import parser
+        stats = get_signal_failure_stats()
+        high_risk = []
 
-        block_until = parser.parse(block_info["block_until"])
-        block_start = parser.parse(block_info.get("blocked_at", block_info["block_until"]))
+        for symbol in stats:
+            risk_factor, _ = get_symbol_risk_factor(symbol)
+            if risk_factor < threshold:
+                high_risk.append((symbol, risk_factor))
 
-        # Make timezone-aware comparison
-        now = now_with_timezone()
-
-        if now >= block_until:
-            # Block expired, remove from blocked list
-            _remove_block(symbol)
-            return 1.0, None
-
-        # Calculate how far we are through the block period
-        total_period = (block_until - block_start).total_seconds()
-        elapsed = (now - block_start).total_seconds()
-        progress = elapsed / total_period if total_period > 0 else 0
-
-        # Calculate base risk factor based on failures
-        if total_failures < 30:
-            base_factor = max(0.5, 1.0 - (total_failures / 60))
-        elif total_failures < 50:
-            base_factor = max(0.25, 0.5 - ((total_failures - 30) / 80))
-        else:
-            base_factor = max(0.1, 0.25 - ((total_failures - 50) / 200))
-
-        # Gradually recover throughout the block period
-        recovery = progress * 0.5  # Up to 50% recovery
-
-        # Combined risk factor (never below 0.1)
-        risk_factor = min(1.0, base_factor + recovery)
-
-        return risk_factor, block_info
+        # Sort by risk factor (lowest first)
+        high_risk.sort(key=lambda x: x[1])
+        return high_risk
 
     except Exception as e:
-        log(f"Error calculating risk factor for {symbol}: {e}", level="ERROR")
-        # On error, use conservative 50% position size
-        return 0.5, None
+        log(f"[FailStats] Error retrieving high risk symbols: {e}", level="ERROR")
+        return []
+
+
+def check_risk_distribution():
+    """
+    Analyze risk distribution across all symbols.
+    Useful for health monitoring.
+
+    Returns:
+        dict: Statistics about risk distribution
+    """
+    try:
+        all_symbols = get_signal_failure_stats().keys()
+        total_symbols = len(all_symbols)
+
+        if total_symbols == 0:
+            return {"total": 0}
+
+        risk_levels = {
+            "critical": 0,  # risk < 0.25
+            "high": 0,  # risk < 0.5
+            "medium": 0,  # risk < 0.75
+            "low": 0,  # risk >= 0.75
+        }
+
+        for symbol in all_symbols:
+            risk_factor, _ = get_symbol_risk_factor(symbol)
+
+            if risk_factor < 0.25:
+                risk_levels["critical"] += 1
+            elif risk_factor < 0.5:
+                risk_levels["high"] += 1
+            elif risk_factor < 0.75:
+                risk_levels["medium"] += 1
+            else:
+                risk_levels["low"] += 1
+
+        # Add percentages
+        result = {"total": total_symbols, "levels": risk_levels, "percentages": {level: count / total_symbols if total_symbols > 0 else 0 for level, count in risk_levels.items()}}
+
+        return result
+
+    except Exception as e:
+        log(f"[FailStats] Error checking risk distribution: {e}", level="ERROR")
+        return {"error": str(e)}
+
+
+# Legacy compatibility function - always returns False
+def is_symbol_blocked(symbol):
+    """
+    Legacy function maintained for backward compatibility.
+    Always returns False as we've moved to graduated risk system.
+
+    Returns:
+        tuple: (False, None) Always indicates not blocked
+    """
+    log(f"[FailStats] Warning: is_symbol_blocked() called for {symbol} but we're using graduated risk now", level="DEBUG")
+    return False, None
+
+
+# Function to migrate from blocked_symbols to risk factor system
+def migrate_from_blocked_symbols():
+    """
+    One-time migration function to clear blocked_symbols from runtime_config.
+    Call this during startup to ensure clean transition to risk factor system.
+
+    Returns:
+        bool: True if migration occurred, False if nothing to migrate
+    """
+    try:
+        runtime_config = get_runtime_config()
+        if "blocked_symbols" in runtime_config and runtime_config["blocked_symbols"]:
+            # Log the migration
+            blocked_count = len(runtime_config["blocked_symbols"])
+            log(f"Migrating {blocked_count} blocked symbols to risk factor system", level="INFO")
+
+            # Clear blocked_symbols
+            runtime_config["blocked_symbols"] = {}
+            update_runtime_config(runtime_config)
+
+            # Apply accelerated decay to speed recovery
+            apply_failure_decay(accelerated=True)
+
+            return True  # Migration occurred
+        return False  # Nothing to migrate
+    except Exception as e:
+        log(f"Error during migration from blocked_symbols: {e}", level="ERROR")
+        return False  # Error occurred

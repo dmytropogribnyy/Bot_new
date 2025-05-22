@@ -36,13 +36,15 @@ MIN_DYNAMIC_PAIRS = 0
 # Risk management (RISK_PERCENT will be set later)
 def get_adaptive_risk_percent(balance):
     if balance < 100:
-        return 0.01
-    elif balance < 150:
-        return 0.02
+        return 0.025  # Микробаланс
     elif balance < 300:
-        return 0.03
+        return 0.03  # Малый счёт
+    elif balance < 600:
+        return 0.025  # Средний
+    elif balance < 1000:
+        return 0.02  # Крупный
     else:
-        return 0.05
+        return 0.015  # Очень крупный
 
 
 # Delay RISK_PERCENT calculation until after imports

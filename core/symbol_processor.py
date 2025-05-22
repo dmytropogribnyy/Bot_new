@@ -38,7 +38,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             return None
 
         # Verify if symbol should be prioritized for small deposits
-        if balance < 150 and symbol not in PRIORITY_SMALL_BALANCE_PAIRS:
+        if balance < 300 and symbol not in PRIORITY_SMALL_BALANCE_PAIRS:
             # Optional: Lower priority for non-priority pairs on small accounts
             log(f"⏩ Skipping {symbol} — not in priority list for small accounts", level="DEBUG")
             return None
@@ -164,7 +164,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 actual_rr_ratio = calculate_risk_reward_ratio(entry, tp1_price, sl_price, direction)
 
                 # For small accounts, slightly lower the R/R requirement for high-score signals
-                if balance < 150 and score >= 4.0:
+                if balance < 300 and score >= 4.0:
                     required_rr_ratio *= 0.9
                     log(f"📊 Adjusted R/R requirement for small account: {required_rr_ratio:.2f}", level="DEBUG")
 
@@ -276,7 +276,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                     return None
 
                 # For small accounts, additional validation of expected profit
-                if balance < 150 and expected_profit_tp1 < 0.25:
+                if balance < 300 and expected_profit_tp1 < 0.25:
                     log(
                         f"⚠️ Skipping {symbol} — expected profit {expected_profit_tp1:.2f} USDC too small for account balance {balance:.2f}",
                         level="WARNING",
@@ -290,11 +290,11 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(
                 f"{symbol} 🔍 Calculated qty: {qty:.3f}, entry: {entry:.2f}, notional: {notional:.2f}, "
                 f"expected profit: {expected_profit_tp1:.2f} USDC, R/R: {actual_rr_ratio:.2f}, Risk: {risk_percent*100:.2f}%",
-                level="INFO" if balance < 150 else "DEBUG",  # More visible logging for small accounts
+                level="INFO" if balance < 300 else "DEBUG",
             )
 
             # If this is a small account and a priority pair, send Telegram notification for visibility
-            if balance < 150 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
+            if balance < 300 and symbol in PRIORITY_SMALL_BALANCE_PAIRS:
                 send_telegram_message(f"📊 Valid signal for {symbol} (priority pair) - Score: {score:.1f}, Expected profit: ${expected_profit_tp1:.2f}", force=True, parse_mode="")
 
             return {

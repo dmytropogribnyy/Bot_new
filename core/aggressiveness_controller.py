@@ -55,12 +55,12 @@ def update_aggressiveness(winrate, sl_ratio, tp2_ratio, avg_pnl, balance=None):
         # Apply account size adaptation if balance is provided
         if balance is not None:
             # More conservative for small accounts
-            if balance < 100:
-                # For very small accounts, cap maximum aggressiveness
+            if balance < 120:
+                # For micro accounts, cap maximum aggressiveness
                 raw = min(raw, 0.6)
                 # Use more momentum from old score (slower changes)
                 new_score = 0.8 * old_score + 0.2 * raw
-            elif balance < 150:
+            elif balance < 300:
                 # For small accounts, moderate aggressiveness cap
                 raw = min(raw, 0.75)
                 # Slightly slower adaptation
@@ -90,7 +90,7 @@ def update_aggressiveness(winrate, sl_ratio, tp2_ratio, avg_pnl, balance=None):
         )
 
         save_aggressiveness()
-        log(f"🤖 Aggressiveness score updated: {old_score} → {new_score}" + (f" (Small Account: {balance} USDC)" if balance and balance < 150 else ""))
+        log(f"🤖 Aggressiveness score updated: {old_score} → {new_score}" + (f" (Small Account: {balance} USDC)" if balance and balance < 300 else ""))
 
 
 def get_aggressiveness_score():

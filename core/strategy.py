@@ -28,6 +28,7 @@ from common.config_loader import (
 # Core module imports
 from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
+from core.fail_stats_tracker import get_symbol_risk_factor  # Updated import
 from core.order_utils import calculate_order_quantity
 from core.risk_utils import get_adaptive_risk_percent
 from core.score_evaluator import calculate_score, get_adaptive_min_score
@@ -43,9 +44,6 @@ from utils_core import get_cached_balance, get_min_net_profit, get_runtime_confi
 from utils_logging import log
 
 # Module-level variables
-last_trade_times = {}
-last_trade_times_lock = threading.Lock()
-
 last_trade_times = {}
 last_trade_times_lock = threading.Lock()
 
@@ -192,11 +190,26 @@ def passes_filters_optimized(df, symbol):
         atr_percent = df["atr"].iloc[-1] / price
         rel_vol = df["rel_volume"].iloc[-1]
 
-        if atr_percent < 0.003:
-            log(f"{symbol} ⛔️ Rejected: ATR too low ({atr_percent:.4f})", level="DEBUG")
+        # Get dynamic thresholds from runtime_config
+        config = get_runtime_config()
+        relax = config.get("relax_factor", 0.5)
+        atr_threshold = max((config.get("atr_threshold_percent", 1.5) / 100) * relax, 0.003)
+        vol_threshold = max(config.get("rel_volume_threshold", 0.5) * relax, 0.2)
+
+        # Market volatility adjustment
+        from utils_core import get_market_volatility_index
+
+        market_volatility = get_market_volatility_index()
+        if market_volatility < 0.8:  # Low volatility market
+            atr_threshold *= 0.7  # Reduce threshold by 30%
+            vol_threshold *= 0.7  # Reduce threshold by 30%
+            log(f"{symbol} Using reduced thresholds due to low market volatility", level="DEBUG")
+
+        if atr_percent < atr_threshold:
+            log(f"{symbol} ⛔️ Rejected: ATR too low ({atr_percent:.4f} < {atr_threshold:.4f})", level="DEBUG")
             return False
-        if rel_vol < 0.5:
-            log(f"{symbol} ⛔️ Rejected: Relative volume too low ({rel_vol:.2f})", level="DEBUG")
+        if rel_vol < vol_threshold:
+            log(f"{symbol} ⛔️ Rejected: Relative volume too low ({rel_vol:.2f} < {vol_threshold:.2f})", level="DEBUG")
             return False
         return True
     except Exception as e:
@@ -298,28 +311,43 @@ def get_enhanced_market_regime(symbol):
 
 def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
     """
-    Multi-frame RSI filter + rel_volume + ATR
+    Multi-frame RSI filter + rel_volume + ATR with adaptive thresholding.
     """
     try:
         config = get_runtime_config()
         rsi_threshold = config.get("rsi_threshold", 50)
+        rel_vol_threshold = config.get("rel_volume_threshold", 0.5)
+        relax = config.get("relax_factor", 0.5)
         use_multi = config.get("USE_MULTITF_LOGIC", False)
+
+        # Смягчённые пороги с нижними границами
+        rel_vol_threshold = max(rel_vol_threshold * relax, 0.2)
+        rsi_threshold = max(rsi_threshold * relax, 30)
 
         latest = df.iloc[-1]
 
         if use_multi:
-            for tf in ["rsi_3m", "rsi_5m", "rsi_15m"]:
-                if tf not in latest or latest[tf] < rsi_threshold:
-                    return False
-            if latest.get("rel_volume_15m", 0) < 0.9:
+            # Разрешаем, если 2 из 3 RSI >= порога
+            rsi_hits = sum(1 for tf in ["rsi_3m", "rsi_5m", "rsi_15m"] if tf in latest and latest[tf] >= rsi_threshold)
+            if rsi_hits < 2:
+                log(f"{symbol} ⛔️ Rejected: only {rsi_hits}/3 RSI above {rsi_threshold}", level="DEBUG")
                 return False
+
+            if latest.get("rel_volume_15m", 0) < rel_vol_threshold:
+                log(f"{symbol} ⛔️ Rejected: rel_volume_15m {latest.get('rel_volume_15m', 0):.2f} < {rel_vol_threshold}", level="DEBUG")
+                return False
+
             if latest.get("atr_15m", 0) <= 0:
+                log(f"{symbol} ⛔️ Rejected: atr_15m is zero or missing", level="DEBUG")
                 return False
         else:
-            # fallback logic (например, rsi_15m и atr_15m)
+            # Fallback режим — только 15m RSI и ATR
             if latest.get("rsi_15m", 0) < rsi_threshold:
+                log(f"{symbol} ⛔️ Rejected: rsi_15m {latest.get('rsi_15m', 0):.2f} < {rsi_threshold}", level="DEBUG")
                 return False
+
             if latest.get("atr_15m", 0) <= 0:
+                log(f"{symbol} ⛔️ Rejected: atr_15m is zero or missing", level="DEBUG")
                 return False
 
         return True
@@ -327,6 +355,30 @@ def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
     except Exception as e:
         log(f"[Filter] Error in passes_filters for {symbol}: {e}", level="ERROR")
         return False
+
+
+def passes_unified_signal_check(score, breakdown):
+    """
+    Verify that signal meets the "1 primary + 1 confirmatory" rule.
+
+    Args:
+        score (float): The calculated signal score
+        breakdown (dict): Components that contributed to the score
+
+    Returns:
+        bool: True if signal passes unified check, False otherwise
+    """
+    # Check for at least one primary signal
+    has_primary = any(breakdown.get(ind, 0) > 0 for ind in ["MACD", "EMA_CROSS", "RSI"])
+
+    # Check for at least one secondary signal
+    has_secondary = any(breakdown.get(ind, 0) > 0 for ind in ["Volume", "HTF", "PriceAction"])
+
+    # Special rule: For weak signals (score < 2.5), require EMA confirmation
+    if score < 2.5 and not (breakdown.get("EMA_CROSS", 0) > 0 or breakdown.get("MACD_EMA", 0) > 0):
+        return False
+
+    return has_primary and has_secondary
 
 
 def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_lock):
@@ -344,6 +396,9 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         tuple: (Signal data or None, list of failure reasons)
     """
     failure_reasons = []  # Initialize failure reasons list
+
+    # Import at function level to avoid circular imports
+    from core.missed_signal_logger import log_missed_signal
 
     get_runtime_config()
     balance = get_cached_balance()  # Get balance once for both strategy selection and other uses
@@ -368,7 +423,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
         # Only skip non-priority pairs during non-optimal hours
         balance = get_cached_balance()
-        if balance < 150 and symbol in get_priority_small_balance_pairs():
+        if balance < 300 and symbol in get_priority_small_balance_pairs():
             # Allow priority pairs for small accounts even in non-optimal hours
             log(f"{symbol} Priority pair allowed during non-optimal hours", level="DEBUG")
         else:
@@ -416,9 +471,18 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             failure_reasons.append("filter_reject")
             return None, failure_reasons
 
+    # Check for reduced risk factor instead of binary blocking
+    risk_factor, block_info = get_symbol_risk_factor(symbol)
+    if risk_factor < 0.25:  # Very high risk symbols get special logging
+        log(f"{symbol} ⚠️ Trading with reduced risk ({risk_factor:.2f}x) due to past failures", level="WARNING")
+    elif risk_factor < 1.0:  # Log other risk reductions at debug level
+        log(f"{symbol} 🔄 Risk factor: {risk_factor:.2f}x (will reduce position size)", level="DEBUG")
+
     log(f"{symbol} 🔎 Step 3: Scoring check", level="DEBUG")
     trade_count, winrate = get_trade_stats()
-    score = calculate_score(df, symbol, trade_count, winrate)
+
+    # UPDATED: Get both score and breakdown from calculate_score
+    score, breakdown = calculate_score(df, symbol, trade_count, winrate)
 
     # Apply HTF confidence adjustment
     htf_confidence = get_runtime_config().get("HTF_CONFIDENCE", 0.5)
@@ -426,17 +490,6 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
     score *= 1 + (htf_confidence - 0.5) * 0.4  # +/-20% impact based on HTF confidence
     score = round(score, 2)
     log(f"{symbol} ⚙️ HTF confidence applied: {htf_confidence:.2f} → score adjustment: {original_score:.2f} to {score:.2f}", level="DEBUG")
-
-    # Add risk factor logging here
-
-    from core.fail_stats_tracker import get_symbol_risk_factor
-
-    risk_factor, risk_info = get_symbol_risk_factor(symbol)
-    if risk_factor < 0.5:  # Only log when risk is substantially reduced
-        failures = risk_info.get("total_failures", 0) if risk_info else 0
-        log(f"{symbol} ⚠️ Trading with reduced risk: {risk_factor:.2f}x (failures: {failures})", level="INFO")
-    elif risk_factor < 0.9:  # Log less significant reductions at DEBUG level
-        log(f"{symbol} Trading with slightly reduced risk: {risk_factor:.2f}x", level="DEBUG")
 
     from open_interest_tracker import fetch_open_interest
     from utils_core import get_cached_symbol_open_interest, update_cached_symbol_open_interest
@@ -462,13 +515,26 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         min_required *= 0.3
         log(f"{symbol} 🔎 Final Score: {score:.2f} / (Required: {min_required:.4f})")
 
+    # Check minimum score threshold first
     if score < min_required:
         log(
             f"{symbol} ⛔️ Rejected: score {score:.2f} < adaptive threshold {min_required:.2f}",
             level="DEBUG",
         )
         failure_reasons.append("insufficient_score")
+        log_missed_signal(symbol, score, breakdown, reason="insufficient_score")
         return None, failure_reasons
+
+    # NEW: Unified Signal Check - verify "1+1" rule (primary + secondary signal)
+    if not passes_unified_signal_check(score, breakdown):
+        log(f"{symbol} ❌ Rejected: Signal does not meet 1+1 rule", level="INFO")
+        log_missed_signal(symbol, score, breakdown, reason="signal_combo_fail")
+        failure_reasons.append("signal_combo_fail")
+        return None, failure_reasons
+
+    from component_tracker import log_component_data
+
+    log_component_data(symbol, breakdown)  # ✅ логируем успешный breakdown
 
     log(f"{symbol} 🔎 Step 4: Direction determination", level="DEBUG")
     # Ensure MACD values are not None
@@ -541,7 +607,6 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
         return None, failure_reasons
 
     max_notional = balance * leverage
-
     # Verify qty before multiplication
     if qty is None:
         log(f"{symbol} ⚠️ Invalid quantity: None", level="ERROR")
@@ -667,7 +732,7 @@ def should_enter_trade(symbol, df, exchange, last_trade_times, last_trade_times_
             else:
                 msg = f"🧪-DRY-RUN-REENTRY-{symbol}-{direction}-Score-{score:.2f}-of-5"
                 send_telegram_message(msg, force=True, parse_mode="")
-            return ("buy" if direction == "BUY" else "sell", score, True), []
+            return ("buy" if direction == "BUY" else "sell", score, False, breakdown), []
 
         if last_score and score - last_score >= 1.5 and position_size == 0:
             # Use safe MACD check

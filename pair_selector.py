@@ -424,7 +424,7 @@ def select_active_symbols():
 
     # Get runtime config for failure threshold and blocked symbols
     runtime_config = get_runtime_config()
-    blocked_symbols = runtime_config.get("blocked_symbols", {})
+    runtime_config.get("blocked_symbols", {})
 
     # Use the same threshold as fail_stats_tracker.py
     MAX_FAILURES_PER_SYMBOL = runtime_config.get("FAILURE_BLOCK_THRESHOLD", 30)
@@ -443,45 +443,40 @@ def select_active_symbols():
         log("⚠️ fetch_all_symbols returned empty, aborting symbol selection.", level="ERROR")
         return []
 
-    # 🔎 Mass block check before selection - for monitoring only
+    # 🔎 Mass risk check before selection - for monitoring only
     from datetime import datetime, timezone
 
-    current_time = datetime.now(timezone.utc)
-    active_blocked_count = 0
-    active_blocked_details = []
+    datetime.now(timezone.utc)
+    high_risk_count = 0
+    high_risk_details = []
 
-    for symbol, block_info in blocked_symbols.items():
-        block_until_str = block_info.get("block_until")
-        if block_until_str:
-            try:
-                block_until = datetime.fromisoformat(block_until_str.replace("Z", "+00:00"))
-                if block_until > current_time:
-                    active_blocked_count += 1
-                    time_remaining = block_until - current_time
-                    hours_remaining = time_remaining.total_seconds() / 3600
-                    active_blocked_details.append(f"{symbol} ({hours_remaining:.1f}h remaining)")
-            except Exception:
-                continue
+    for symbol in all_symbols:
+        # Use risk factor instead of binary blocking
+        risk_factor, block_info = get_symbol_risk_factor(symbol)
+        if risk_factor < 0.25:
+            high_risk_count += 1
+            failures = block_info.get("total_failures", 0) if block_info else 0
+            high_risk_details.append(f"{symbol} ({failures} failures, {risk_factor:.2f}x)")
 
-    # Dynamic thresholds for blocking detection - for monitoring only
+    # Dynamic thresholds for high risk detection - for monitoring only
     MIN_REQUIRED_PAIRS = 3
-    WARNING_THRESHOLD = 0.3  # 30% blocked triggers warning
-    CRITICAL_THRESHOLD = 0.5  # 50% blocked triggers critical alert
+    WARNING_THRESHOLD = 0.3  # 30% high risk triggers warning
+    CRITICAL_THRESHOLD = 0.5  # 50% high risk triggers critical alert
 
     if all_symbols:
-        block_ratio = active_blocked_count / len(all_symbols)
-        unblocked_count = len(all_symbols) - active_blocked_count
-        is_critical = block_ratio >= CRITICAL_THRESHOLD
-        is_warning = block_ratio >= WARNING_THRESHOLD
-        is_insufficient = unblocked_count < MIN_REQUIRED_PAIRS * 2
+        risk_ratio = high_risk_count / len(all_symbols)
+        safe_count = len(all_symbols) - high_risk_count
+        is_critical = risk_ratio >= CRITICAL_THRESHOLD
+        is_warning = risk_ratio >= WARNING_THRESHOLD
+        is_insufficient = safe_count < MIN_REQUIRED_PAIRS * 2
 
         if is_critical or (is_warning and is_insufficient):
-            active_blocked_details.sort()
-            examples = active_blocked_details[:10]
+            high_risk_details.sort()
+            examples = high_risk_details[:10]
 
             message = (
-                f"⚠️ High risk symbols detected: {active_blocked_count} of {len(all_symbols)} "
-                f"symbols ({block_ratio:.1%}) with risk factor < 0.25\n"
+                f"⚠️ High risk symbols detected: {high_risk_count} of {len(all_symbols)} "
+                f"symbols ({risk_ratio:.1%}) with risk factor < 0.25\n"
                 f"Using graduated risk approach for trading.\n"
             )
 
@@ -496,7 +491,7 @@ def select_active_symbols():
             send_telegram_message(message, force=True)
 
             log_level = "WARNING" if is_critical else "INFO"
-            log(f"High risk symbols: {active_blocked_count}/{len(all_symbols)} " f"({block_ratio:.1%}) at risk factor < 0.25", level=log_level)
+            log(f"High risk symbols: {high_risk_count}/{len(all_symbols)} " f"({risk_ratio:.1%}) at risk factor < 0.25", level=log_level)
 
     # Determine pair limits based on account size
     balance = get_cached_balance()
@@ -976,15 +971,15 @@ def select_active_symbols():
 
 def get_pair_limits():
     """
-    Get adaptive pair limits based on account balance
+    Get adaptive pair limits based on account balance.
     """
     balance = get_cached_balance()
-    if balance < 150:
-        return 6, 8
-    elif balance < 300:  # Updated from 250 to 300
-        return 8, 10
+    if balance < 300:
+        return 6, 8  # Small account
+    elif balance < 600:
+        return 8, 10  # Medium account
     else:
-        return 10, 12
+        return 10, 12  # Standard account
 
 
 def get_adaptive_filter_thresholds(current_candidates, target_minimum):
@@ -1004,9 +999,14 @@ def get_adaptive_filter_thresholds(current_candidates, target_minimum):
 
     # If we have fewer candidates than needed, relax thresholds
     if current_candidates < target_minimum:
-        relax_factor = 0.5  # Can be adjusted based on how aggressive we want to be
+        relax_factor = 0.2  # Сделать фильтры ещё мягче
         base_thresholds["min_atr_percent"] *= relax_factor
         base_thresholds["min_volume_usdc"] *= relax_factor
+
+        # Гарантируем, что фильтры не станут слишком малы
+        base_thresholds["min_atr_percent"] = max(base_thresholds["min_atr_percent"], 0.002)
+        base_thresholds["min_volume_usdc"] = max(base_thresholds["min_volume_usdc"], 250)
+
         log(
             f"⚠️ Only {current_candidates} candidates for {target_minimum} target. "
             f"Relaxing thresholds: ATR={base_thresholds['min_atr_percent'] * 100:.2f}%, "

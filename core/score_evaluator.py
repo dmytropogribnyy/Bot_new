@@ -7,7 +7,6 @@ import pytz
 from common.config_loader import (
     ADAPTIVE_SCORE_ENABLED,
     DRY_RUN,
-    SCORE_WEIGHTS,
     get_priority_small_balance_pairs,
 )
 from core.score_logger import log_score_components
@@ -37,7 +36,7 @@ def get_adaptive_min_score(balance, market_volatility=None, symbol=None):
     # Base threshold based on account size
     if balance < 120:
         base_threshold = 2.3  # Lower threshold for micro accounts
-    elif balance < 250:
+    elif balance < 300:  # Updated from 250 to 300
         base_threshold = 2.8  # Moderate threshold for small accounts
     else:
         base_threshold = 3.3  # Higher threshold for larger accounts
@@ -62,7 +61,7 @@ def get_adaptive_min_score(balance, market_volatility=None, symbol=None):
 
     # Symbol-specific adjustment (priority pairs for small accounts)
     symbol_adjustment = 0
-    if balance < 150 and symbol and symbol.split("/")[0] in ["XRP", "DOGE", "ADA", "MATIC", "DOT"]:
+    if balance < 300 and symbol and symbol.split("/")[0] in ["XRP", "DOGE", "ADA", "MATIC", "DOT"]:
         symbol_adjustment = -0.2  # Bonus for small account priority pairs
 
     # Apply score_relax_boost from runtime_config for dynamic activity adjustment
@@ -96,7 +95,7 @@ def get_risk_percent_by_score(balance, score, win_streak=0, symbol=None):
 
     # Priority pair bonus for small accounts
     priority_bonus = 0.0
-    if balance < 150 and symbol in get_priority_small_balance_pairs():
+    if balance < 300 and symbol in get_priority_small_balance_pairs():
         priority_bonus = 0.002  # +0.2% for priority pairs
 
     # Score-based adjustment
@@ -117,7 +116,7 @@ def get_risk_percent_by_score(balance, score, win_streak=0, symbol=None):
     # Cap at reasonable limits
     if balance < 100:
         max_risk = 0.015  # Max 1.5% for ultra-small accounts
-    elif balance < 150:
+    elif balance < 300:
         max_risk = 0.025  # Max 2.5% for small accounts
     else:
         max_risk = 0.05  # Max 5% for larger accounts
@@ -137,7 +136,7 @@ def get_required_risk_reward_ratio(score, symbol=None, balance=None):
         base_rr = 0.6  # Снижено с 1.2
 
     # Повышаем скидку для приоритетных пар
-    if balance and balance < 150 and symbol in get_priority_small_balance_pairs():
+    if balance and balance < 300 and symbol in get_priority_small_balance_pairs():
         base_rr *= 0.6  # 40% скидка вместо 10%
 
     # Дополнительная скидка для очень малых депозитов
@@ -199,20 +198,36 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
     ema = latest.get("ema") or latest.get("ema_15m") or 0
     balance = get_cached_balance()
 
-    score_weights = SCORE_WEIGHTS.copy()
-    score_weights.setdefault("EMA_CROSS", 2.0)
-    score_weights.setdefault("VOL_SPIKE", 1.5)
-    score_weights.setdefault("PRICE_ACTION", 1.5)
+    # Updated weights according to optimization plan
+    score_weights = {
+        "MACD": 1.2,  # Primary signal
+        "EMA_CROSS": 1.2,  # Primary signal
+        "RSI": 1.0,  # Primary signal
+        "Volume": 0.5,  # Secondary signal
+        "HTF": 0.5,  # Secondary signal
+        "PriceAction": 0.5,  # Secondary signal
+    }
 
-    max_raw_score = sum(score_weights.values())
+    # Backward compatibility for legacy keys
+    score_weights["MACD_RSI"] = 1.2
+    score_weights["MACD_EMA"] = 1.2
+    score_weights["VOLUME"] = 0.5
+    score_weights["VOL_SPIKE"] = 0.5
+    score_weights["PRICE_ACTION"] = 0.5
+
+    max_raw_score = sum([v for k, v in score_weights.items() if k in ["MACD", "EMA_CROSS", "RSI", "Volume", "HTF", "PriceAction"]])
 
     breakdown = {
         "RSI": 0,
+        "MACD": 0,  # Added explicit primary signal
+        "EMA_CROSS": 0,
+        "Volume": 0,  # Added explicit secondary signal
+        "HTF": 0,
+        "PriceAction": 0,
+        # Keep legacy keys for backward compatibility
         "MACD_RSI": 0,
         "MACD_EMA": 0,
-        "HTF": 0,
         "VOLUME": 0,
-        "EMA_CROSS": 0,
         "VOL_SPIKE": 0,
         "PRICE_ACTION": 0,
     }
@@ -225,11 +240,13 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
 
         if latest.get("macd_5m", 0) > latest.get("macd_signal_5m", 9999):
             raw_score += 1.0
-            breakdown["MACD_EMA"] = 1.0
+            breakdown["MACD"] = 1.0  # New primary key
+            breakdown["MACD_EMA"] = 1.0  # Legacy key
 
         if latest.get("atr_15m", 0) > 0:
             raw_score += 0.5
-            breakdown["VOLUME"] = 0.5
+            breakdown["Volume"] = 0.5  # New secondary key
+            breakdown["VOLUME"] = 0.5  # Legacy key
 
     else:
         rsi = latest["rsi"]
@@ -237,23 +254,28 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
         signal = latest["macd_signal"]
         htf_trend = latest.get("htf_trend", False)
 
-        rsi_lo, rsi_hi = (30, 70)
+        # Updated to "softer" thresholds as per optimization plan
+        rsi_lo, rsi_hi = (35, 65)  # Changed from 30/70
         if ADAPTIVE_SCORE_ENABLED:
             if price > ema:
-                rsi_lo, rsi_hi = (35, 75)
+                rsi_lo, rsi_hi = (40, 70)  # Adjusted for uptrend
             else:
-                rsi_lo, rsi_hi = (25, 65)
+                rsi_lo, rsi_hi = (30, 60)  # Adjusted for downtrend
 
         if rsi < rsi_lo or rsi > rsi_hi:
             raw_score += score_weights["RSI"]
             breakdown["RSI"] = score_weights["RSI"]
 
+        # MACD signal (primary)
+        if macd > signal:
+            raw_score += score_weights["MACD"]
+            breakdown["MACD"] = score_weights["MACD"]  # New primary key
+
+        # Maintain legacy keys for backward compatibility
         if (macd > signal and rsi < 50) or (macd < signal and rsi > 50):
-            raw_score += score_weights["MACD_RSI"]
             breakdown["MACD_RSI"] = score_weights["MACD_RSI"]
 
         if (macd > signal and price > ema) or (macd < signal and price < ema):
-            raw_score += score_weights["MACD_EMA"]
             breakdown["MACD_EMA"] = score_weights["MACD_EMA"]
 
         if htf_trend and price > ema:
@@ -262,8 +284,9 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
 
         avg_volume = df["volume"].mean()
         if latest["volume"] > avg_volume:
-            raw_score += score_weights["VOLUME"]
-            breakdown["VOLUME"] = score_weights["VOLUME"]
+            raw_score += score_weights["Volume"]
+            breakdown["Volume"] = score_weights["Volume"]  # New secondary key
+            breakdown["VOLUME"] = score_weights["Volume"]  # Legacy key
 
     # Active symbol bonus
     activity_data = load_activity()
@@ -281,14 +304,16 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
     if detect_volume_spike(df, lookback=5, threshold=1.5):
         raw_score += score_weights["VOL_SPIKE"]
         breakdown["VOL_SPIKE"] = score_weights["VOL_SPIKE"]
+        breakdown["Volume"] = max(breakdown["Volume"], score_weights["Volume"])  # Ensure secondary signal is set
 
     if len(df) >= 6:
         last_size = abs(latest["close"] - latest["open"])
         avg_size = abs(df["close"].iloc[-6:-1] - df["open"].iloc[-6:-1]).mean()
         if last_size > avg_size * 1.5:
             if (latest["close"] > latest["open"] and price > ema) or (latest["close"] < latest["open"] and price < ema):
-                raw_score += score_weights["PRICE_ACTION"]
-                breakdown["PRICE_ACTION"] = score_weights["PRICE_ACTION"]
+                raw_score += score_weights["PriceAction"]
+                breakdown["PriceAction"] = score_weights["PriceAction"]  # New secondary key
+                breakdown["PRICE_ACTION"] = score_weights["PRICE_ACTION"]  # Legacy key
 
     normalized_score = (raw_score / max_raw_score) * 5
     final_score = round(normalized_score, 1)
@@ -323,7 +348,8 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
             level="DEBUG",
         )
 
-    return final_score
+    # Return both score and breakdown for unified signal check
+    return final_score, breakdown
 
 
 def explain_score(df):

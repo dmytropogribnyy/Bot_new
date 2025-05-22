@@ -55,7 +55,7 @@ def notify_milestone(milestone, growth_pct):
     Notify when an account balance milestone is reached.
 
     Args:
-        milestone: The milestone value or identifier (e.g., 150, "2x")
+        milestone: The milestone value or identifier (e.g., 300, "2x")
         growth_pct: Current growth percentage
     """
     from telegram.telegram_utils import send_telegram_message

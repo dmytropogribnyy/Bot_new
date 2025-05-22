@@ -14,48 +14,42 @@ MIN_PRIORITY_PAIRS = 6  # Ensure we always have enough priority pairs
 def get_priority_score(symbol, data):
     """
     Calculate priority score for a symbol based on multiple criteria.
-
-    Args:
-        symbol: Trading pair symbol
-        data: Dictionary with symbol metrics
-
-    Returns:
-        float: Priority score between 0 and 1
+    Enhanced version: stronger weight on activity and TP performance.
     """
     score = 0
-    weights = {"price": 0.35, "volatility": 0.25, "activity": 0.20, "performance": 0.15, "stability": 0.05}
+    weights = {"price": 0.20, "volatility": 0.20, "activity": 0.25, "performance": 0.30, "stability": 0.05}
 
-    # Price factor (lower price = higher score)
-    if data.get("price", 999) < 0.5:
+    # --- Price factor (cheap coins preferred)
+    price = data.get("price", 999)
+    if price < 0.5:
         price_score = 1.0
-    elif data.get("price", 999) < 1.0:
+    elif price < 1.0:
         price_score = 0.8
-    elif data.get("price", 999) < 5.0:
+    elif price < 5.0:
         price_score = 0.6
-    elif data.get("price", 999) < 10.0:
+    elif price < 10.0:
         price_score = 0.4
     else:
         price_score = 0.2
 
-    # Volatility factor
-    data.get("atr", 0)
+    # --- Volatility factor
     atr_percent = data.get("atr_percent", 0)
-    volatility_score = min(1.0, max(0, (atr_percent * 100) / 0.4))  # Normalize to 0-1
+    volatility_score = min(1.0, max(0.0, (atr_percent * 100) / 0.4))  # Normalize to 0–1 for 0–0.4 ATR%
 
-    # Activity factor - normalize signal count
+    # --- Activity factor
     signal_count = data.get("signal_activity", 0)
-    activity_score = min(1.0, signal_count / 10)  # Normalize to 0-1
+    activity_score = min(1.0, signal_count / 5)  # 5+ signals in 24h = max score
 
-    # Performance factor
+    # --- Performance factor
     tp_winrate = data.get("tp_winrate", 0)
     tp2_winrate = data.get("tp2_winrate", 0)
-    performance_score = 0.6 * tp_winrate + 0.4 * tp2_winrate
+    performance_score = 0.6 * tp_winrate + 0.4 * tp2_winrate  # More focus on TP1 winrate
 
-    # Stability factor (inverse of failure count)
+    # --- Stability factor
     fail_count = data.get("fail_count", 0)
-    stability_score = max(0, 1 - (fail_count / 20))  # Normalize to 0-1
+    stability_score = max(0.0, 1 - (fail_count / 20))  # Normalize to 0–1
 
-    # Calculate weighted score
+    # --- Final weighted score
     score = (
         weights["price"] * price_score
         + weights["volatility"] * volatility_score
@@ -164,13 +158,20 @@ def generate_priority_pairs(threshold=0.65, ensure_minimum=True):
         if ensure_minimum and len(priority_pairs) < MIN_PRIORITY_PAIRS:
             priority_pairs = [item["symbol"] for item in scored_symbols[:MIN_PRIORITY_PAIRS]]
 
-        # Log details
+        # Enhanced log with signal stats
         log_message = f"[PriorityEval] Generated {len(priority_pairs)} priority pairs:"
         for i, item in enumerate(scored_symbols[:10]):
-            log_message += f"\n  {i+1}. {item['symbol']}: {item['score']}"
+            d = item["data"]
+            log_message += (
+                f"\n  {i+1}. {item['symbol']}: Score={item['score']:.3f}, "
+                f"Signals={d.get('signal_activity', 0)}, "
+                f"TP1={d.get('tp_winrate', 0):.2f}, TP2={d.get('tp2_winrate', 0):.2f}, "
+                f"ATR%={d.get('atr_percent', 0):.3f}"
+            )
         log(log_message, level="INFO")
 
         return priority_pairs
+
     except Exception as e:
         log(f"[PriorityEval] Error generating priority pairs: {e}", level="ERROR")
 
@@ -181,16 +182,12 @@ def generate_priority_pairs(threshold=0.65, ensure_minimum=True):
             return DEFAULT_PRIORITY_SMALL_BALANCE_PAIRS
         except Exception as e2:
             log(f"[PriorityEval] Fallback import failed: {e2}", level="ERROR")
-
-            # Secondary fallback if the first fallback fails
             try:
                 from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
 
                 return PRIORITY_SMALL_BALANCE_PAIRS
             except Exception as e3:
                 log(f"[PriorityEval] Secondary fallback failed: {e3}", level="ERROR")
-
-                # Last resort fallback - hardcoded minimal set
                 return ["XRP/USDC", "DOGE/USDC", "ADA/USDC", "SOL/USDC", "MATIC/USDC", "DOT/USDC"]
 
 

@@ -38,8 +38,8 @@ def evaluate_best_config(days=7):
         balance = get_cached_balance()
 
         # Adaptive thresholds based on balance
-        tp_min_trades = 10 if balance < 150 else 20
-        update_threshold = 0.1 if balance < 150 else 0.2
+        tp_min_trades = 10 if balance < 300 else 20
+        update_threshold = 0.1 if balance < 300 else 0.2
 
         total = len(df)
 
@@ -73,7 +73,7 @@ def evaluate_best_config(days=7):
         new_tp2 = 0.014 + (tp2_winrate - 40) * 0.0003  # Updated from 0.013 to 0.014
 
         # Apply more aggressive bounds for small accounts
-        if balance < 150:
+        if balance < 300:
             new_tp1 = max(0.005, min(new_tp1, 0.015))
             new_tp2 = max(0.008, min(new_tp2, 0.025))
         else:
@@ -162,7 +162,7 @@ def _analyze_filter_thresholds():
 
         # Get balance for adaptive thresholds
         balance = get_cached_balance()
-        filter_min_trades = 5 if balance < 150 else 10
+        filter_min_trades = 5 if balance < 300 else 10
 
         if len(df) < filter_min_trades:
             return
@@ -194,7 +194,7 @@ def _analyze_symbol_stats():
 
         # Get balance for adaptive thresholds
         balance = get_cached_balance()
-        min_trades_required = 10 if balance < 150 else 20
+        min_trades_required = 10 if balance < 300 else 20
 
         if len(df) < min_trades_required:
             return
@@ -213,8 +213,8 @@ def _analyze_symbol_stats():
             avg_pnl = sub["PnL (%)"].mean()
 
             # More lenient thresholds for small accounts
-            disable_threshold = 25 if balance < 150 else 30
-            priority_threshold = 65 if balance < 150 else 70
+            disable_threshold = 25 if balance < 300 else 30
+            priority_threshold = 65 if balance < 300 else 70
 
             if winrate < disable_threshold and total >= min_trades_required:
                 status[symbol] = "disabled"

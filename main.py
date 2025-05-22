@@ -24,7 +24,7 @@ from common.config_loader import (
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
-from core.fail_stats_tracker import schedule_failure_decay
+from core.fail_stats_tracker import apply_failure_decay, get_symbol_risk_factor, schedule_failure_decay
 from core.failure_logger import log_failure
 from core.risk_utils import check_drawdown_protection
 from core.signal_feedback_loop import adjust_score_relax_boost, analyze_tp2_winrate, initialize_runtime_adaptive_config
@@ -47,7 +47,7 @@ from stats import (
 from symbol_activity_tracker import auto_adjust_relax_factors_from_missed
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import send_daily_summary, send_telegram_message
-from tools.continuous_scanner import continuous_scan
+from tools.continuous_scanner import continuous_scan, fetch_all_symbols
 from tp_logger import ensure_log_exists
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
@@ -209,6 +209,44 @@ def start_report_loops():
     threading.Thread(target=htf_optimizer_loop, daemon=True).start()
 
 
+# --- Risk Health Monitor ---
+
+
+def check_block_health():
+    """
+    Monitor risk levels across all trading pairs and trigger accelerated recovery when needed.
+    Automatically applies decay when over 30% of symbols have risk_factor < 0.25.
+    """
+    try:
+        all_symbols = fetch_all_symbols()
+        if not all_symbols:
+            log("[HealthCheck] No symbols returned from fetch_all_symbols", level="WARNING")
+            return
+
+        high_risk_count = sum(1 for s in all_symbols if get_symbol_risk_factor(s)[0] < 0.25)
+        ratio = high_risk_count / len(all_symbols)
+
+        log(f"[HealthCheck] High risk symbols: {high_risk_count}/{len(all_symbols)} ({ratio:.1%})", level="INFO")
+
+        if ratio > 0.3:
+            log("[HealthCheck] ⚠️ Triggering accelerated decay due to high risk concentration", level="WARNING")
+            apply_failure_decay(accelerated=True)
+
+            # Send Telegram notification for critical levels (>50%)
+            if ratio > 0.5:
+                high_risk_examples = [s for s in all_symbols if get_symbol_risk_factor(s)[0] < 0.25][:5]
+                send_telegram_message(
+                    f"🚨 Critical risk level: {high_risk_count}/{len(all_symbols)} symbols "
+                    f"({ratio:.1%}) have high risk factors.\n"
+                    f"Applying accelerated recovery.\n\n"
+                    f"Examples: {', '.join(high_risk_examples[:5])}",
+                    force=True,
+                )
+
+    except Exception as e:
+        log(f"[HealthCheck] ❌ Error during risk monitoring: {e}", level="ERROR")
+
+
 def start_trading_loop():
     """
     Main trading loop for BinanceBot
@@ -359,20 +397,24 @@ def start_trading_loop():
                 trades_executed = 0  # Сбрасываем счётчик после проверки
 
             # Проверка сигналов для текущей группы символов
-            for symbol in current_group:
-                try:
-                    signal = get_trading_signal(symbol)
-                    if signal:
-                        side = signal["side"]
-                        qty = signal["qty"]
-                        score = signal.get("score", 5)
+        for symbol in current_group:
+            try:
+                signal = get_trading_signal(symbol)  # Получение торгового сигнала для символа
+                if signal:
+                    side = signal["side"]  # Направление сделки (BUY или SELL)
+                    qty = signal["qty"]  # Размер позиции
+                    score = signal.get("score", 5)  # Оценка сигнала
+                    breakdown = signal.get("breakdown", {})  # Состав сигнала (например, MACD, RSI, etc.)
 
-                        log(f"Received trading signal for {symbol}: {side} with qty {qty}, score {score}", level="INFO")
-                        enter_trade(symbol, side, qty, score=score)
-                        trades_executed += 1
-                except Exception as e:
-                    log(f"Error processing symbol {symbol}: {e}", level="ERROR")
-                    continue
+                    log(f"Received trading signal for {symbol}: {side} with qty {qty}, score {score}", level="INFO")
+
+                    # Передаем breakdown в enter_trade для логирования компонентов сигнала
+                    enter_trade(symbol, side, qty, score=score, breakdown=breakdown)
+
+                    trades_executed += 1  # Увеличиваем счетчик выполненных сделок
+            except Exception as e:
+                log(f"Error processing symbol {symbol}: {e}", level="ERROR")
+                continue
 
             # Переход к следующей группе
             current_group_index = (current_group_index + 1) % len(symbol_groups)
@@ -477,13 +519,29 @@ if __name__ == "__main__":
     scheduler.add_job(analyze_tp2_winrate, "interval", hours=24, id="tp2_risk_feedback")
     scheduler.add_job(schedule_failure_decay, "interval", hours=1, id="failure_decay")
     scheduler.add_job(continuous_scan, "interval", minutes=15, id="symbol_scanner")
+    scheduler.add_job(check_block_health, "interval", minutes=30, id="risk_health_check")
 
     scheduler.add_job(adjust_score_relax_boost, "interval", hours=1, id="score_relax_adjustment")
     scheduler.add_job(log_symbol_activity_status, "interval", minutes=10, id="status_logger")
 
-    scheduler.start()
-    log("Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, TP2 risk feedback, failure decay, and score relax adjustment", level="INFO")
+    # Migrate from blocked_symbols to graduated risk system
+    from core.fail_stats_tracker import migrate_from_blocked_symbols
 
+    migrate_from_blocked_symbols()
+    log("✅ Migrated from binary blocking to graduated risk system", level="INFO")
+
+    from debug_tools import ENABLE_FULL_DEBUG_MONITORING, run_full_diagnostic_monitoring
+
+    if ENABLE_FULL_DEBUG_MONITORING:
+        log("✅ ENABLE_FULL_DEBUG_MONITORING is True — starting diagnostic audit", level="INFO")
+        run_full_diagnostic_monitoring()
+
+    scheduler.start()
+    log(
+        "Scheduler started with daily summary, pair rotation, TP/SL optimizer, missed opportunities tracking, "
+        "TP2 risk feedback, failure decay, score relax adjustment, and risk health monitoring",
+        level="INFO",
+    )
     try:
         start_trading_loop()
     finally:

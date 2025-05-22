@@ -245,7 +245,7 @@ def evaluate_entry_quality(df, direction="buy"):
     from utils_core import get_cached_balance
 
     balance = get_cached_balance()
-    min_quality = 0.4 if balance < 150 else 0.3
+    min_quality = 0.4 if balance < 300 else 0.3
 
     # Log quality assessment (только если не проходит порог)
     if quality_score < min_quality:

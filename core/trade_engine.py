@@ -320,7 +320,7 @@ def get_market_regime(symbol):
         return "neutral"
 
 
-def enter_trade(symbol, side, qty, score=5, is_reentry=False):
+def enter_trade(symbol, side, qty, score=5, is_reentry=False, breakdown=None):
     state = load_state()
     if state.get("stopping"):
         log("Cannot enter trade: bot is stopping.", level="WARNING")
@@ -330,7 +330,7 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
     if SHORT_TERM_MODE and not is_optimal_trading_hour():
         # For small accounts, still allow priority pairs during non-optimal hours
         balance = get_cached_balance()
-        if balance < 150 and symbol in get_priority_small_balance_pairs():
+        if balance < 120 and symbol in get_priority_small_balance_pairs():
             log(f"{symbol} Priority pair allowed during non-optimal hours", level="INFO")
         else:
             log(f"{symbol} ⏰ Skipping trade during non-optimal trading hours", level="INFO")
@@ -358,7 +358,8 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
 
     # Get balance to determine account category
     balance = get_cached_balance()
-    account_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
+    account_category = "Small" if balance < 120 else "Medium" if balance < 300 else "Standard"
+
     is_priority_pair = symbol in get_priority_small_balance_pairs() if account_category in ("Small", "Medium") else False
 
     if account_category == "Small" and is_priority_pair:
@@ -386,6 +387,11 @@ def enter_trade(symbol, side, qty, score=5, is_reentry=False):
                 return
             log(f"Re-entry triggered for {symbol} at {entry_price}", level="INFO")
             send_telegram_message(f"🔄 Re-entry {symbol} @ {entry_price}", force=True)
+
+        if breakdown:  # Make sure breakdown is available
+            from core.component_tracker import log_component_data
+
+            log_component_data(symbol, breakdown, is_successful=True)
 
         leverage_key = symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")
         leverage = LEVERAGE_MAP.get(leverage_key, 1)

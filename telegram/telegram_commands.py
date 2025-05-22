@@ -28,7 +28,7 @@ from common.config_loader import (
 )
 from core.aggressiveness_controller import get_aggressiveness_score
 from core.exchange_init import exchange
-from core.fail_stats_tracker import is_symbol_blocked, reset_failure_count
+from core.fail_stats_tracker import reset_failure_count
 from core.trade_engine import close_real_trade, trade_manager
 from missed_tracker import flush_best_missed_opportunities
 from score_heatmap import generate_score_heatmap
@@ -298,86 +298,53 @@ def cmd_prioritypairs(message, state=None, stop_event=None):
         return False
 
 
-@register_command("/status")
+@register_command("status")
 @handle_errors
-def cmd_status(message, state=None, stop_event=None):
+def cmd_status(message, state, stop_event=None):
     """
-    Display current bot status including balance, risk tier, open positions, and risk metrics.
-    Usage: /status
+    Show current bot status including mode, balance, risk, and open positions.
     """
-    try:
-        mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
-        stopping = state.get("stopping", False)
-        balance = round(float(get_cached_balance()), 2)
-        tier = get_deposit_tier()
-        max_positions = get_max_positions()
+    from core.trade_engine import open_positions_count
+    from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+    from utils_core import (
+        get_adaptive_risk_percent,
+        get_cached_balance,
+        get_deposit_tier,
+        get_max_positions,
+        get_min_net_profit,
+        get_runtime_config,
+    )
 
-        runtime_config = get_runtime_config()
-        current_risk = runtime_config.get("risk_percent", get_adaptive_risk_percent(tier))
-        current_tp1 = runtime_config.get("tp1_percent", TP1_PERCENT)
-        current_tp2 = runtime_config.get("tp2_percent", TP2_PERCENT)
-        current_sl = runtime_config.get("sl_percent", SL_PERCENT)
+    balance = get_cached_balance()
+    tier = get_deposit_tier()
+    runtime_config = get_runtime_config()
 
-        # Calculate enhanced risk metrics
-        from core.risk_utils import calculate_current_risk
+    # Limit displayed risk per tier
+    requested_risk = runtime_config.get("risk_percent", get_adaptive_risk_percent(tier))
+    max_allowed_risk = get_adaptive_risk_percent(tier)
+    current_risk = min(requested_risk, max_allowed_risk)
 
-        total_exposure = calculate_current_risk()
-        exposure_warning = " ⚠️" if total_exposure > 200 else ""
+    max_pos = get_max_positions(balance)
+    min_profit = get_min_net_profit(balance)
 
-        # Calculate individual position risks
-        if not DRY_RUN:
-            positions = exchange.fetch_positions()
-            position_risks = []
-            for pos in positions:
-                if float(pos.get("contracts", 0)) > 0:
-                    # Calculate individual position risk
-                    contracts = float(pos.get("contracts", 0))
-                    entry_price = float(pos.get("entryPrice", 0))
-                    notional = contracts * entry_price
-                    position_risk = (notional * SL_PERCENT) / balance * 100
-                    position_risks.append(position_risk)
+    msg = (
+        f"🔍 *Bot Status*\n"
+        f"Mode: `{'DRY_RUN' if DRY_RUN else 'REAL_RUN'}`\n"
+        f"Stopping: `{state.get('stopping', False)}`\n"
+        f"Balance: `{balance:.2f}` USDC\n"
+        f"Risk Tier: `{tier}`\n"
+        f"Max Positions: `{max_pos}`\n\n"
+        f"*Risk Metrics:*\n"
+        f"Total Exposure: `{state.get('exposure', 0.0):.1f}%`\n"
+        f"Max Single Risk: `{state.get('max_risk', 0.0):.1f}%`\n"
+        f"Active Positions: `{open_positions_count}`\n"
+        f"Risk Per Trade: `{current_risk * 100:.1f}%`\n"
+        f"TP1/TP2/SL: `{TP1_PERCENT * 100:.1f}%/{TP2_PERCENT * 100:.1f}%/{TP1_PERCENT * 100:.1f}%`\n"
+        f"Min Profit Target: `{min_profit:.2f}` USDC\n\n"
+        f"Open Positions: `{open_positions_count}`"
+    )
 
-            max_single_risk = max(position_risks) if position_risks else 0
-            active_positions = len(position_risks)
-        else:
-            # For DRY_RUN mode
-            active_positions = len([t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit")])
-            max_single_risk = 0  # Simplified for DRY_RUN
-
-        # Construct status message with enhanced risk metrics
-        msg = (
-            f"🔍 *Bot Status*\n"
-            f"Mode: `{mode}`\n"
-            f"Stopping: `{stopping}`\n"
-            f"Balance: `{balance}` USDC\n"
-            f"Risk Tier: `{tier}`\n"
-            f"Max Positions: `{max_positions}`\n"
-            f"\n*Risk Metrics:*\n"
-            f"Total Exposure: `{total_exposure:.1f}%`{exposure_warning}\n"
-            f"Max Single Risk: `{max_single_risk:.1f}%`\n"
-            f"Active Positions: `{active_positions}`\n"
-            f"Risk Per Trade: `{current_risk*100:.1f}%`\n"
-            f"TP1/TP2/SL: `{current_tp1*100:.1f}%/{current_tp2*100:.1f}%/{current_sl*100:.1f}%`"
-        )
-
-        # Get open positions details
-        if DRY_RUN:
-            open_trades = [_format_pos_dry(t) for t in trade_manager._trades.values()]
-        else:
-            positions = exchange.fetch_positions()
-            open_trades = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
-
-        msg += f"\n\nOpen Positions: `{len(open_trades)}`"
-        if open_trades:
-            msg += "\n" + "\n".join(open_trades)
-
-        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-        log("[Telegram] Status report sent", level="INFO")
-        return True
-    except Exception as e:
-        log(f"[Telegram] Error in status command: {e}", level="ERROR")
-        send_telegram_message(f"❌ Failed to get bot status: {e}", force=True)
-        return False
+    send_telegram_message(escape_markdown_v2(msg))
 
 
 @register_command("/help")
@@ -601,6 +568,112 @@ def cmd_mtfstatus(message, state=None, stop_event=None):
         return False
 
 
+@register_command("/signalstats")
+@handle_errors
+def cmd_signalstats(_message, _state=None, _stop_event=None):
+    """
+    Display statistics about signal components and their effectiveness.
+    Usage: /signalstats
+    """
+    try:
+        with open("data/component_tracker_log.json", "r") as f:
+            data = json.load(f)
+
+        components = data.get("components", {})
+        if not components:
+            send_telegram_message("No signal statistics available yet.")
+            return True
+
+        # Calculate total trades from most frequent component
+        most_frequent = max(components.values(), key=lambda x: x["count"]) if components else {"count": 0}
+        total_trades = most_frequent["count"]
+
+        response = "📊 Signal Component Statistics:\n\n"
+
+        # Sort by frequency
+        sorted_components = sorted(components.items(), key=lambda x: x[1]["count"], reverse=True)
+
+        for component, stats in sorted_components:
+            count = stats["count"]
+            successful = stats.get("successful", 0)
+            winrate = successful / count if count > 0 else 0
+            last_used = stats.get("last_used", "").split("T")[0] if "last_used" in stats else "N/A"
+
+            percentage = (count / total_trades) * 100 if total_trades > 0 else 0
+            response += f"• {component}: Used in {percentage:.1f}% of trades ({count} times)\n"
+            response += f"  Win rate: {winrate:.1%}, Last used: {last_used}\n\n"
+
+        # Add candlestick rejection info if available
+        rejections = data.get("candlestick_rejections", 0)
+        if rejections > 0:
+            response += f"🕯️ Candlestick patterns rejected {rejections} potential trades\n"
+
+        send_telegram_message(response)
+        return True
+
+    except Exception as e:
+        log(f"Error in signalstats command: {e}", level="ERROR")
+        send_telegram_message(f"Error retrieving signal statistics: {e}")
+        return False
+
+
+@register_command("/missedlog")
+@handle_errors
+def cmd_missedlog(message, _state=None, _stop_event=None):
+    """
+    Display recent missed signals and reasons.
+    Usage: /missedlog [number_of_entries]
+    """
+    from core.missed_signal_logger import get_recent_missed_signals
+
+    try:
+        limit = 5  # Default limit
+
+        # Check if number of entries was specified in the command
+        command_parts = message.get("text", "").strip().split()
+        if len(command_parts) > 1 and command_parts[1].isdigit():
+            limit = min(int(command_parts[1]), 10)  # Allow up to 10
+
+        missed_signals = get_recent_missed_signals(limit)
+
+        if not missed_signals:
+            send_telegram_message("No missed signals logged yet.")
+            return True
+
+        response = f"📉 Last {len(missed_signals)} Missed Signals:\n\n"
+
+        for idx, signal in enumerate(missed_signals, 1):
+            symbol = signal.get("symbol", "Unknown")
+            score = signal.get("score", 0)
+            reason = signal.get("reason", "Unknown")
+            breakdown = signal.get("breakdown", {})
+            timestamp = signal.get("timestamp", "").split("T")[0]
+
+            # Format reason nicely
+            if reason == "signal_combo_fail":
+                reason_text = "No valid signal combination (1+1 rule)"
+            elif reason == "insufficient_score":
+                reason_text = f"Score {score} below threshold"
+            else:
+                reason_text = reason.replace("_", " ").capitalize()
+
+            # Find active components
+            active_components = [comp for comp, val in breakdown.items() if val > 0]
+            components_str = ", ".join(active_components) if active_components else "None"
+
+            response += f"{idx}. {symbol} ({timestamp}):\n"
+            response += f"   Score: {score}, Active: {components_str}\n"
+            response += f"   Rejected: {reason_text}\n\n"
+
+        send_telegram_message(response)
+        return True
+
+    except Exception as e:
+        log(f"Error in missedlog command: {e}", level="ERROR")
+        send_telegram_message(f"Error retrieving missed signals log: {e}")
+        return False
+
+
 # --- Legacy Command Handlers (to be migrated) --------------------------
 
 # These functions will be maintained until they're migrated to the new format
@@ -643,46 +716,28 @@ def handle_goals_command():
 @register_command("/signalblocks")
 @handle_errors
 def cmd_signalblocks(_message=None, _state=None, _stop_event=None):
-    """Show currently blocked symbols."""
-    try:
-        from utils_core import get_runtime_config
+    from core.fail_stats_tracker import get_symbol_risk_factor
+    from utils_core import get_runtime_config
 
-        runtime_config = get_runtime_config()
-        blocked_symbols = runtime_config.get("blocked_symbols", {})
+    runtime_config = get_runtime_config()
+    blocked_symbols = runtime_config.get("blocked_symbols", {})
 
-        if not blocked_symbols:
-            send_telegram_message("No symbols are currently blocked. ✅")
-            return True
-
-        msg = "🚫 Currently Blocked Symbols:\n\n"
-
-        for symbol, block_info in blocked_symbols.items():
-            is_blocked, _ = is_symbol_blocked(symbol)
-            if is_blocked:
-                block_until = block_info.get("block_until", "unknown")
-                failures = block_info.get("total_failures", 0)
-                block_count = block_info.get("block_count", 0)
-
-                # Calculate remaining time
-                try:
-                    from dateutil import parser
-
-                    until_dt = parser.parse(block_until)
-                    from stats import now_with_timezone
-
-                    now = now_with_timezone()
-                    remaining = until_dt - now
-                    hours_remaining = remaining.total_seconds() / 3600
-
-                    msg += f"• {symbol}\n" f"  Failures: {failures}\n" f"  Block #: {block_count}\n" f"  Expires: {hours_remaining:.1f}h\n\n"
-                except Exception as e:
-                    msg += f"• {symbol} (error parsing: {e})\n\n"
-
-        send_telegram_message(msg)
+    if not blocked_symbols:
+        send_telegram_message("No symbols have risk adjustments. ✅")
         return True
-    except Exception as e:
-        send_telegram_message(f"Error fetching block info: {e}")
-        return False
+
+    msg = "🔄 Symbol Risk Factors:\n\n"
+
+    for symbol, block_info in blocked_symbols.items():
+        risk_factor, _ = get_symbol_risk_factor(symbol)
+        failures = block_info.get("total_failures", 0)
+
+        risk_category = "Low" if risk_factor >= 0.7 else "Medium" if risk_factor >= 0.4 else "High"
+
+        msg += f"• {symbol}\n" f"  Risk Level: {risk_category} ({risk_factor:.2f}x)\n" f"  Failures: {failures}\n\n"
+
+    send_telegram_message(msg, force=True)
+    return True
 
 
 @handle_errors
@@ -771,10 +826,10 @@ def handle_risk_command(message):
         parts = message.get("text", "").strip().split()
         balance = get_cached_balance()
         tier = get_deposit_tier()
-        max_recommended_risk = get_adaptive_risk_percent(tier)
+        max_recommended_risk = get_adaptive_risk_percent(balance)
 
         if len(parts) == 1:
-            current_risk = RISK_PERCENT if RISK_PERCENT else get_adaptive_risk_percent(tier)
+            current_risk = RISK_PERCENT if RISK_PERCENT else get_adaptive_risk_percent(balance)
             msg = (
                 f"Current Risk Level: {current_risk*100:.1f}%\n"
                 f"Your Balance: ${balance:.2f} (Tier: {tier})\n"
@@ -785,13 +840,13 @@ def handle_risk_command(message):
         else:
             new_risk = float(parts[1])
 
-            # Balance-aware limits
-            if balance < 150:
-                max_allowed_risk = 0.025  # 2.5% max for small accounts
-            elif balance < 300:
-                max_allowed_risk = 0.035  # 3.5% max for medium accounts
+            # Balance-aware limits by tier
+            if tier == "Small":
+                max_allowed_risk = 0.02  # 2.0% max for micro/small accounts
+            elif tier == "Medium":
+                max_allowed_risk = 0.03  # 3.0% max for medium accounts
             else:
-                max_allowed_risk = 0.05  # 5% max for larger accounts
+                max_allowed_risk = 0.05  # 5.0% max for standard accounts
 
             if new_risk < 0.005:  # 0.5% minimum
                 send_telegram_message("❌ Risk must be at least 0.005 (0.5%)", force=True)

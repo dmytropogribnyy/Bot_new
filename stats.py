@@ -59,7 +59,7 @@ def build_performance_report(title: str, period: str):
     mode = get_mode_label()
 
     if stats["total"] == 0:
-        comment = "Not much action yet - waiting for signals."
+        comment = "Bot was active, but no trades met entry conditions this period."
     elif winrate >= 65 and stats["pnl"] > 2:
         comment = "Great period! Strategy working well."
     elif winrate < 40 and stats["pnl"] < 0:
@@ -260,43 +260,38 @@ def generate_daily_report(days=1):
         days (int): Period for analysis (default 1 day).
     """
     try:
+        from common.config_loader import get_priority_small_balance_pairs
         from utils_core import get_cached_balance
 
         # Read data from tp_performance.csv
         df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
         if df.empty:
-            report_message = "📊 Daily Report\n" "No trades recorded yet."
+            report_message = "📊 Daily Report\nNo trades recorded yet."
             send_telegram_message(report_message, force=True, parse_mode="")
             return
 
-        # Filter data for the last days days
+        # Filter data for the last N days
         df = df[df["Date"] >= pd.Timestamp.now() - pd.Timedelta(days=days)]
         if df.empty:
-            report_message = f"📊 Daily Report\n" f"No trades in the last {days} day(s)."
+            report_message = f"📊 Daily Report\nNo trades in the last {days} day(s)."
             send_telegram_message(report_message, force=True, parse_mode="")
             return
 
-        # Get current balance for context
+        # Get current balance
         balance = get_cached_balance()
-        balance_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
+        balance_category = "Small" if balance < 300 else "Medium" if balance < 600 else "Standard"
 
-        # Total number of trades
+        # Total trades and winrate
         total_trades = len(df)
-
-        # Winning trades count (based on Net PnL > 0)
         win_trades = len(df[df["PnL (%)"] > 0])
         winrate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
-
-        # Total PnL
         total_pnl = df["PnL (%)"].sum()
-
-        # Average PnL per trade
         avg_pnl = df["PnL (%)"].mean() if total_trades > 0 else 0.0
 
-        # Get relax_factor
+        # Relax factor
         relax_factor = get_filter_relax_factor()
 
-        # Form base report
+        # Base report
         report_message = (
             f"📊 Daily Report (Last {days} Day(s))\n"
             f"Account: {balance:.2f} USDC ({balance_category} Account)\n"
@@ -307,7 +302,7 @@ def generate_daily_report(days=1):
             f"Filter Relax Factor: {relax_factor:.2f}"
         )
 
-        # Add commission impact analysis (critical for small accounts)
+        # Commission analysis
         if "Commission" in df.columns:
             total_commission = df["Commission"].sum()
             commission_pct = (total_commission / (balance * total_pnl / 100)) * 100 if total_pnl != 0 else 0
@@ -315,7 +310,7 @@ def generate_daily_report(days=1):
             report_message += f"Total Commission: {total_commission:.6f} USDC\n"
             report_message += f"Commission Impact: {commission_pct:.2f}% of profit"
 
-        # Add absolute profit tracking (especially important for small accounts)
+        # Absolute profit
         if "Absolute Profit" in df.columns:
             total_abs_profit = df["Absolute Profit"].sum()
             avg_profit_per_trade = total_abs_profit / total_trades if total_trades > 0 else 0
@@ -323,9 +318,9 @@ def generate_daily_report(days=1):
             report_message += f"Total Profit: {total_abs_profit:.6f} USDC\n"
             report_message += f"Avg Profit/Trade: {avg_profit_per_trade:.6f} USDC"
 
-        # Add priority pair tracking for small accounts
-        if balance < 150:  # For small accounts
-            priority_pairs = ["XRP/USDC", "DOGE/USDC", "ADA/USDC", "SOL/USDC"]
+        # Dynamic priority pair tracking
+        if balance < 300:
+            priority_pairs = get_priority_small_balance_pairs()
             priority_df = df[df["Symbol"].isin(priority_pairs)]
             if not priority_df.empty:
                 priority_winrate = len(priority_df[priority_df["PnL (%)"] > 0]) / len(priority_df) * 100
@@ -335,8 +330,7 @@ def generate_daily_report(days=1):
                 if "Absolute Profit" in priority_df.columns:
                     priority_profit = priority_df["Absolute Profit"].sum()
                     report_message += f"\nProfit: {priority_profit:.6f} USDC"
-                    report_message += f"\n% of Total Profit: {(priority_profit/total_abs_profit)*100:.2f}%" if total_abs_profit != 0 else ""
-
+                    report_message += f"\n% of Total Profit: {(priority_profit / total_abs_profit) * 100:.2f}%" if total_abs_profit != 0 else ""
         # Add performance by relax factor (market regime analysis)
         if "Relax Factor" in df.columns:
             high_relax_df = df[df["Relax Factor"] > 0.8]

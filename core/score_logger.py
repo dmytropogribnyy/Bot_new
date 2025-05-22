@@ -15,7 +15,7 @@ def log_score_history(symbol, score):
 
         # Get account details for context
         balance = get_cached_balance()
-        account_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
+        account_category = "Small" if balance < 120 else "Medium" if balance < 300 else "Standard"
         threshold = get_adaptive_score_threshold(balance)
 
         os.makedirs("data", exist_ok=True)

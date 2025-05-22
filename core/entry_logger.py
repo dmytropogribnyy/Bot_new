@@ -34,8 +34,8 @@ def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
 
     balance = get_cached_balance()
 
-    # Determine account category
-    account_category = "Small" if balance < 150 else "Medium" if balance < 300 else "Standard"
+    # Determine account category - three-tier structure
+    account_category = "Small" if balance < 120 else "Medium" if balance < 300 else "Standard"
 
     # Calculate commission
     entry_price = trade.get("entry", 0)

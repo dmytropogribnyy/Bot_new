@@ -352,67 +352,58 @@ def set_leverage_for_symbols():
     log("Leverage set for all symbols", level="INFO")
 
 
-# --- Новые функции для адаптивного риск-менеджмента ---
-
-
 def get_adaptive_risk_percent(balance):
     """
-    Возвращает адаптивный процент риска на основе размера счета.
+    Returns adaptive risk percentage based on account size.
 
     Args:
-        balance: Размер депозита
+        balance: Account balance in USDC
 
     Returns:
-        Процент риска для данного размера счета
+        Risk percentage for the given account size
     """
-    if balance < 100:
-        return 0.01  # 1%
-    elif balance < 150:
-        return 0.02  # 2%
+    if balance < 120:
+        return 0.01  # 1% for micro accounts (0-119 USDC)
     elif balance < 300:
-        return 0.03  # 3%
+        return 0.02  # 2% for small accounts (120-299 USDC)
     else:
-        return 0.05  # 5%
+        return 0.05  # 5% for standard accounts (300+ USDC)
 
 
 def get_max_positions(balance):
     """
-    Возвращает максимальное количество позиций на основе размера счета.
+    Returns maximum number of positions based on account size.
 
     Args:
-        balance: Размер депозита
+        balance: Account balance in USDC
 
     Returns:
-        Максимальное количество открытых позиций
+        Maximum number of open positions allowed
     """
-    if balance < 100:
-        return 1
-    elif balance < 150:
-        return 2
+    if balance < 120:
+        return 2  # Micro tier: max 2 positions (0-119 USDC)
     elif balance < 300:
-        return 3
+        return 3  # Small tier: max 3 positions (120-299 USDC)
     else:
-        return 5
+        return 5  # Standard tier: max 5 positions (300+ USDC)
 
 
 def get_min_net_profit(balance):
     """
-    Возвращает минимальную допустимую прибыль для сделки на основе размера счета.
+    Returns minimum acceptable profit for a trade based on account size.
 
     Args:
-        balance: Размер депозита
+        balance: Account balance in USDC
 
     Returns:
-        Минимальная прибыль в USDC
+        Minimum profit in USDC
     """
-    if balance < 100:
-        return 0.2  # $0.2 для очень малых депозитов
-    elif balance < 200:
-        return 0.3  # $0.3 для малых депозитов
-    elif balance < 500:
-        return 0.5  # $0.5 для средних депозитов
+    if balance < 120:
+        return 0.2  # $0.2 for micro accounts (0-119 USDC)
+    elif balance < 300:
+        return 0.3  # $0.3 for small accounts (120-299 USDC)
     else:
-        return 1.0  # $1.0 для больших депозитов
+        return 0.5  # $0.5 for standard accounts (300+ USDC)
 
 
 def calculate_risk_reward_ratio(entry_price, tp_price, sl_price, side):
