@@ -1,14 +1,16 @@
 # pair_selector.py
 import json
 import os
+import subprocess
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from threading import Lock
 
 import pandas as pd
 
 from common.config_loader import (
-    DRY_RUN,
     FIXED_PAIRS,
     MISSED_OPPORTUNITIES_FILE,
     PAIR_COOLING_PERIOD_HOURS,
@@ -27,7 +29,7 @@ from core.priority_evaluator import generate_priority_pairs, save_priority_pairs
 from symbol_activity_tracker import SIGNAL_ACTIVITY_FILE
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, get_market_volatility_index, get_runtime_config, is_optimal_trading_hour, load_json_file, safe_call_retry, save_json_file
-from utils_logging import log
+from utils_logging import log  # или ваш метод логирования
 
 # Adaptive rotation interval - more frequent for small accounts and high volatility
 BASE_UPDATE_INTERVAL = 60 * 15  # 15 минут вместо 30
@@ -43,6 +45,54 @@ pair_performance = {}
 _last_logged_hour = None
 
 
+def auto_update_valid_pairs_if_needed():
+    """
+    Если прошло >6 часов с последнего обновления valid_usdc_symbols.json,
+    запускает test_api.py, логирует результат и при успехе
+    записывает текущее время в data/valid_usdc_last_updated.txt.
+    """
+    last_updated_path = Path("data/valid_usdc_last_updated.txt")
+    now = int(time.time())
+
+    # Проверяем, не прошло ли менее 6 часов
+    if last_updated_path.exists():
+        with last_updated_path.open("r") as f:
+            last_time = int(f.read().strip())
+            if now - last_time < 6 * 3600:
+                return  # Ещё слишком рано, выходим
+
+    print("🕒 Valid USDC symbols outdated — running test_api.py")
+
+    # Запускаем test_api.py через sys.executable
+    result = subprocess.call([sys.executable, "test_api.py"])
+    if result != 0:
+        log("[Updater] test_api.py failed to execute", level="ERROR")
+    else:
+        log("[Updater] test_api.py completed successfully", level="INFO")
+
+    # Проверяем, создался ли valid_usdc_symbols.json
+    valid_file = Path("data/valid_usdc_symbols.json")
+    if not valid_file.exists():
+        log("⚠️ valid_usdc_symbols.json was not created!", level="ERROR")
+        return
+
+    # При успешном создании valid_usdc_symbols.json пишем текущее время
+    # чтобы не дергать test_api.py раньше, чем через 6 часов
+    with last_updated_path.open("w") as f:
+        f.write(str(now))
+
+
+def load_valid_usdc_symbols():
+    path = Path("data/valid_usdc_symbols.json")
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        from common.config_loader import USDC_SYMBOLS
+
+        return USDC_SYMBOLS
+
+
 def load_failure_stats():
     try:
         with open(FAIL_STATS_FILE, "r") as f:
@@ -53,70 +103,22 @@ def load_failure_stats():
 
 def fetch_all_symbols():
     """
-    Fetch all available USDC futures pairs from the exchange.
-    Enhanced to scan all pairs rather than just predefined list.
+    Возвращает список USDC-пар из valid_usdc_symbols.json.
+    Если файл не найден или пуст — fallback на USDC_SYMBOLS.
     """
     try:
-        markets = safe_call_retry(exchange.load_markets, label="load_markets")
-        if not markets:
-            log("No markets returned from API", level="ERROR")
-            if DRY_RUN:
-                log("Using fallback symbols in DRY_RUN", level="WARNING")
-                send_telegram_message("⚠️ Using fallback symbols due to API failure", force=True)
-                return DRY_RUN_FALLBACK_SYMBOLS
-            log("No active symbols available and DRY_RUN is False, stopping", level="ERROR")
-            send_telegram_message("⚠️ No active symbols available, stopping bot", force=True)
-            return []
-
-        log(f"Loaded markets: {len(markets)} total symbols", level="DEBUG")
-
-        # Проверяем список ключей и структуру для отладки
-        sample_keys = list(markets.keys())[:3]
-        log(f"Sample market keys: {sample_keys}", level="DEBUG")
-
-        # Find all active USDC pairs using more flexible criteria
-        all_usdc_futures_pairs = []
-
-        # Сначала попробуем найти пары по нашему предпочтительному формату
-        for symbol in USDC_SYMBOLS:
-            api_symbol = convert_symbol(symbol)
-            if api_symbol in markets and markets[api_symbol].get("active", False):
-                all_usdc_futures_pairs.append(symbol)
-                log(f"Found active pair from predefined list: {symbol}", level="DEBUG")
-
-        # Если не нашли ни одной пары, используем запасной метод проверки
-        if not all_usdc_futures_pairs:
-            log("No pairs found using predefined list, trying alternate detection", level="WARNING")
-            for symbol, market in markets.items():
-                # Проверяем наличие "USDC" в имени символа
-                if "USDC" in symbol and market.get("active", False):
-                    # Преобразуем формат символа к нашему стандарту (с "/")
-                    if "/" not in symbol:
-                        # Находим позицию "USDC" и вставляем "/"
-                        usdc_pos = symbol.find("USDC")
-                        if usdc_pos > 0:
-                            formatted_symbol = f"{symbol[:usdc_pos]}/USDC"
-                            all_usdc_futures_pairs.append(formatted_symbol)
-                            log(f"Found and reformatted pair: {symbol} → {formatted_symbol}", level="DEBUG")
-                    else:
-                        all_usdc_futures_pairs.append(symbol)
-                        log(f"Found pair with slash: {symbol}", level="DEBUG")
-
-        # Если все равно не нашли пар, используем предопределенный список
-        if not all_usdc_futures_pairs:
-            log("No USDC pairs found at all. Using predefined USDC_SYMBOLS list.", level="WARNING")
-            send_telegram_message("⚠️ Symbol detection failed - using default list", force=True)
-            return USDC_SYMBOLS
-
-        log(f"Found {len(all_usdc_futures_pairs)} active USDC pairs", level="INFO")
-        return all_usdc_futures_pairs
-
+        symbols = load_valid_usdc_symbols()
+        if symbols:
+            log(f"✅ Loaded {len(symbols)} symbols from valid_usdc_symbols.json", level="INFO")
+            return symbols
+        else:
+            log("⚠️ valid_usdc_symbols.json is empty — using fallback USDC_SYMBOLS", level="WARNING")
     except Exception as e:
-        log(f"Error fetching all symbols: {str(e)}", level="ERROR")
-        log(f"Exception type: {type(e)}, details: {e}", level="ERROR")
-        log("Falling back to predefined USDC_SYMBOLS", level="WARNING")
-        send_telegram_message(f"⚠️ Symbol detection error: {str(e)}", force=True)
-        return USDC_SYMBOLS
+        log(f"⚠️ Error loading valid_usdc_symbols.json: {e}", level="ERROR")
+
+    from common.config_loader import USDC_SYMBOLS
+
+    return USDC_SYMBOLS
 
 
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
@@ -970,16 +972,10 @@ def select_active_symbols():
 
 
 def get_pair_limits():
-    """
-    Get adaptive pair limits based on account balance.
-    """
-    balance = get_cached_balance()
-    if balance < 300:
-        return 6, 8  # Small account
-    elif balance < 600:
-        return 8, 10  # Medium account
-    else:
-        return 10, 12  # Standard account
+    config = get_runtime_config()
+    min_dyn = config.get("min_dynamic_pairs", 8)
+    max_dyn = config.get("max_dynamic_pairs", 15)
+    return min_dyn, max_dyn
 
 
 def get_adaptive_filter_thresholds(current_candidates, target_minimum):

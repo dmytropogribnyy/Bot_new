@@ -1,4 +1,7 @@
-# test_api.py
+import json
+from pathlib import Path
+from time import sleep
+
 import ccxt
 
 API_KEY = "w2LwaYZq0x1t50ARb3IP69y9XQLssukr78dSnFcQF9XfbngkELA8hprvtTPAhX5S"
@@ -13,36 +16,57 @@ exchange = ccxt.binance(
             "defaultType": "future",
             "adjustForTimeDifference": True,
         },
-        "urls": {
-            "api": {
-                "public": "https://fapi.binance.com/fapi/v1",
-                "private": "https://fapi.binance.com/fapi/v1",
-            }
-        },
     }
 )
 
-try:
+
+def test_fetch_ohlcv(symbol, tf="3m", limit=300):
+    try:
+        candles = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+        return len(candles)
+    except Exception as e:
+        print(f"❌ {symbol} [{tf}] — error: {str(e)}")
+        return 0
+
+
+def main():
     markets = exchange.load_markets()
-    print(f"Loaded {len(markets)} markets")
-    print(f"Sample markets: {list(markets.keys())[:5]}")
+    print(f"\n✅ Loaded {len(markets)} markets")
 
-    # Проверяем пары с USDC
-    usdc_symbols = [
-        symbol for symbol in markets.keys() if symbol.endswith("/USDC") or symbol.endswith("USDC")
-    ]
-    print(f"Found {len(usdc_symbols)} USDC symbols: {usdc_symbols[:5]}...")
+    usdc_symbols = [s for s in markets if "USDC" in s and "/USDC" in s and markets[s].get("contract")]
+    print(f"🧩 Found {len(usdc_symbols)} USDC futures symbols\n")
 
-    # Проверяем пары с USDT
-    usdt_symbols = [
-        symbol for symbol in markets.keys() if symbol.endswith("/USDT") or symbol.endswith("USDT")
-    ]
-    print(f"Found {len(usdt_symbols)} USDT symbols: {usdt_symbols[:5]}...")
+    valid_symbols = []
 
-    # Выводим типы первых 5 пар
-    for symbol in list(markets.keys())[:5]:
-        print(
-            f"Symbol: {symbol}, Type: {markets[symbol]['type']}, Active: {markets[symbol]['active']}"
-        )
-except Exception as e:
-    print(f"Error: {str(e)}")
+    for symbol in usdc_symbols:
+        count_3m = test_fetch_ohlcv(symbol, tf="3m")
+        count_5m = test_fetch_ohlcv(symbol, tf="5m")
+        count_15m = test_fetch_ohlcv(symbol, tf="15m")
+
+        if min(count_3m, count_5m, count_15m) >= 30:
+            print(f"✅ {symbol} — OK (3m={count_3m}, 5m={count_5m}, 15m={count_15m})")
+            valid_symbols.append(symbol)
+        else:
+            print(f"⚠️ {symbol} — INSUFFICIENT DATA (3m={count_3m}, 5m={count_5m}, 15m={count_15m})")
+
+        sleep(0.5)
+
+    # === Save to file ===
+    Path("data").mkdir(exist_ok=True)
+    path = Path("data/valid_usdc_symbols.json")
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(valid_symbols, f, indent=2)
+
+    # === Final summary ===
+    total = len(usdc_symbols)
+    valid = len(valid_symbols)
+    skipped = total - valid
+
+    print(f"\n✅ Checked {total} USDC pairs")
+    print(f"🎯 Valid pairs: {valid}")
+    print(f"❌ Skipped: {skipped}")
+    print(f"📁 Saved to: {path.resolve()}")
+
+
+if __name__ == "__main__":
+    main()

@@ -10,7 +10,7 @@ from core.dynamic_filters import get_dynamic_filter_thresholds, should_filter_pa
 from core.fail_stats_tracker import get_symbol_risk_factor
 from core.missed_signal_logger import log_missed_signal
 from core.score_evaluator import calculate_score
-from core.strategy import fetch_data
+from core.strategy import fetch_data_multiframe
 from missed_tracker import flush_best_missed_opportunities
 from pair_selector import fetch_all_symbols
 from telegram.telegram_utils import register_command, send_telegram_message
@@ -35,7 +35,7 @@ def run_full_diagnostic_monitoring():
 
     for symbol in symbols:
         try:
-            df = fetch_data(symbol)
+            df = fetch_data_multiframe(symbol)
             if df is None or len(df) < 20:
                 log(f"[Debug] {symbol} skipped: no data", level="WARNING")
                 summary["errors"] += 1
@@ -181,6 +181,8 @@ def run_full_diagnostic_monitoring():
             send_telegram_message(msg, markdown=True)
         except Exception as e:
             log(f"[Debug] Telegram send error: {e}", level="ERROR")
+
+        log(f"[Debug] Monitoring complete: {summary['passed']} passed / {summary['total_symbols']} checked / " f"{summary['filtered']} filtered / {summary['errors']} errors", level="INFO")
 
 
 @register_command("/audit")

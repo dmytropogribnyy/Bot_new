@@ -91,7 +91,6 @@ def adjust_from_missed_opportunities():
     import json
     from pathlib import Path
 
-    from utils_core import RANGE_LIMITS, get_runtime_config, update_runtime_config
     from utils_logging import log
 
     path = Path("data/missed_opportunities.json")

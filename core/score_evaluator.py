@@ -5,11 +5,9 @@ from datetime import datetime
 import pytz
 
 from common.config_loader import (
-    ADAPTIVE_SCORE_ENABLED,
     DRY_RUN,
     get_priority_small_balance_pairs,
 )
-from core.score_logger import log_score_components
 from utils_core import get_runtime_config
 from utils_logging import log
 
@@ -18,8 +16,6 @@ last_score_lock = threading.Lock()
 # Track win/loss by signal type for adaptive learning
 signal_performance = {
     "RSI": {"wins": 0, "losses": 0},
-    "MACD_RSI": {"wins": 0, "losses": 0},
-    "MACD_EMA": {"wins": 0, "losses": 0},
     "HTF": {"wins": 0, "losses": 0},
     "VOLUME": {"wins": 0, "losses": 0},
     "EMA_CROSS": {"wins": 0, "losses": 0},
@@ -146,26 +142,29 @@ def get_required_risk_reward_ratio(score, symbol=None, balance=None):
     return base_rr
 
 
-def detect_ema_crossover(df):
+# В самом начале файла score_evaluator.py (после import'ов)
+def detect_ema_crossover(df, fast_window=9, slow_window=21):
     """
-    New function: Detect recent EMA crossover for short-term momentum signals.
+    Определяет факт пересечения EMA (быстрой и медленной) на последней свече.
+    Возвращает (has_crossover: bool, direction: int)
+    direction = +1 (пересечение вверх), -1 (пересечение вниз), 0 (нет сигнала)
     """
-    if "fast_ema" not in df.columns or "slow_ema" not in df.columns:
-        return False, 0
+    import ta
 
-    # Check if we have a recent crossover (within last 3 candles)
-    fast_ema = df["fast_ema"].iloc[-3:].values
-    slow_ema = df["slow_ema"].iloc[-3:].values
+    fast_ema = ta.trend.EMAIndicator(df["close"], window=fast_window).ema_indicator()
+    slow_ema = ta.trend.EMAIndicator(df["close"], window=slow_window).ema_indicator()
 
-    # Check for bullish crossover (fast crosses above slow)
-    if fast_ema[-1] > slow_ema[-1] and fast_ema[-3] <= slow_ema[-3]:
-        return True, 1  # Bullish
+    prev_fast = fast_ema.iloc[-2]
+    prev_slow = slow_ema.iloc[-2]
+    curr_fast = fast_ema.iloc[-1]
+    curr_slow = slow_ema.iloc[-1]
 
-    # Check for bearish crossover (fast crosses below slow)
-    if fast_ema[-1] < slow_ema[-1] and fast_ema[-3] >= slow_ema[-3]:
-        return True, -1  # Bearish
-
-    return False, 0
+    if prev_fast < prev_slow and curr_fast > curr_slow:
+        return True, 1  # пересечение вверх
+    elif prev_fast > prev_slow and curr_fast < curr_slow:
+        return True, -1  # пересечение вниз
+    else:
+        return False, 0  # нет сигнала
 
 
 def detect_volume_spike(df, lookback=5, threshold=1.5):
@@ -185,170 +184,77 @@ def detect_volume_spike(df, lookback=5, threshold=1.5):
 
 
 def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
-    from symbol_activity_tracker import load_activity
-    from utils_core import get_cached_balance, get_runtime_config
+    """
+    Считает итоговый score пары (от 0.0 до ~5.0)
+    на основе MACD, RSI, EMA-cross, volume_spike, etc.
+    """
+    import math
 
-    config = get_runtime_config()
-    use_multi = config.get("USE_MULTITF_LOGIC", False)
-    rsi_threshold = config.get("rsi_threshold", 50)
+    from utils_core import get_cached_balance, get_runtime_config
+    from utils_logging import log
+
+    _config = get_runtime_config()
+    _balance = get_cached_balance()
+
+    latest = df.iloc[-1]
+    _price = latest["close"]
+    rsi = latest.get("rsi", 0)
+    macd = latest.get("macd", 0)
+    macd_signal = latest.get("macd_signal", 0)
+    htf_trend = latest.get("htf_trend", False)
+    volume_spike = latest.get("volume_spike", False)
+    price_action = latest.get("price_action", False)
+    ema_cross = latest.get("ema_cross", False)
 
     raw_score = 0.0
-    latest = df.iloc[-1]
-    price = latest["close"]
-    ema = latest.get("ema") or latest.get("ema_15m") or 0
-    balance = get_cached_balance()
+    breakdown = {}
 
-    # Updated weights according to optimization plan
-    score_weights = {
-        "MACD": 1.2,  # Primary signal
-        "EMA_CROSS": 1.2,  # Primary signal
-        "RSI": 1.0,  # Primary signal
-        "Volume": 0.5,  # Secondary signal
-        "HTF": 0.5,  # Secondary signal
-        "PriceAction": 0.5,  # Secondary signal
+    weights = {
+        "RSI": 1.0,
+        "MACD": 1.2,
+        "EMA_CROSS": 1.2,
+        "Volume": 0.5,
+        "HTF": 0.5,
+        "PriceAction": 0.5,
     }
 
-    # Backward compatibility for legacy keys
-    score_weights["MACD_RSI"] = 1.2
-    score_weights["MACD_EMA"] = 1.2
-    score_weights["VOLUME"] = 0.5
-    score_weights["VOL_SPIKE"] = 0.5
-    score_weights["PRICE_ACTION"] = 0.5
+    # Пример: защита от NaN для rsi
+    if not math.isnan(rsi) and 0 < rsi < 100 and (rsi < 35 or rsi > 65):
+        raw_score += weights["RSI"]
+        breakdown["RSI"] = weights["RSI"]
 
-    max_raw_score = sum([v for k, v in score_weights.items() if k in ["MACD", "EMA_CROSS", "RSI", "Volume", "HTF", "PriceAction"]])
+    # MACD выше сигнала?
+    if macd > macd_signal:
+        raw_score += weights["MACD"]
+        breakdown["MACD"] = weights["MACD"]
 
-    breakdown = {
-        "RSI": 0,
-        "MACD": 0,  # Added explicit primary signal
-        "EMA_CROSS": 0,
-        "Volume": 0,  # Added explicit secondary signal
-        "HTF": 0,
-        "PriceAction": 0,
-        # Keep legacy keys for backward compatibility
-        "MACD_RSI": 0,
-        "MACD_EMA": 0,
-        "VOLUME": 0,
-        "VOL_SPIKE": 0,
-        "PRICE_ACTION": 0,
-    }
+    # EMA пересечение
+    if ema_cross:
+        raw_score += weights["EMA_CROSS"]
+        breakdown["EMA_CROSS"] = weights["EMA_CROSS"]
 
-    if use_multi:
-        for tf in ["rsi_3m", "rsi_5m", "rsi_15m"]:
-            if latest.get(tf, 0) > rsi_threshold:
-                raw_score += 0.5
-                breakdown["RSI"] += 0.5
+    # Объёмный всплеск
+    if volume_spike:
+        raw_score += weights["Volume"]
+        breakdown["Volume"] = weights["Volume"]
 
-        if latest.get("macd_5m", 0) > latest.get("macd_signal_5m", 9999):
-            raw_score += 1.0
-            breakdown["MACD"] = 1.0  # New primary key
-            breakdown["MACD_EMA"] = 1.0  # Legacy key
+    # Тренд по старшему ТФ
+    if htf_trend:
+        raw_score += weights["HTF"]
+        breakdown["HTF"] = weights["HTF"]
 
-        if latest.get("atr_15m", 0) > 0:
-            raw_score += 0.5
-            breakdown["Volume"] = 0.5  # New secondary key
-            breakdown["VOLUME"] = 0.5  # Legacy key
+    # PriceAction (крупная свеча)
+    if price_action:
+        raw_score += weights["PriceAction"]
+        breakdown["PriceAction"] = weights["PriceAction"]
 
+    # Добавляем логи
+    if breakdown:
+        log(f"[ScoreDebug] {symbol} raw_score={raw_score:.2f}, breakdown={breakdown}", level="DEBUG")
     else:
-        rsi = latest["rsi"]
-        macd = latest["macd"]
-        signal = latest["macd_signal"]
-        htf_trend = latest.get("htf_trend", False)
+        log(f"[ScoreDebug] {symbol} has no active signals ⇒ score=0", level="INFO")
 
-        # Updated to "softer" thresholds as per optimization plan
-        rsi_lo, rsi_hi = (35, 65)  # Changed from 30/70
-        if ADAPTIVE_SCORE_ENABLED:
-            if price > ema:
-                rsi_lo, rsi_hi = (40, 70)  # Adjusted for uptrend
-            else:
-                rsi_lo, rsi_hi = (30, 60)  # Adjusted for downtrend
-
-        if rsi < rsi_lo or rsi > rsi_hi:
-            raw_score += score_weights["RSI"]
-            breakdown["RSI"] = score_weights["RSI"]
-
-        # MACD signal (primary)
-        if macd > signal:
-            raw_score += score_weights["MACD"]
-            breakdown["MACD"] = score_weights["MACD"]  # New primary key
-
-        # Maintain legacy keys for backward compatibility
-        if (macd > signal and rsi < 50) or (macd < signal and rsi > 50):
-            breakdown["MACD_RSI"] = score_weights["MACD_RSI"]
-
-        if (macd > signal and price > ema) or (macd < signal and price < ema):
-            breakdown["MACD_EMA"] = score_weights["MACD_EMA"]
-
-        if htf_trend and price > ema:
-            raw_score += score_weights["HTF"]
-            breakdown["HTF"] = score_weights["HTF"]
-
-        avg_volume = df["volume"].mean()
-        if latest["volume"] > avg_volume:
-            raw_score += score_weights["Volume"]
-            breakdown["Volume"] = score_weights["Volume"]  # New secondary key
-            breakdown["VOLUME"] = score_weights["Volume"]  # Legacy key
-
-    # Active symbol bonus
-    activity_data = load_activity()
-    recent_count = len(activity_data.get(symbol, []))
-    if recent_count >= 3:
-        raw_score += 0.2
-        breakdown["Activity"] = 0.2
-        log(f"{symbol} 🔔 Active symbol bonus: {recent_count} signals (score +0.2)", level="DEBUG")
-
-    has_crossover, direction = detect_ema_crossover(df)
-    if has_crossover and ((direction > 0 and price > ema) or (direction < 0 and price < ema)):
-        raw_score += score_weights["EMA_CROSS"]
-        breakdown["EMA_CROSS"] = score_weights["EMA_CROSS"]
-
-    if detect_volume_spike(df, lookback=5, threshold=1.5):
-        raw_score += score_weights["VOL_SPIKE"]
-        breakdown["VOL_SPIKE"] = score_weights["VOL_SPIKE"]
-        breakdown["Volume"] = max(breakdown["Volume"], score_weights["Volume"])  # Ensure secondary signal is set
-
-    if len(df) >= 6:
-        last_size = abs(latest["close"] - latest["open"])
-        avg_size = abs(df["close"].iloc[-6:-1] - df["open"].iloc[-6:-1]).mean()
-        if last_size > avg_size * 1.5:
-            if (latest["close"] > latest["open"] and price > ema) or (latest["close"] < latest["open"] and price < ema):
-                raw_score += score_weights["PriceAction"]
-                breakdown["PriceAction"] = score_weights["PriceAction"]  # New secondary key
-                breakdown["PRICE_ACTION"] = score_weights["PRICE_ACTION"]  # Legacy key
-
-    normalized_score = (raw_score / max_raw_score) * 5
-    final_score = round(normalized_score, 1)
-
-    atr = latest.get("atr") or latest.get("atr_15m") or 0
-    market_volatility = "medium"
-    if atr and price:
-        atr_pct = atr / price
-        if atr_pct > 0.018:
-            market_volatility = "high"
-        elif atr_pct < 0.005:
-            market_volatility = "low"
-
-    min_score = get_adaptive_min_score(balance, market_volatility, symbol)
-
-    with last_score_lock:
-        last_score_data[symbol] = {
-            "symbol": symbol,
-            "total": final_score,
-            "details": breakdown,
-            "threshold": min_score,
-            "final": final_score >= min_score,
-            "timestamp": datetime.utcnow(),
-            "market_volatility": market_volatility,
-        }
-
-    log_score_components(symbol, final_score, breakdown)
-
-    if DRY_RUN:
-        log(
-            f"{symbol or ''} 📊 Score: {final_score:.1f}/5 (raw: {raw_score:.2f}/{max_raw_score:.1f}), " f"Min required: {min_score:.1f}, Market volatility: {market_volatility}",
-            level="DEBUG",
-        )
-
-    # Return both score and breakdown for unified signal check
+    final_score = round(raw_score, 2)
     return final_score, breakdown
 
 

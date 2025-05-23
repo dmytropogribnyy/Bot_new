@@ -33,7 +33,7 @@ from core.trade_engine import close_real_trade, enter_trade, trade_manager
 from htf_optimizer import analyze_htf_winrate
 from ip_monitor import start_ip_monitor
 from missed_tracker import flush_best_missed_opportunities
-from pair_selector import auto_cleanup_signal_failures, select_active_symbols, start_symbol_rotation, track_missed_opportunities
+from pair_selector import auto_cleanup_signal_failures, auto_update_valid_pairs_if_needed, select_active_symbols, start_symbol_rotation, track_missed_opportunities
 from score_heatmap import generate_score_heatmap
 from stats import (
     generate_daily_report,
@@ -73,10 +73,10 @@ def get_trading_signal(symbol):
     """
     try:
         # Use the proper data fetching function that calculates indicators
-        from core.strategy import fetch_data
+        from core.strategy import fetch_data_multiframe
 
         # Fetch data with all indicators calculated
-        df = fetch_data(symbol)
+        df = fetch_data_multiframe(symbol)
         if df is None or len(df) < 10:
             log(f"[Signal] Insufficient data for {symbol}", level="WARNING")
             log_failure(symbol, ["insufficient_data"])
@@ -295,6 +295,9 @@ def start_trading_loop():
     # Обновленное сообщение с информацией о балансе
     message = f"Bot started in {mode} mode\nBalance: {starting_balance:.2f} USDC\nStrategy Bias: {bias} ({score})\nDRY_RUN: {str(DRY_RUN)}, VERBOSE: {str(VERBOSE)}"
     send_telegram_message(message, force=True, parse_mode="")
+
+    # Обновление valid_usdc_symbols.json при старте, если нужно
+    auto_update_valid_pairs_if_needed()
 
     # Загрузка символов
     symbols = load_symbols()

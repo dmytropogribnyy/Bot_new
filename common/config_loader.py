@@ -154,8 +154,6 @@ AGGRESSIVENESS_THRESHOLD = float(get_config("AGGRESSIVENESS_THRESHOLD", 0.6))
 # Enhanced scoring weights for short-term trading
 SCORE_WEIGHTS = {
     "RSI": 2.0,
-    "MACD_RSI": 2.5,
-    "MACD_EMA": 2.5,
     "HTF": 0.5,
     "VOLUME": 2.0,
     "EMA_CROSS": 3.0,
