@@ -6,6 +6,7 @@ import pandas as pd
 
 from common.config_loader import DRY_RUN, EXPORT_PATH, TAKER_FEE_RATE, TP_LOG_FILE
 from stats import now_with_timezone
+from utils_core import normalize_symbol
 from utils_logging import log
 
 # Global variables for tracking trades with enhanced duplicate prevention
@@ -66,6 +67,8 @@ def log_trade_result(
     exit_reason=None,
 ):
     """Log trade result with enhanced commission calculation and duplicate prevention."""
+    symbol = normalize_symbol(symbol)
+
     try:
         # Log to console even in DRY_RUN for debugging
         log(

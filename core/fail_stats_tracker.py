@@ -5,7 +5,7 @@ from datetime import datetime
 from threading import Lock
 
 from constants import FAIL_STATS_FILE
-from utils_core import get_runtime_config, update_runtime_config
+from utils_core import get_runtime_config, normalize_symbol, update_runtime_config
 from utils_logging import log
 
 fail_stats_lock = Lock()
@@ -27,6 +27,7 @@ def record_failure_reason(symbol, reasons):
         symbol (str): Trading pair symbol
         reasons (list): List of failure reasons (strings)
     """
+    symbol = normalize_symbol(symbol)
     if not reasons:
         return
 
@@ -173,6 +174,7 @@ def get_symbol_risk_factor(symbol):
         - 1.0 means full position size (no risk reduction)
         - 0.0-0.25 means high risk reduction
     """
+    symbol = normalize_symbol(symbol)
     try:
         # Get total failures for the symbol
         stats = get_signal_failure_stats()
@@ -209,6 +211,7 @@ def reset_failure_count(symbol):
     Args:
         symbol (str): Trading pair symbol
     """
+    symbol = normalize_symbol(symbol)
     with fail_stats_lock:
         try:
             if os.path.exists(FAIL_STATS_FILE):

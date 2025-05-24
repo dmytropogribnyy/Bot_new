@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 
 from constants import MISSED_SIGNALS_LOG_FILE
+from utils_core import normalize_symbol
 from utils_logging import log
 
 
@@ -17,6 +18,7 @@ def log_missed_signal(symbol, score, breakdown, reason=""):
         breakdown (dict): Components breakdown
         reason (str): Reason for signal rejection
     """
+    symbol = normalize_symbol(symbol)
     timestamp = datetime.utcnow().isoformat()
     log_entry = {"timestamp": timestamp, "symbol": symbol, "score": score, "breakdown": breakdown, "reason": reason}
 

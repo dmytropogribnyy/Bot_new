@@ -405,6 +405,13 @@ def get_min_net_profit(balance):
         return 0.5  # $0.5 for standard accounts (300+ USDC)
 
 
+def normalize_symbol(symbol: str) -> str:
+    """
+    Приводит символ к формату XXX/USDC:USDC, если нет :USDC на конце.
+    """
+    return symbol if ":USDC" in symbol else f"{symbol}:USDC"
+
+
 def calculate_risk_reward_ratio(entry_price, tp_price, sl_price, side):
     """
     Рассчитывает соотношение риск/прибыль для сделки.

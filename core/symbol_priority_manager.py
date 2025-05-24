@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import List, Tuple
 
 from common.config_loader import GLOBAL_SCALPING_TEST, get_priority_small_balance_pairs
+from utils_core import normalize_symbol
 from utils_logging import log
 
 
@@ -22,6 +23,7 @@ class SymbolPriorityManager:
 
     def update_symbol_performance(self, symbol: str, success: bool, reason: str = None):
         """Update symbol performance score based on trading outcome"""
+        symbol = normalize_symbol(symbol)
         current_time = time.time()
 
         # Clean old events

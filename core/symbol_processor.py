@@ -18,12 +18,7 @@ from core.trade_engine import (
     open_positions_lock,
 )
 from telegram.telegram_utils import send_telegram_message
-from utils_core import (
-    calculate_risk_reward_ratio,
-    check_min_profit,
-    get_max_positions,
-    get_min_net_profit,
-)
+from utils_core import calculate_risk_reward_ratio, check_min_profit, get_max_positions, get_min_net_profit, normalize_symbol
 from utils_logging import log
 
 
@@ -34,7 +29,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     и в случае валидного сигнала вызывает should_enter_trade(...).
     Возвращает словарь с планом сделки или None, если вход отменён.
     """
-
+    symbol = normalize_symbol(symbol)
     try:
         # Быстрая проверка входных данных
         if any(v is None for v in (symbol, balance, last_trade_times, lock)):

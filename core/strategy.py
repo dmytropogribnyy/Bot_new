@@ -13,7 +13,7 @@ from common.config_loader import (
 )
 from core.binance_api import fetch_ohlcv
 from core.trade_engine import trade_manager
-from utils_core import get_cached_balance, get_runtime_config, is_optimal_trading_hour
+from utils_core import get_cached_balance, get_runtime_config, is_optimal_trading_hour, normalize_symbol
 from utils_logging import log
 
 # == Глобальные переменные для слежения за последними сделками ==
@@ -316,6 +316,7 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
     4) Рассчитываем risk_percent, TP/SL, notional, etc
     5) Возвращаем (direction, score, is_reentry) либо (None, [reasons])
     """
+    symbol = normalize_symbol(symbol)
 
     from component_tracker import log_component_data
     from score_evaluator import calculate_score

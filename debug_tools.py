@@ -14,6 +14,7 @@ from core.strategy import fetch_data_multiframe
 from missed_tracker import flush_best_missed_opportunities
 from pair_selector import fetch_all_symbols
 from telegram.telegram_utils import register_command, send_telegram_message
+from utils_core import normalize_symbol
 from utils_logging import log
 
 
@@ -34,6 +35,8 @@ def run_full_diagnostic_monitoring():
     }
 
     for symbol in symbols:
+        symbol = normalize_symbol(symbol)
+
         try:
             df = fetch_data_multiframe(symbol)
             if df is None or len(df) < 20:

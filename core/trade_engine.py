@@ -58,6 +58,7 @@ from utils_core import (
     initialize_cache,
     is_optimal_trading_hour,
     load_state,
+    normalize_symbol,
     safe_call_retry,
 )
 from utils_logging import log, now
@@ -145,6 +146,8 @@ def safe_close_trade(binance_client, symbol, trade_data, reason="manual"):
     Safely close a trade by cancelling all orders and closing the position.
     This ensures clean exits without lingering orders.
     """
+    symbol = normalize_symbol(symbol)
+
     try:
         side = trade_data["side"]
         quantity = trade_data["quantity"]
@@ -321,6 +324,7 @@ def get_market_regime(symbol):
 
 
 def enter_trade(symbol, side, qty, score=5, is_reentry=False, breakdown=None):
+    symbol = normalize_symbol(symbol)
     state = load_state()
     if state.get("stopping"):
         log("Cannot enter trade: bot is stopping.", level="WARNING")
@@ -1027,6 +1031,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     Record trade result with enhanced exit reason categorization.
     Adds support for 'flat' exit type for trades that don't hit TP/SL targets.
     """
+    symbol = normalize_symbol(symbol)
     global open_positions_count, dry_run_positions_count
 
     caller_stack = traceback.format_stack()[-2]
@@ -1146,6 +1151,7 @@ def close_dry_trade(symbol):
 
 def close_real_trade(symbol):
     # Load state to check if bot is stopping
+    symbol = normalize_symbol(symbol)
     state = load_state()
     trade = trade_manager.get_trade(symbol)
 
@@ -1239,6 +1245,7 @@ def run_auto_profit_exit(symbol, side, entry_price, check_interval=5):
     Monitor position profit and automatically close when it reaches the profit threshold.
     Enhanced with TP1 protection and 60-minute time limit to avoid interfering with TP2.
     """
+    symbol = normalize_symbol(symbol)
     log(f"[Auto-Profit] Starting profit monitoring for {symbol} with entry price {entry_price}", level="DEBUG")
     time.time()
 
@@ -1555,6 +1562,7 @@ def check_micro_profit_exit(symbol, trade_data):
     """
     Automatically close trade if small profit percentage exceeds MICRO_PROFIT_THRESHOLD (in %)
     """
+    symbol = normalize_symbol(symbol)
     if not MICRO_PROFIT_ENABLED or DRY_RUN:
         return
 
@@ -1615,10 +1623,12 @@ def monitor_active_trades():
     """
     Periodically monitor open trades for micro-profit or timeout exit
     """
+
     while True:
         try:
             trades = trade_manager._trades.copy()
             for symbol, trade_data in trades.items():
+                symbol = normalize_symbol(symbol)
                 check_micro_profit_exit(symbol, trade_data)
                 check_stagnant_trade_exit(symbol, trade_data)
         except Exception as e:

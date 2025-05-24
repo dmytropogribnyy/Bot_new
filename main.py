@@ -51,7 +51,7 @@ from tools.continuous_scanner import continuous_scan, fetch_all_symbols
 from tp_logger import ensure_log_exists
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
-from utils_core import get_cached_balance, initialize_cache, load_state, reset_state_flags, save_state
+from utils_core import get_cached_balance, initialize_cache, load_state, normalize_symbol, reset_state_flags, save_state
 from utils_logging import add_log_separator, log
 
 # Initialize RISK_PERCENT after imports to avoid circular import issues
@@ -71,6 +71,8 @@ def get_trading_signal(symbol):
     Returns:
         dict: Signal data with side, qty, and score, or None if no signal
     """
+    symbol = normalize_symbol(symbol)
+
     try:
         # Use the proper data fetching function that calculates indicators
         from core.strategy import fetch_data_multiframe
@@ -482,6 +484,10 @@ if __name__ == "__main__":
     from apscheduler.schedulers.background import BackgroundScheduler
 
     scheduler = BackgroundScheduler()
+
+    from core.filter_optimizer import optimize_filter_tiers
+
+    scheduler.add_job(optimize_filter_tiers, "cron", hour=3, minute=0, id="filter_optimizer")
 
     # ✅ Установка времени запуска для ip_monitor логики
     import ip_monitor

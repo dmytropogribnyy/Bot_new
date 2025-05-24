@@ -30,7 +30,7 @@ def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
         return
 
     # Get account balance
-    from utils_core import get_cached_balance
+    from utils_core import get_cached_balance, normalize_symbol
 
     balance = get_cached_balance()
 
@@ -45,7 +45,7 @@ def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
     # Check if this is a priority pair for small accounts
     from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
 
-    symbol = trade.get("symbol", "")
+    symbol = normalize_symbol(trade.get("symbol", ""))
     is_priority = "Yes" if symbol in PRIORITY_SMALL_BALANCE_PAIRS else "No"
 
     # Calculate expected profit (simple approximation)
