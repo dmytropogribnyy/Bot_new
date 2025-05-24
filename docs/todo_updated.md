@@ -141,3 +141,247 @@ Phase 2.7: вынесен в отдельный блок «Следующие ш
 📌 Осталось реализовать задачи блока Phase 2.7 — они уже прописаны в todo_updated.md чётко и по шагам.
 
 Хочешь — могу выделить их как отдельный milestone: Phase 2.7, или создать файл phase_2.7_plan.md для фокуса.
+
+Что уже сделано
+Обновлённая архитектура отбора и фильтрации пар
+
+𝑝
+𝑎
+𝑖
+𝑟
+𝑠
+𝑒
+𝑙
+𝑒
+𝑐
+𝑡
+𝑜
+𝑟
+.
+𝑝
+𝑦
+pair
+s
+​
+elector.py использует ATR/Volume;
+
+𝑟
+𝑢
+𝑛
+𝑡
+𝑖
+𝑚
+𝑒
+𝑐
+𝑜
+𝑛
+𝑓
+𝑖
+𝑔
+.
+𝑗
+𝑠
+𝑜
+𝑛
+runtime
+c
+​
+onfig.json содержит новые FILTER_TIERS;
+
+score=0 больше не выкидывается, а только влияет на сортировку.
+
+Полная поддержка normalize_symbol() и формата BTC/USDC:USDC
+
+Везде исправлены вызовы (debug_tools.py, filter_optimizer.py, missed_logger, strategy, и т.д.).
+
+Учитываются atr_percent и volume_usdc
+
+Точно сравниваем atr_percent с tier["atr"] (пример: 0.006 = 0.6%);
+
+volume_usdc = mean(volume) × price (пример: 600+ USDC).
+
+Параметры relax_factor, score_relax_boost, FILTER_TIERS
+
+Позволяют смягчать фильтры при «жёстком» рынке;
+
+‘
+𝑠
+𝑐
+𝑜
+𝑟
+𝑒
+𝑟
+𝑒
+𝑙
+𝑎
+𝑥
+𝑏
+𝑜
+𝑜
+𝑠
+𝑡
+=
+1.5
+‘
+даётбольшешансовнизкому
+𝑠
+𝑐
+𝑜
+𝑟
+𝑒
+‘score
+r
+​
+elax
+b
+​
+oost=1.5‘даётбольшешансовнизкомуscore.
+
+Fallback
+
+Если не набирается достаточно пар после сортировки, бот выбирает минимум (min_dynamic_pairs) — не остаётся с пустым списком.
+
+Continuous scan
+
+Внедрена новая логика continuous_scan.py:
+
+учитываются ATR, performance_score, volume;
+
+есть relaxation_stages (Standard → Moderate → Relaxed → Minimum);
+
+пишется результат в INACTIVE_CANDIDATES_FILE;
+
+учитывает поля из runtime_config: scanner_min_candidates и min_perf_score.
+
+runtime_config.json согласован с логикой
+
+Добавлены scanner_min_candidates, min_perf_score, скорректированы rsi_threshold, relax_factor, FILTER_TIERS (смягчённые значения).
+
+Переход к Phase 2.7
+
+Все задачи шагов 2–6 (по плану) закрыты;
+
+Создана основа для дальнейших улучшений.
+
+Что ещё осталось (Phase 2.7)
+По словам 4о (и из todo_updated.md) есть ещё несколько задач, которые не активированы:
+
+Запуск select_active_symbols() по расписанию (через scheduler)
+
+В main.py уже вызывается start_symbol_rotation(stop_event) — но если хотите другой интервал или чёткое CRON-расписание, можно добавить в APScheduler, например:
+
+python
+Copy
+scheduler.add_job(select_active_symbols, "interval", minutes=30)
+Тогда ротация будет происходить не только «адаптивно» внутри start_symbol_rotation(), но и по фиксированному расписанию.
+
+Автоослабление фильтров, если 0 пар
+
+Дополнительная логика: если selected_dyn пуст, можно ещё раз вызывать ротацию, уменьшать ATR/volume, прежде чем fallback.
+
+Это можно встроить прямо в select_active_symbols() (или вынести в отдельный метод).
+
+Использовать ATR BTC/USDC как индикатор рыночной волатильности
+
+Сейчас в pair_selector.py мы берём market_volatility = get_market_volatility_index(), но эта функция усреднённая.
+
+Можно сделать точечно: «Если у BTC/USDC ATR% упал <0.3%, считаем рынок тихим → ослабить FILTER_TIERS».
+
+Уведомление в Telegram при 0 of N passed
+
+Если все пары отсеялись (или ни одна не прошла) → делать send_telegram_message с причинами.
+
+Удобно для live-контроля.
+
+Итоговое резюме
+Все текущие шаги 2–6 действительно завершены:
+
+Отбор по ATR/Volume, score=0 не удаляется, fallback работает, continuous_scan обновлён, runtime_config согласован.
+
+Бот стабилен и уже работает как «live-адаптивный».
+
+Следующие шаги (Phase 2.7)
+Расширить расписание ротации (Scheduler, CRON, либо адаптивно)
+
+Реализовать автоослабление (auto-lowering фильтров при «0 пар отобрано»)
+
+Подключить ATR BTC/USDC как глобальный показатель волатильности
+
+Добавить Telegram-уведомление, если 0 из N вообще не проходят
+
+(Опционально) Автосоздание tp_performance.csv, missed_opportunities.json если их нет
+
+После этого можно плавно двигаться к более сложным улучшениям (Phase 3.0): re-entry, websocket-сигналы, AI-адаптация, и т.д.
+
+## Additional to check and implement if appropriate
+
+🔜 Опциональный план (Phase 2.7 → 3.0+)
+🧠 Phase 2.7 — Расширенная адаптация
+Задача Статус Комментарий
+📉 Auto-lowering фильтров при 0 пар ⏳ Внутри select_active_symbols() — вызывать повторно с мягче TIER, если selected_dyn == []
+📈 Использовать ATR BTC/USDC как индикатор «глухого рынка» ⏳ Если atr_percent < 0.3 — ослабить FILTER_TIERS
+📬 Telegram alert при 0 of N passed ⏳ Например: send_telegram_message("0 pairs passed filters", ...)
+🧼 Автосоздание tp_performance.csv, missed_opportunities.json ⏳ Избежать FileNotFoundError при первом старте
+
+🧩 Phase 2.8–3.0 — Интеллектуальная логика и re-entry
+Задача Статус Комментарий
+🔄 Re-entry логика (вход повторно по сигналу) ✳️ Пока не реализовано — можно через signal reuse
+📊 Графики PnL, streaks, winrate в Telegram ✳️ Часть визуализации Phase 3
+🔁 Поддержка WebSocket / real-time сигналы ✳️ Перейти с polling на push
+🧠 Signal Intelligence: рейтинг сигналов, автоотбраковка слабых ✳️ Интеграция с component_tracker / missed_signal_logger
+
+📦 Дополнительные (на выбор):
+Переход к v2.0: объединение select_active_symbols, scanner, optimizer в гибкий модуль symbol_controller
+
+Автоадаптация min_dynamic_pairs по балансу/волатильности
+
+Повторная попытка отбора через fallback → continuous_candidates → backup logic
+
+🔥 Что лучше сделать сразу (приоритетные шаги Phase 2.7)
+
+1. ✅ Auto-lowering фильтров при 0 пар
+   📌 Почему важно: чтобы бот не оставался без пар на старте или при низкой волатильности.
+
+🔧 Реализация:
+
+в select_active_symbols():
+
+python
+Copy
+Edit
+if not selected_dyn and filtered_data:
+log("⚠️ No pairs selected — applying fallback from filtered_data", level="WARNING")
+selected_dyn = list(filtered_data.keys())[:min_dyn]
+
+elif not selected_dyn:
+log("⚠️ No pairs passed even first FILTER_TIERS — trying soft tier or sending alert", level="WARNING")
+send_telegram_message("🚨 0 pairs passed filters. Consider relaxing FILTER_TIERS", force=True) 2. ✅ Telegram alert при 0 из N прошли
+📌 Почему важно: чтобы ты знал, что бот просто не видит сигналов, а не «сломался».
+
+3. ✅ Автосоздание tp_performance.csv и missed_opportunities.json
+   📌 Почему важно: чтобы не было FileNotFoundError на старте.
+
+🔧 Реализация (в utils или init):
+
+python
+Copy
+Edit
+for path in ["data/missed_opportunities.json", "data/tp_performance.csv"]:
+if not os.path.exists(path):
+with open(path, "w") as f:
+f.write("{}" if path.endswith(".json") else "symbol,tp1,tp2,sl,result,timestamp\\n")
+🔜 Остальные можно позже (Phase 3+)
+Подключение ATR BTC/USDC как market volatility индикатора
+
+Signal Intelligence (рейтинг сигналов, динамическое исключение)
+
+WebSocket сигналы
+
+Re-entry логика
+
+📦 Резюме:
+Шаг Приоритет Делать сейчас?
+auto-lowering + Telegram alert при 0 passed 🔥 Высокий ✅ Да
+автоинициализация JSON/CSV ✅ Средний ✅ Да
+ATR BTC/USDC как proxy ⚠️ Средний позже
+WebSocket + AI-интеллект 🔄 Низкий позже

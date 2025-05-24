@@ -485,6 +485,14 @@ if __name__ == "__main__":
 
     scheduler = BackgroundScheduler()
 
+    from pair_selector import select_active_symbols
+
+    def rotate_symbols():
+        symbols = select_active_symbols()
+        log(f"🔁 Symbol re-rotation completed. {len(symbols)} pairs loaded.", level="INFO")
+
+    scheduler.add_job(rotate_symbols, "interval", minutes=30, id="symbol_rotation")
+
     from core.filter_optimizer import optimize_filter_tiers
 
     scheduler.add_job(optimize_filter_tiers, "cron", hour=3, minute=0, id="filter_optimizer")
