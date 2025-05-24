@@ -22,7 +22,6 @@ from common.config_loader import (
 )
 from constants import PERFORMANCE_FILE, SIGNAL_FAILURES_FILE, SYMBOLS_FILE
 from core.binance_api import convert_symbol
-from core.dynamic_filters import get_market_regime_from_indicators
 from core.exchange_init import exchange
 from core.fail_stats_tracker import FAIL_STATS_FILE, get_symbol_risk_factor
 from core.priority_evaluator import generate_priority_pairs, save_priority_pairs
@@ -418,180 +417,98 @@ def select_active_symbols():
     """
     Select the most promising symbols for trading.
     Enhanced with graduated risk approach and multi-tier filtering.
+    But now we ONLY filter by ATR/Volume — no performance score filtering.
     """
     # Initialize rejection tracking
     rejected_pairs = {}
     recovery_triggered = False  # Flag to prevent duplicate logging
 
-    # Load performance data
+    # 1) Подготовка исторической статистики и конфигов
     load_pair_performance()
-
-    # Update priority pairs periodically
     update_priority_pairs()
 
-    # Get runtime config for failure threshold and blocked symbols
     runtime_config = get_runtime_config()
-    runtime_config.get("blocked_symbols", {})
+    max_failures_per_symbol = runtime_config.get("FAILURE_BLOCK_THRESHOLD", 30)
+    failure_penalty = 0.2
 
-    # Use the same threshold as fail_stats_tracker.py
-    MAX_FAILURES_PER_SYMBOL = runtime_config.get("FAILURE_BLOCK_THRESHOLD", 30)
-    FAILURE_PENALTY = 0.2
-
-    # Load failure statistics
     failure_stats = load_failure_stats()
+    missed_data = load_json_file(MISSED_OPPORTUNITIES_FILE, default={})
+    activity_data = load_json_file(SIGNAL_ACTIVITY_FILE, default={})
 
-    # Load missed opportunities and symbol activity data
-    missed_data = load_json_file(MISSED_OPPORTUNITIES_FILE)
-    activity_data = load_json_file(SIGNAL_ACTIVITY_FILE)
-
-    # Get all available symbols (primary method)
+    # 2) Загружаем список всех символов
     raw_symbols = fetch_all_symbols()
-    all_symbols = []
-    for s in raw_symbols:
-        # Гарантируем, что символ будет в формате "XXX/USDC:USDC"
-        fixed_s = normalize_symbol(s)
-        all_symbols.append(fixed_s)
-
-    if not all_symbols:
+    if not raw_symbols:
         log("⚠️ fetch_all_symbols returned empty, aborting symbol selection.", level="ERROR")
         return []
 
-    # 🔎 Mass risk check before selection - for monitoring only
-    from datetime import datetime, timezone
+    all_symbols = [normalize_symbol(s) for s in raw_symbols]
 
-    datetime.now(timezone.utc)
+    # 3) Мониторинг процента high_risk (только лог и телеграм)
     high_risk_count = 0
     high_risk_details = []
-
     for symbol in all_symbols:
-        # Use risk factor instead of binary blocking
         risk_factor, block_info = get_symbol_risk_factor(symbol)
         if risk_factor < 0.25:
             high_risk_count += 1
             failures = block_info.get("total_failures", 0) if block_info else 0
-            high_risk_details.append(f"{symbol} ({failures} failures, {risk_factor:.2f}x)")
+            high_risk_details.append(f"{symbol} ({failures} failures, risk={risk_factor:.2f})")
 
-    # Dynamic thresholds for high risk detection - for monitoring only
-    MIN_REQUIRED_PAIRS = 3
-    WARNING_THRESHOLD = 0.3  # 30% high risk triggers warning
-    CRITICAL_THRESHOLD = 0.5  # 50% high risk triggers critical alert
+    risk_ratio = high_risk_count / len(all_symbols)
+    # Если нужно — отправляем предупреждение
+    if risk_ratio >= 0.3:
+        msg = f"⚠️ High risk: {high_risk_count}/{len(all_symbols)} symbols " f"({risk_ratio:.1%}) have risk<0.25"
+        send_telegram_message(msg, force=True)
+        log(msg, level="WARNING")
 
-    if all_symbols:
-        risk_ratio = high_risk_count / len(all_symbols)
-        safe_count = len(all_symbols) - high_risk_count
-        is_critical = risk_ratio >= CRITICAL_THRESHOLD
-        is_warning = risk_ratio >= WARNING_THRESHOLD
-        is_insufficient = safe_count < MIN_REQUIRED_PAIRS * 2
-
-        if is_critical or (is_warning and is_insufficient):
-            high_risk_details.sort()
-            examples = high_risk_details[:10]
-
-            message = (
-                f"⚠️ High risk symbols detected: {high_risk_count} of {len(all_symbols)} "
-                f"symbols ({risk_ratio:.1%}) with risk factor < 0.25\n"
-                f"Using graduated risk approach for trading.\n"
-            )
-
-            if examples:
-                message += "Highest risk symbols:\n" + "\n".join(examples)
-
-            if is_critical:
-                message = "🛑 NOTE: " + message
-            elif is_insufficient:
-                message += f"\n⚡ Below recommended minimum ({MIN_REQUIRED_PAIRS * 2} safe pairs)"
-
-            send_telegram_message(message, force=True)
-
-            log_level = "WARNING" if is_critical else "INFO"
-            log(f"High risk symbols: {high_risk_count}/{len(all_symbols)} " f"({risk_ratio:.1%}) at risk factor < 0.25", level=log_level)
-
-    # Determine pair limits based on account size
+    # 4) Считываем лимиты min_dyn / max_dyn, адаптируем по волатильности
     balance = get_cached_balance()
     min_dyn, max_dyn = get_pair_limits()
-
-    # Adapt pair count based on market volatility
     market_volatility = get_market_volatility_index()
-    if market_volatility > 1.5:  # High volatility - trending market
-        # Focus on fewer pairs during high volatility
-        max_dyn = min(max_dyn, 4)  # Limit to maximum 4 pairs
-        log(f"Market volatility high ({market_volatility:.2f}) - limiting to max {max_dyn} pairs", level="INFO")
-    elif market_volatility < 0.8:  # Low volatility - ranging market
-        # Increase pairs during low volatility
+
+    if market_volatility > 1.5:  # слишком высокая волатильность
+        max_dyn = min(max_dyn, 4)
+        log(f"Market volatility high ({market_volatility:.2f}) => max_dyn={max_dyn}", level="INFO")
+    elif market_volatility < 0.8:  # очень тихий рынок
         min_dyn = min(min_dyn + 2, max_dyn)
-        log(f"Market volatility low ({market_volatility:.2f}) - increasing to min {min_dyn} pairs", level="INFO")
+        log(f"Market volatility low ({market_volatility:.2f}) => min_dyn={min_dyn}", level="INFO")
 
     log(f"Adaptive pair limits: min={min_dyn}, max={max_dyn}", level="INFO")
 
-    # Fixed pairs and priority pairs
     fixed = FIXED_PAIRS
     priority_pairs = get_priority_small_balance_pairs() if balance < 300 else []
 
-    # Dictionary to store price data for correlation analysis
-    price_data = {}
-
-    # === Collect data for all symbols (building dynamic_data) ===
     dynamic_data = {}
-    for s in all_symbols:
-        if s in fixed:
-            # Immediately mark reason as 'fixed_pair' (we won't remove them, just track it)
-            rejected_pairs[s] = "fixed_pair"
+    # 5) Собираем данные для всех символов (risk_factor, performance_score, atr, volume)
+    for symbol in all_symbols:
+        if symbol in fixed:
+            # Просто отметим причину (fixed_pair), но позже всё равно добавим
+            rejected_pairs[symbol] = "fixed_pair"
             continue
 
-        # Use risk factor instead of binary blocking
-        risk_factor, block_info = get_symbol_risk_factor(s)
+        risk_factor, block_info = get_symbol_risk_factor(symbol)
         if risk_factor < 0.25:
-            # For very high risk symbols, log but still continue processing
-            failures = block_info.get("total_failures", 0) if block_info else 0
-            log(f"{s} has high risk factor: {risk_factor:.2f} (failures: {failures})", level="WARNING")
+            log(f"{symbol} has high risk factor: {risk_factor:.2f}", level="WARNING")
 
-        # Fetch 15min data for general analysis
-        df_15m = fetch_symbol_data(s, timeframe="15m", limit=100)
+        df_15m = fetch_symbol_data(symbol, timeframe="15m", limit=100)
         if df_15m is None or len(df_15m) < 20:
-            rejected_pairs[s] = "insufficient_data"
+            rejected_pairs[symbol] = "insufficient_data"
             continue
 
-        # Store price data for correlation analysis
-        price_data[s] = df_15m["close"].values
-
-        # Calculate standard metrics
-        vol = calculate_volatility(df_15m)  # range-based
-        atr_val = calculate_atr_volatility(df_15m)  # => ATR / Price  ### NEW
-        mean_volume_coins = df_15m["volume"].mean()
+        # Расчёт метрик
         last_price = df_15m["close"].iloc[-1]
-        volume_usdc = mean_volume_coins * last_price  # 💰 пересчёт в USDC
+        vol = calculate_volatility(df_15m)
+        atr_val = calculate_atr_volatility(df_15m)
+        volume_usdc = df_15m["volume"].mean() * last_price
 
-        # Calculate short-term metrics
         st_metrics = calculate_short_term_metrics(df_15m)
+        perf_score = get_performance_score(symbol)  # Не фильтруем, но оставим для сортировки
 
-        # Get historical performance score
-        perf_score = get_performance_score(s)
-
-        # Reject if performance score too low (only if not ignored)
-        if not runtime_config.get("ignore_performance_score", False):
-            # Adaptive threshold based on balance/aggressiveness
-            base_threshold = 0.2
-            if balance < 100:
-                base_threshold = 0.1
-            elif balance < 250:
-                base_threshold = 0.15
-
-            if perf_score < base_threshold:
-                rejected_pairs[s] = "low_score"
-                log(f"{s} ⛔️ Rejected due to low performance score: {perf_score:.2f} < {base_threshold:.2f}", level="DEBUG")
-                continue
-        else:
-            log(f"{s} ⚠️ Score={perf_score:.2f} ignored due to ignore_performance_score=True", level="DEBUG")
-
-        current_price = df_15m["close"].iloc[-1]
-
-        # === Build the dynamic_data record ===
-        dynamic_data[s] = {
-            # Полезно хранить atr_percent отдельно (то, что реально сравнимо с tier["atr"])
-            "atr_percent": atr_val,  # <--- ВАЖНО, теперь есть % (напр. 0.005 = 0.5%)
+        # Собираем "динамические" поля
+        dynamic_data[symbol] = {
+            "atr_percent": atr_val,  # atr / close
             "volume": volume_usdc,
-            "volatility_score": vol,  # если нужно для score, но не для tier-фильтра
-            "price": current_price,
+            "volatility_score": vol,
+            "price": last_price,
             "momentum": st_metrics["momentum"],
             "volatility_ratio": st_metrics["volatility_ratio"],
             "volume_trend": st_metrics["volume_trend"],
@@ -601,282 +518,200 @@ def select_active_symbols():
             "risk_factor": risk_factor,
         }
 
-        # Boost for missed opportunities
-        if s in missed_data and missed_data[s].get("count", 0) >= 2:
-            bonus = 0.2
-            dynamic_data[s]["performance_score"] += bonus
-            log(f"{s} ⬆️ Missed bonus applied: +{bonus}", level="DEBUG")
+        # boost missed opportunities
+        if symbol in missed_data and missed_data[symbol].get("count", 0) >= 2:
+            dynamic_data[symbol]["performance_score"] += 0.2
 
-        # Boost for symbol activity
-        activity_timestamps = activity_data.get(s, [])
-        activity_count = len(activity_timestamps)
+        # boost activity
+        activity_count = len(activity_data.get(symbol, []))
         if activity_count >= 10:
-            activity_bonus = 0.1 + min(activity_count / 100, 0.2)
-            dynamic_data[s]["performance_score"] += activity_bonus
-            log(f"{s} ⬆️ Activity bonus applied: +{activity_bonus:.2f} (activity: {activity_count})", level="DEBUG")
+            bonus = 0.1 + min(activity_count / 100, 0.2)
+            dynamic_data[symbol]["performance_score"] += bonus
 
-        # Adjust score for failure penalties
-        failures = failure_stats.get(s, {})
-        total_failures = sum(failures.values())
-        if total_failures >= MAX_FAILURES_PER_SYMBOL:
-            penalty = FAILURE_PENALTY * (total_failures / MAX_FAILURES_PER_SYMBOL)
-            dynamic_data[s]["performance_score"] = max(dynamic_data[s]["performance_score"] - penalty, 0)
-            log(f"{s} ⚠️ Failure penalty applied: -{penalty:.2f} (failures: {total_failures})", level="DEBUG")
+        # penalty by failures
+        total_failures = sum(failure_stats.get(symbol, {}).values())
+        if total_failures >= max_failures_per_symbol:
+            penalty = failure_penalty * (total_failures / max_failures_per_symbol)
+            dynamic_data[symbol]["performance_score"] = max(dynamic_data[symbol]["performance_score"] - penalty, 0)
 
-    # === FILTER TIERS (using atr_percent) ===
-    tiers = get_filter_tiers()
+    # 6) Фильтрация ТОЛЬКО по ATR/Volume (multi-tier)
+    tiers = get_filter_tiers()  # user function returning list of {"atr":..., "volume":...}
     filtered_data = {}
 
     for tier in tiers:
         filtered_data = {}
-        for s, d in dynamic_data.items():
-            atr = d.get("atr_percent", 0)  # <--- ВАЖНО: процентный ATR
-            volume = d.get("volume", 0)  # mean candle volume
-
-            # Если нужно, вызывать get_market_regime_from_indicators(...)
-            adx = 20
-            bb_width = 0.03
-            _market_regime = get_market_regime_from_indicators(adx, bb_width)
-
-            # Сравниваем atr_percent с tier["atr"] (например 0.006=0.6%)
-            if atr >= tier["atr"] and volume >= tier["volume"]:
-                filtered_data[s] = d
+        for sym, info in dynamic_data.items():
+            atr_p = info["atr_percent"]  # доля: 0.006 => 0.6%
+            vol_usdc = info["volume"]
+            if atr_p >= tier["atr"] and vol_usdc >= tier["volume"]:
+                filtered_data[sym] = info
             else:
-                reason = "low_volatility" if atr < tier["atr"] else "low_volume"
-                rejected_pairs[s] = reason
-                log(f"{s} ⛔️ Filtered out by tier: {reason}", level="DEBUG")
+                reason = "low_volatility" if atr_p < tier["atr"] else "low_volume"
+                rejected_pairs[sym] = reason
 
         if len(filtered_data) >= min_dyn:
-            log(f"[FilterTier] {len(filtered_data)} symbols passed tier ATR≥{tier['atr']}, VOL≥{tier['volume']}", level="INFO")
+            log(f"[FilterTier] {len(filtered_data)} symbols passed ATR≥{tier['atr']}, VOL≥{tier['volume']}", level="INFO")
             break
         else:
-            log(f"[FilterTier] Only {len(filtered_data)} passed this tier => trying next tier...", level="INFO")
+            log(f"[FilterTier] Only {len(filtered_data)} passed => trying next tier...", level="INFO")
 
-    # === Далее идёт логика разделения на small account / large account ===
     if not filtered_data:
         log("⚠️ After all tiers, still no pairs found for trading", level="WARNING")
 
-    # В остальном оставляем ваш код: корреляция, small vs large, fallback и т.д.
-    # ----------------------------------------------------------------------------
-    # (ниже практически без изменений, только заменяем 'dynamic_data' на 'filtered_data'
-    #  потому что именно 'filtered_data' мы хотим сортировать)
-
-    # Calculate correlation matrix if we have enough pairs
+    # 7) Корреляция, small vs large account, fallback
+    #    — логика та же, только берём pairs из filtered_data.
+    #    (см. оригинальный код)
     price_data = {}
     for sym in filtered_data.keys():
-        df_15m = fetch_symbol_data(sym, timeframe="15m", limit=100)
-        if df_15m is not None and len(df_15m) >= 2:
-            price_data[sym] = df_15m["close"].values
+        df_ = fetch_symbol_data(sym, timeframe="15m", limit=100)
+        if df_ is not None and len(df_) >= 2:
+            price_data[sym] = df_["close"].values
 
     corr_matrix = calculate_correlation(price_data) if len(price_data) > 1 else None
 
-    # Подбираем final pairs
+    # ----- Пример: small vs large account -----
     if balance < 300:
-        # For small accounts: prioritize short-term momentum and low price
+        # Собираем финальный «оценочный» балл (short_term_score) + performance_score
         sorted_dyn = []
         for s, data in filtered_data.items():
-            short_term_score = data["momentum"] * 0.4 + data["volume_trend"] * 0.3 + (data["performance_score"] * 2) + data["rsi_signal"] * 0.5
-            # micro-trade
-            micro_trade_suitability = 0
-            price = data["price"]
-            if price < 1:
-                micro_trade_suitability += 3
-            elif price < 10:
-                micro_trade_suitability += 2
-            elif price < 50:
-                micro_trade_suitability += 1
-            short_term_score += micro_trade_suitability * 0.5
+            st_score = data["momentum"] * 0.4 + data["volume_trend"] * 0.3 + data["performance_score"] * 2 + data["rsi_signal"] * 0.5
+            # micro-trade preference
+            micro_bonus = 0
+            if data["price"] < 1:
+                micro_bonus += 3
+            elif data["price"] < 10:
+                micro_bonus += 2
+            elif data["price"] < 50:
+                micro_bonus += 1
+            st_score += micro_bonus * 0.5
 
-            price_factor = 1 / (price + 0.1)
-            risk_factor = data.get("risk_factor", 1.0)
-            final_score = short_term_score * price_factor * risk_factor
+            price_factor = 1 / (data["price"] + 0.1)
+            risk_factor = data["risk_factor"]
+            final_score = st_score * price_factor * risk_factor
 
-            # cooling period check
-            in_cooling_period = False
-            if "trade_history" in pair_performance.get(s, {}):
-                last_3 = pair_performance[s]["trade_history"][-3:]
-                if len(last_3) == 3 and all(not t.get("win", False) for t in last_3):
-                    last_traded = datetime.fromisoformat(pair_performance[s].get("last_traded", datetime.min.isoformat()))
-                    hours_since_traded = (datetime.now() - last_traded).total_seconds() / 3600
-                    if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
-                        final_score *= 0.5
-                        in_cooling_period = True
+            sorted_dyn.append((s, final_score))
 
-            sorted_dyn.append((s, final_score, in_cooling_period))
-
-        # Sort desc
+        # Сортируем
         sorted_dyn.sort(key=lambda x: x[1], reverse=True)
 
+        # Первым делом — priority_pairs
         final_pairs = []
-        for pair in priority_pairs:
-            if pair in filtered_data:
-                final_pairs.append(pair)
-                log(f"Added priority pair for small account: {pair}", level="INFO")
+        for p in priority_pairs:
+            if p in filtered_data:
+                final_pairs.append(p)
 
-        remaining_slots = min(min_dyn, max_dyn) - len(final_pairs)
-        added_pairs = set(final_pairs)
-
-        for pair, score, cooling in sorted_dyn:
-            if remaining_slots <= 0:
+        added = set(final_pairs)
+        slots = min(min_dyn, max_dyn) - len(final_pairs)
+        for sym, sc in sorted_dyn:
+            if slots <= 0:
                 break
-            if pair in added_pairs or pair in fixed:
-                rejected_pairs[pair] = "already_added"
+            if sym in added or sym in fixed:
                 continue
 
-            # correlation check
-            if corr_matrix is not None and len(added_pairs) > 0:
-                highly_correlated = False
-                correlation_threshold = 0.9
-                for added_pair in added_pairs:
-                    if pair in corr_matrix.index and added_pair in corr_matrix.columns:
-                        if abs(corr_matrix.loc[pair, added_pair]) > correlation_threshold:
-                            highly_correlated = True
-                            log(f"Skipping {pair} due to high correlation with {added_pair}", level="DEBUG")
+            # коррел. проверка
+            if corr_matrix is not None and len(added) > 0:
+                skip = False
+                for already in added:
+                    if sym in corr_matrix.index and already in corr_matrix.columns:
+                        if abs(corr_matrix.loc[sym, already]) > 0.9:
+                            skip = True
                             break
-                if highly_correlated:
-                    rejected_pairs[pair] = "high_correlation"
+                if skip:
                     continue
 
-            final_pairs.append(pair)
-            added_pairs.add(pair)
-            remaining_slots -= 1
-
-            if cooling:
-                log(f"Added dynamic pair with reduced score (cooling): {pair} (score: {score:.2f})", level="DEBUG")
-            else:
-                log(f"Added dynamic pair: {pair} (score: {score:.2f})", level="DEBUG")
+            final_pairs.append(sym)
+            added.add(sym)
+            slots -= 1
 
         selected_dyn = final_pairs
+
     else:
-        # For larger accounts: standard approach
+        # Для больших аккаунтов - используем «composite_score»
         pairs_with_scores = []
         for s, data in filtered_data.items():
-            risk_factor = data.get("risk_factor", 1.0)
-            composite_score = (
-                data["volatility_score"] * data["volume"] * 0.5  # if you want to keep old weighting
-                + data["momentum"] * 10 * 0.3
-                + data["performance_score"] * 0.2
-            )
-            composite_score *= risk_factor
+            risk_factor = data["risk_factor"]
+            cscore = (data["volatility_score"] * data["volume"] * 0.5 + data["momentum"] * 3 + data["performance_score"] * 0.2) * risk_factor
+            pairs_with_scores.append((s, cscore))
 
-            in_cooling_period = False
-            if "trade_history" in pair_performance.get(s, {}):
-                last_3 = pair_performance[s]["trade_history"][-3:]
-                if len(last_3) == 3 and all(not t.get("win", False) for t in last_3):
-                    last_traded = datetime.fromisoformat(pair_performance[s].get("last_traded", datetime.min.isoformat()))
-                    hours_since_traded = (datetime.now() - last_traded).total_seconds() / 3600
-                    if hours_since_traded < PAIR_COOLING_PERIOD_HOURS:
-                        composite_score *= 0.5
-                        in_cooling_period = True
+        pairs_with_scores.sort(key=lambda x: x[1], reverse=True)
 
-            pairs_with_scores.append((s, composite_score, in_cooling_period))
-
-        sorted_dyn = sorted(pairs_with_scores, key=lambda x: x[1], reverse=True)
-
-        uncorrelated_pairs = []
-        added_pairs = set()
-
-        for pair, score, cooling in sorted_dyn:
-            if pair in added_pairs:
-                rejected_pairs[pair] = "already_added"
+        uncorrelated = []
+        added = set()
+        for sym, sc in pairs_with_scores:
+            if sym in added:
                 continue
-            if corr_matrix is not None and len(added_pairs) > 0:
-                highly_correlated = False
-                correlation_threshold = 0.9
-                for added_pair in added_pairs:
-                    if pair in corr_matrix.index and added_pair in corr_matrix.columns:
-                        if abs(corr_matrix.loc[pair, added_pair]) > correlation_threshold:
-                            highly_correlated = True
+            if corr_matrix is not None and len(added) > 0:
+                skip = False
+                for a_ in added:
+                    if sym in corr_matrix.index and a_ in corr_matrix.columns:
+                        if abs(corr_matrix.loc[sym, a_]) > 0.9:
+                            skip = True
                             break
-                if highly_correlated:
-                    rejected_pairs[pair] = "high_correlation"
+                if skip:
                     continue
 
-            uncorrelated_pairs.append(pair)
-            added_pairs.add(pair)
-            if len(uncorrelated_pairs) >= max_dyn:
+            uncorrelated.append(sym)
+            added.add(sym)
+            if len(uncorrelated) >= max_dyn:
                 break
 
-        dyn_count = max(min_dyn, min(max_dyn, len(uncorrelated_pairs)))
-        selected_dyn = uncorrelated_pairs[:dyn_count]
+        # Final dynamic
+        dyn_count = max(min_dyn, min(len(uncorrelated), max_dyn))
+        selected_dyn = uncorrelated[:dyn_count]
 
-    # Combine fixed and dynamic pairs
-    active_symbols = fixed + selected_dyn
+    # 8) Объединяем fixed + selected_dyn
+    active_symbols = list(fixed) + selected_dyn
 
-    # ⚠️ Check if minimum pairs threshold is met
+    # При необходимости fallback (если меньше 5)
     MIN_ACTIVE_PAIRS = 5
     if len(active_symbols) < MIN_ACTIVE_PAIRS and not recovery_triggered:
         recovery_triggered = True
-        log(f"⚠️ Only {len(active_symbols)} active symbols - using graduated fallback approach", level="WARNING")
+        log(f"⚠️ Only {len(active_symbols)} active symbols => fallback approach", level="WARNING")
+        # Здесь можно подключить «absolute fallback» или inactive_candidates.json
 
-        # (Ваш код подхватывает inactive_candidates.json и absolute fallback)
-
-    # Initialize relax_factor for new active symbols
+    # 9) Инициализация relax_factor и финальные логи
     try:
         filter_path = "data/filter_adaptation.json"
-        filter_data = load_json_file(filter_path)
+        filter_data = load_json_file(filter_path, default={})
         updated = False
 
-        for symbol in active_symbols:
-            normalized = symbol.replace("/", "").upper()
-            if normalized not in filter_data:
-                filter_data[normalized] = {"relax_factor": get_runtime_config().get("relax_factor", 0.35)}
-                log(f"[FilterAdapt] Initialized relax_factor for {symbol}", level="INFO")
+        for sym in active_symbols:
+            norm_ = sym.replace("/", "").upper()
+            if norm_ not in filter_data:
+                filter_data[norm_] = {"relax_factor": runtime_config.get("relax_factor", 0.35)}
                 updated = True
 
         if updated:
             save_json_file(filter_path, filter_data)
-            log("[FilterAdapt] Updated filter_adaptation.json with new symbols", level="INFO")
+            log("[FilterAdapt] Initialized relax_factor for new symbols", level="INFO")
     except Exception as e:
-        log(f"[FilterAdapt] Error initializing relax_factor for active symbols: {e}", level="ERROR")
+        log(f"[FilterAdapt] Error: {e}", level="ERROR")
 
-    # Only calculate final rejection statistics if not in recovery mode
-    if not recovery_triggered:
-        final_selected = set(selected_dyn)
-        total_analyzed = len(all_symbols)
-        total_selected = len(selected_dyn)
-        total_ultimately_rejected = total_analyzed - total_selected
-
-        final_rejection_reasons = {}
-        for symbol in all_symbols:
-            if symbol not in final_selected and symbol not in fixed:
-                if symbol in rejected_pairs:
-                    reason = rejected_pairs[symbol]
-                    final_rejection_reasons[reason] = final_rejection_reasons.get(reason, 0) + 1
-
-        log(f"[Pair Selector] {total_analyzed} pairs analyzed, {total_selected} selected, {total_ultimately_rejected} ultimately rejected", level="INFO")
-        log(f"[Pair Selector] {len(filtered_data)} pairs passed final tier filters", level="INFO")
-        if final_rejection_reasons:
-            log("[Final Rejection Stats]:", level="INFO")
-            for reason, count in final_rejection_reasons.items():
-                log(f"  {reason}: {count} pairs", level="INFO")
-
-    # Log and save results
+    # Отчёт о финальном выборе
     log(f"Selected {len(active_symbols)} active symbols: {active_symbols}", level="INFO")
+
     try:
         os.makedirs(os.path.dirname(SYMBOLS_FILE), exist_ok=True)
         with symbols_file_lock, open(SYMBOLS_FILE, "w") as f:
             json.dump(active_symbols, f)
         log(f"Saved active symbols to {SYMBOLS_FILE}", level="INFO")
     except Exception as e:
-        log(f"Error saving active symbols to {SYMBOLS_FILE}: {e}", level="ERROR")
+        log(f"Error saving active symbols: {e}", level="ERROR")
 
     # Telegram summary
     msg = (
-        f"🔄 Symbol rotation completed:\n"
-        f"Total pairs: {len(active_symbols)}\n"
-        f"Fixed: {len(fixed)}, Dynamic: {len(selected_dyn)}\n"
-        f"Balance: {balance:.2f} USDC\n"
-        f"Market volatility: {market_volatility:.2f}"
+        f"🔄 Symbol rotation:\n"
+        f"Total active: {len(active_symbols)}\n"
+        f"Balance: {balance:.1f} USDC\n"
+        f"Volatility: {market_volatility:.2f}\n"
+        f"Fixed: {len(fixed)} | Dynamic: {len(selected_dyn)}"
     )
-
     if balance < 300 and priority_pairs:
-        priority_in_selection = [p for p in priority_pairs if p in active_symbols]
-        if priority_in_selection:
-            msg += f"\nPriority pairs included: {', '.join(priority_in_selection)}"
+        prio_in_sel = [p for p in priority_pairs if p in active_symbols]
+        if prio_in_sel:
+            msg += f"\nPriority: {', '.join(prio_in_sel)}"
 
     send_telegram_message(msg, force=True)
-
     return active_symbols
 
 
