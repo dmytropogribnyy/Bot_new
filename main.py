@@ -441,6 +441,16 @@ if __name__ == "__main__":
     reset_state_flags()
     log("State flags reset at startup", level="INFO")
 
+    # Auto-create important data files if missing
+    if not os.path.exists("data/missed_opportunities.json"):
+        with open("data/missed_opportunities.json", "w") as f:
+            f.write("{}")
+
+    if not os.path.exists("data/tp_performance.csv"):
+        with open("data/tp_performance.csv", "w") as f:
+            f.write("Date,Symbol,Side,Entry Price,Exit Price,Qty,TP1 Hit,TP2 Hit,SL Hit,PnL (%),Result,Held (min),HTF Confirmed,ATR,ADX,BB Width,Commission,Net PnL (%),Absolute Profit\n")
+    log("✅ Checked data files: missed_opportunities.json and tp_performance.csv", level="INFO")
+
     auto_cleanup_signal_failures()
 
     initialize_runtime_adaptive_config()
