@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
+import pandas as pd
+
 from common.config_loader import LEVERAGE_MAP, SYMBOLS_ACTIVE
 from constants import STATE_FILE
 from core.exchange_init import exchange
@@ -403,6 +405,47 @@ def get_min_net_profit(balance):
         return 0.3  # $0.3 for small accounts (120-299 USDC)
     else:
         return 0.5  # $0.5 for standard accounts (300+ USDC)
+
+
+def calculate_volatility(df):
+    """Calculate volatility based on price range."""
+    if df is None or len(df) < 2:
+        return 0
+    df["range"] = df["high"] - df["low"]
+    return df["range"].mean() / df["close"].mean()
+
+
+def calculate_atr_volatility(df, period=14):
+    """Calculate ATR-based volatility."""
+    if df is None or len(df) < period + 1:
+        return 0
+
+    # Calculate True Range
+    df["tr1"] = abs(df["high"] - df["low"])
+    df["tr2"] = abs(df["high"] - df["close"].shift(1))
+    df["tr3"] = abs(df["low"] - df["close"].shift(1))
+    df["tr"] = df[["tr1", "tr2", "tr3"]].max(axis=1)
+
+    # Calculate ATR
+    df["atr"] = df["tr"].rolling(period).mean()
+
+    if len(df) > period and not pd.isna(df["atr"].iloc[-1]):
+        return df["atr"].iloc[-1] / df["close"].iloc[-1]
+    else:
+        return 0
+
+
+def get_btc_volatility(threshold=0.003):
+    from pair_selector import fetch_symbol_data
+
+    df = fetch_symbol_data("BTC/USDC:USDC")
+    if df is None or df.empty:
+        return False  # нет данных
+
+    atr_val = calculate_atr_volatility(df, period=14)  # берем ATR
+    if atr_val < threshold:
+        return True  # рынок «тихий»
+    return False
 
 
 def normalize_symbol(symbol: str) -> str:
