@@ -298,6 +298,33 @@ def cmd_prioritypairs(message, state=None, stop_event=None):
         return False
 
 
+@register_command("blockers")
+@handle_errors
+def cmd_blockers(message, state=None, stop_event=None):
+    """
+    Run signal blocker analysis and show what was adapted.
+    Usage: /blockers
+    """
+    try:
+        from core.signal_feedback_loop import analyze_signal_blockers
+
+        result = analyze_signal_blockers()
+        if "applied_changes" in result:
+            changes = result["applied_changes"]
+            msg = "*🧠 Blocker Analysis Applied:*\n"
+            for key, val in changes.items():
+                msg += f"• `{key}` → `{val}`\n"
+        elif "message" in result:
+            msg = f"ℹ️ {result['message']}"
+        else:
+            msg = "⚠️ No blockers found or files missing."
+
+        send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+    except Exception as e:
+        log(f"[TelegramCommand] Error in /blockers: {e}", level="ERROR")
+        send_telegram_message(f"❌ Error: `{str(e)}`", force=True, parse_mode="MarkdownV2")
+
+
 @register_command("status")
 @handle_errors
 def cmd_status(message, state, stop_event=None):

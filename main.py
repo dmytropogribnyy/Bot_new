@@ -551,6 +551,11 @@ if __name__ == "__main__":
     scheduler.add_job(adjust_score_relax_boost, "interval", hours=1, id="score_relax_adjustment")
     scheduler.add_job(log_symbol_activity_status, "interval", minutes=10, id="status_logger")
 
+    # 📊 Signal blocker analysis (auto-adaptation)
+    from core.signal_feedback_loop import analyze_signal_blockers
+
+    scheduler.add_job(lambda: analyze_signal_blockers(min_block_threshold=4), "interval", minutes=30, id="signal_blocker_analysis")
+
     # Migrate from blocked_symbols to graduated risk system
     from core.fail_stats_tracker import migrate_from_blocked_symbols
 

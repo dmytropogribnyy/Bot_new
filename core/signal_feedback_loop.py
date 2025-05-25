@@ -371,3 +371,79 @@ def adjust_score_relax_boost():
 
     except Exception as e:
         log(f"[ScoreAdjust] Error: {e}", level="ERROR")
+
+
+def analyze_signal_blockers(debug_summary_path="data/debug_monitoring_summary.json", config_path="data/runtime_config.json", min_block_threshold=4):
+    import json
+    from datetime import datetime
+    from pathlib import Path
+
+    from utils_logging import log
+
+    debug_path = Path(debug_summary_path)
+    config_path = Path(config_path)
+    history_path = Path("data/parameter_history.json")
+
+    if not debug_path.exists() or not config_path.exists():
+        return {"error": "Required file not found."}
+
+    with open(debug_path, "r") as f:
+        debug_data = json.load(f)
+
+    # Здесь предполагается, что debug_data["missed_analysis"]["top_reasons"] —
+    # словарь вида {"filter_low_volatility": 7, "score_too_low": 5, ...}
+    top_reasons = debug_data.get("missed_analysis", {}).get("top_reasons", {})
+    if not top_reasons:
+        return {"message": "No blockers detected in summary."}
+
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    changes = {}
+    # Ослабление ATR-фильтров, если часто filter_low_volatility
+    if top_reasons.get("filter_low_volatility", 0) >= min_block_threshold:
+        new_tiers = []
+        for tier in config.get("FILTER_TIERS", []):
+            # Уменьшаем atr на 30%
+            new_atr = max(tier["atr"] * 0.7, 0.0015)  # нижний предел
+            new_tiers.append({"atr": new_atr, "volume": tier["volume"]})
+        config["FILTER_TIERS"] = new_tiers
+        changes["FILTER_TIERS"] = "reduced due to frequent filter_low_volatility"
+
+    # Отключение HTF, если много missing_HTF
+    if top_reasons.get("missing_HTF", 0) >= min_block_threshold:
+        config["USE_HTF_CONFIRMATION"] = False
+        changes["USE_HTF_CONFIRMATION"] = False
+
+    # Снижение порога score, если часто score_too_low
+    if top_reasons.get("score_too_low", 0) >= min_block_threshold:
+        old_score = config.get("min_required_score", 2.5)
+        new_score = max(old_score - 0.2, 1.8)
+        config["min_required_score"] = new_score
+        changes["min_required_score"] = new_score
+
+    # Если нет изменений, просто выходим
+    if not changes:
+        return {"message": "No changes applied"}
+
+    # Сохраняем обновлённый конфиг
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    # Логирование изменений в parameter_history.json
+    if history_path.exists():
+        with open(history_path, "r") as f:
+            history = json.load(f)
+    else:
+        history = []
+
+    timestamp = datetime.now().isoformat()
+    history.append({"timestamp": timestamp, "source": "auto_blocker_analysis", "changes": changes})
+
+    with open(history_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+    # Запись в основной лог
+    log(f"[SignalFeedback] Applied blocker-based config changes: {changes}", level="INFO")
+
+    return {"timestamp": timestamp, "applied_changes": changes}
