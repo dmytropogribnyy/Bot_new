@@ -1,19 +1,28 @@
 # notifier.py
+
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
 
 def notify_dry_trade(trade_data):
+    """
+    Notify about a DRY_RUN trade.
+    No longer logs 'score' because new logic doesn't use 'score'.
+    """
     symbol = trade_data["symbol"]
     direction = trade_data["direction"]
     qty = trade_data["qty"]
-    score = trade_data["score"]
+    entry_price = trade_data.get("entry", 0.0)
+
     log(f"{symbol} 🔍 Notifying dry trade: qty = {qty:.3f}", level="DEBUG")
-    log(f"{symbol} 🧪 [DRY_RUN] Signal → {direction}, score: {score}/5", level="INFO")
-    msg = f"🧪-DRY-RUN-{symbol}-{direction}-Score-{round(score, 2)}-of-5"
+    log(f"{symbol} 🧪 [DRY_RUN] Signal → {direction}", level="INFO")
+
+    # Telegram message 1
+    msg = f"🧪-DRY-RUN-{symbol}-{direction}"
     send_telegram_message(msg, force=True, parse_mode="")
-    # Use a more precise format for qty to avoid rounding to 0.00
-    msg = f"DRY-RUN-{direction}{symbol}at{trade_data['entry']:.2f}Qty{qty:.3f}"
+
+    # Telegram message 2 (more details)
+    msg = f"DRY-RUN-{direction}{symbol}@{entry_price:.2f}Qty{qty:.3f}"
     send_telegram_message(msg, force=True, parse_mode="")
     log(msg, level="INFO")
 
@@ -39,10 +48,6 @@ def notify_withdrawal(delta):
 def notify_low_balance(current_balance, threshold):
     """
     Notify when the balance drops below critical thresholds.
-
-    Args:
-        current_balance: Current account balance
-        threshold: The threshold that was crossed (e.g., 50, 100)
     """
     from telegram.telegram_utils import send_telegram_message
 
@@ -53,10 +58,6 @@ def notify_low_balance(current_balance, threshold):
 def notify_milestone(milestone, growth_pct):
     """
     Notify when an account balance milestone is reached.
-
-    Args:
-        milestone: The milestone value or identifier (e.g., 300, "2x")
-        growth_pct: Current growth percentage
     """
     from telegram.telegram_utils import send_telegram_message
 

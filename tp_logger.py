@@ -9,15 +9,27 @@ from stats import now_with_timezone
 from utils_core import normalize_symbol
 from utils_logging import log
 
-# Global variables for tracking trades with enhanced duplicate prevention
+# ===========================
+# Globals for duplication & stats
+# ===========================
 logged_trades = set()
 logged_trades_lock = Lock()
-daily_trade_stats = {"count": 0, "win": 0, "loss": 0, "commission_total": 0.0, "profit_total": 0.0}
+
+daily_trade_stats = {
+    "count": 0,
+    "win": 0,
+    "loss": 0,
+    "commission_total": 0.0,
+    "profit_total": 0.0,
+}
 daily_stats_lock = Lock()
 
 
 def ensure_log_exists():
-    """Create trade log files if they don't exist."""
+    """
+    Создаёт файлы лога сделок (EXPORT_PATH) при их отсутствии
+    (с заголовком CSV).
+    """
     if not os.path.exists(EXPORT_PATH):
         os.makedirs(os.path.dirname(EXPORT_PATH), exist_ok=True)
         with open(EXPORT_PATH, mode="w", newline="") as f:
@@ -33,160 +45,163 @@ def ensure_log_exists():
                     "TP1 Hit",
                     "TP2 Hit",
                     "SL Hit",
-                    "PnL (%)",
+                    "PnL (%)",  # До комиссий (грубый процент)
                     "Result",
                     "Held (min)",
-                    "HTF Confirmed",
-                    "ATR",
-                    "ADX",
-                    "BB Width",
-                    "Commission",  # Commission column
-                    "Net PnL (%)",  # Net profit column (after commission)
-                    "Absolute Profit",  # Absolute profit in USDC (for small account tracking)
+                    "Commission",
+                    "Net PnL (%)",  # После учёта комиссии
+                    "Absolute Profit",  # USDC
                 ]
             )
 
 
 def log_trade_result(
-    symbol,
-    direction,
-    entry_price,
-    exit_price,
-    qty,
-    tp1_hit,
-    tp2_hit,
-    sl_hit,
-    pnl_percent,
-    duration_minutes,
-    htf_confirmed,
-    atr,
-    adx,
-    bb_width,
-    result_type="manual",
-    account_category=None,
-    exit_reason=None,
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    exit_price: float,
+    qty: float,
+    tp1_hit: bool,
+    tp2_hit: bool,
+    sl_hit: bool,
+    pnl_percent: float,
+    duration_minutes: int,
+    result_type: str = "manual",
+    exit_reason: str = None,
 ):
-    """Log trade result with enhanced commission calculation and duplicate prevention."""
+    """
+    Запись итогов сделки в журналы TP_LOG_FILE и EXPORT_PATH.
+
+    Параметры:
+    -----------
+    symbol : str
+        Тикер (например, BTC/USDC).
+    direction : str
+        BUY или SELL.
+    entry_price : float
+        Цена входа.
+    exit_price : float
+        Цена выхода.
+    qty : float
+        Объём сделки (количество).
+    tp1_hit, tp2_hit, sl_hit : bool
+        Флаги, указывающие, сработали ли TP1, TP2 или SL.
+    pnl_percent : float
+        Прибыль / убыток в процентах (без учёта комиссии).
+    duration_minutes : int
+        Время удержания позиции в минутах.
+    result_type : str
+        Тип результата (tp1, tp2, sl, soft_exit, trailing, manual, auto_profit и т.д.).
+    exit_reason : str, optional
+        Доп. причина закрытия (для Telegram-сообщения).
+
+    Возвращает:
+    -----------
+    float : absolute_profit
+        Абсолютная прибыль (может быть отрицательной), в USDC.
+    """
     symbol = normalize_symbol(symbol)
 
     try:
-        # Log to console even in DRY_RUN for debugging
+        # Логируем в консоль всегда (даже в DRY_RUN)
         log(
             f"[{'DRY_RUN' if DRY_RUN else 'REAL_RUN'}] Logging trade {symbol}, PnL: {round(pnl_percent, 2)}%",
             level="INFO",
         )
 
+        # Если DRY_RUN, не записываем в файл
         if DRY_RUN:
-            return  # Skip file writing in DRY_RUN but still log to console
+            return 0.0
 
-        # Validate input data
+        # Проверка валидности
         if any(v is None for v in [symbol, direction, entry_price, exit_price, qty]):
-            log(f"Skipping trade log - invalid data: symbol={symbol}, direction={direction}, entry={entry_price}, exit={exit_price}, qty={qty}", level="ERROR")
-            return
+            log(
+                f"Skipping trade log - invalid data: symbol={symbol}, " f"direction={direction}, entry={entry_price}, exit={exit_price}, qty={qty}",
+                level="ERROR",
+            )
+            return 0.0
 
-        # Calculate commission (taker for entry and exit)
-        commission = qty * entry_price * TAKER_FEE_RATE * 2  # Entry and exit
+        # Считаем комиссию (предполагаем рыночную сделку на вход и выход)
+        commission = qty * entry_price * TAKER_FEE_RATE * 2  # "2" → вход+выход
 
-        # For small accounts: Calculate absolute profit in USDC (important for small account tracking)
-        absolute_price_change = abs(exit_price - entry_price) * qty
-        absolute_profit = absolute_price_change - commission
+        # Абсолютный профит (до вычитания комиссии)
+        price_change = abs(exit_price - entry_price) * qty
 
-        # If price moved against us, absolute profit is negative
-        if (direction == "BUY" and exit_price < entry_price) or (direction == "SELL" and exit_price > entry_price):
-            absolute_profit = -absolute_profit
+        # Если цена ушла против направления, profit будет отрицательным
+        if (direction.upper() == "BUY" and exit_price < entry_price) or (direction.upper() == "SELL" and exit_price > entry_price):
+            price_change = -price_change
 
-        # Calculate percentage price change and net PnL
-        price_change_pct = (exit_price - entry_price) / entry_price * 100
+        absolute_profit = price_change - commission
+
+        # Пересчитаем net PnL (%) = pnl_percent (без комиссии) - комиссия в %
         commission_pct = (commission / (qty * entry_price)) * 100
-        net_pnl = price_change_pct - commission_pct
+        net_pnl = pnl_percent - commission_pct
 
-        if direction == "SELL":
+        # Если SELL, то можно инвертировать знак (по желанию)
+        if direction.upper() == "SELL":
             net_pnl *= -1
-            price_change_pct *= -1
 
-        # Determine result type
-        # Determine result type
-        if result_type == "bonus_profit":
-            result = "BONUS_PROFIT"
-        elif result_type == "auto_profit":
-            result = "AUTO_PROFIT"
-        elif result_type == "soft_exit":
-            result = "SOFT_EXIT"
+        # Определяем, как назвать Result (в CSV)
+        final_result = None
+        if result_type == "soft_exit":
+            final_result = "SOFT_EXIT"
         elif result_type == "trailing":
-            result = "TRAILING"
-        elif tp1_hit and result_type not in ["soft_exit", "trailing", "auto_profit", "bonus_profit"]:
-            result = "TP1"
-        elif tp2_hit and result_type not in ["soft_exit", "trailing", "auto_profit", "bonus_profit"]:
-            result = "TP2"
-        elif sl_hit and result_type not in ["soft_exit", "trailing", "auto_profit", "bonus_profit"]:
-            result = "SL"
+            final_result = "TRAILING"
+        elif result_type == "auto_profit":
+            final_result = "AUTO_PROFIT"
+        elif tp1_hit:
+            final_result = "TP1"
+        elif tp2_hit:
+            final_result = "TP2"
+        elif sl_hit:
+            final_result = "SL"
         else:
-            result = result_type.upper() if result_type else "MANUAL"
+            final_result = result_type.upper() if result_type else "MANUAL"
 
-        # Create unique trade ID with enhanced uniqueness
+        # Создаём уникальный ID для защиты от дублей
         timestamp = now_with_timezone()
         date_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        unique_hash = hash(f"{symbol}_{entry_price}_{exit_price}_{qty}_{result}_{timestamp.timestamp()}")
-        trade_id = f"{symbol}_{date_str}_{result}_{unique_hash}"
+        unique_hash = hash(f"{symbol}_{entry_price}_{exit_price}_{qty}_{final_result}_{timestamp.timestamp()}")
+        trade_id = f"{symbol}_{date_str}_{final_result}_{unique_hash}"
 
-        # Skip if already logged this trade
+        # Проверяем, не логировали ли уже
         with logged_trades_lock:
-            # Additional check for similar trades within last minute
-            similar_trades = [
-                t
-                for t in logged_trades
-                if t.startswith(f"{symbol}_") and abs(timestamp.timestamp() - float(t.split("_")[-1] if "_" in t and t.split("_")[-1].replace(".", "", 1).isdigit() else 0)) < 60
-            ]
-
-            if trade_id in logged_trades or similar_trades:
+            if trade_id in logged_trades:
                 log(f"Skipping duplicate trade {trade_id}", level="DEBUG")
-                return
-
+                return 0.0
             logged_trades.add(trade_id)
 
-        # Update daily statistics
+        # Обновляем статистику за день
         with daily_stats_lock:
             daily_trade_stats["count"] += 1
             daily_trade_stats["commission_total"] += commission
-
             if net_pnl > 0:
                 daily_trade_stats["win"] += 1
                 daily_trade_stats["profit_total"] += absolute_profit
             else:
                 daily_trade_stats["loss"] += 1
-                daily_trade_stats["profit_total"] += absolute_profit  # Will be negative for losses
+                daily_trade_stats["profit_total"] += absolute_profit
 
-        # Составляем строку лога
+        # Формируем строку для CSV
         row = [
             date_str,
             symbol,
-            direction,
+            direction.upper(),
             round(entry_price, 6),
             round(exit_price, 6),
-            round(qty, 6),  # Increased precision for small quantities
+            round(qty, 6),
             tp1_hit,
             tp2_hit,
             sl_hit,
-            round(price_change_pct, 2),  # Original PnL without commission
-            result,
+            round(pnl_percent, 2),  # "грубый" PnL до комиссии
+            final_result,
             duration_minutes,
-            htf_confirmed,
-            round(atr, 6),
-            round(adx, 6),
-            round(bb_width, 6),
-            round(commission, 6),  # Commission
-            round(net_pnl, 2),  # Net profit after commission
-            round(absolute_profit, 6),  # Absolute profit in USDC
+            round(commission, 6),
+            round(net_pnl, 2),
+            round(absolute_profit, 6),
         ]
 
-        # Добавим в конец row, если account_category передан
-        if account_category is not None:
-            row.append(account_category)
-
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(TP_LOG_FILE), exist_ok=True)
-
-        # Создаем header с учётом поля
+        # Заголовок CSV (без account_category)
         base_header = [
             "Date",
             "Symbol",
@@ -200,72 +215,51 @@ def log_trade_result(
             "PnL (%)",
             "Result",
             "Held (min)",
-            "HTF Confirmed",
-            "ATR",
-            "ADX",
-            "BB Width",
             "Commission",
             "Net PnL (%)",
             "Absolute Profit",
         ]
 
-        if account_category is not None:
-            base_header.append("Account Category")
-
-        # Write to both TP_LOG_FILE and EXPORT_PATH
+        # Запишем в оба файла: TP_LOG_FILE и EXPORT_PATH
         for path in [TP_LOG_FILE, EXPORT_PATH]:
             file_exists = os.path.isfile(path)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, mode="a", newline="") as file:
                 writer = csv.writer(file)
                 if not file_exists:
                     writer.writerow(base_header)
                 writer.writerow(row)
 
-        # Enhanced logging with different messages for different result types
-        if result_type == "recovered":
-            log(
-                f"[Recovered Log] {symbol} closed outside tracked logic. PnL: {round(price_change_pct, 2)}%, " f"Net: {round(net_pnl, 2)}%, Profit: {round(absolute_profit, 6)} USDC",
-                level="WARNING",
-            )
-        elif result_type == "micro_profit":
-            log(
-                f"[Micro-Profit] {symbol} closed at micro target. PnL: {round(price_change_pct, 2)}%, " f"Net: {round(net_pnl, 2)}%, Profit: {round(absolute_profit, 6)} USDC",
-                level="INFO",
-            )
-        else:
-            log(
-                f"[REAL_RUN] Recorded result for {symbol}, PnL: {round(price_change_pct, 2)}%, "
-                f"Net PnL: {round(net_pnl, 2)}%, Commission: {round(commission, 6)} USDC, "
-                f"Absolute Profit: {round(absolute_profit, 6)} USDC",
-                level="INFO",
-            )
+        # Лог + Telegram
+        log(
+            f"[REAL_RUN] {symbol} {final_result}. PnL: {pnl_percent:.2f}%, " f"Net PnL: {net_pnl:.2f}%, Commission: {commission:.6f} USDC, " f"Abs Profit: {absolute_profit:.3f} USDC",
+            level="INFO",
+        )
 
-            # Telegram notification with key metrics
         from telegram.telegram_utils import send_telegram_message
 
         emoji = "✅" if net_pnl > 0 else "❌"
-        exit_reason_display = f" [{exit_reason.upper()}]" if exit_reason else ""
-
+        exit_tag = f"[{exit_reason.upper()}]" if exit_reason else ""
         msg = (
-            f"{emoji} Trade {result}:{exit_reason_display} {symbol} {direction}\n"
-            f"Entry: {entry_price:.6f} → Exit: {exit_price:.6f}\n"
+            f"{emoji} Trade {final_result}: {symbol} {direction.upper()} {exit_tag}\n"
+            f"Entry: {entry_price:.4f} → Exit: {exit_price:.4f}\n"
             f"Net Profit: {net_pnl:.2f}% (${absolute_profit:.3f})\n"
-            f"Commission: ${commission:.6f} | Held: {duration_minutes} min"
+            f"Commission: ${commission:.4f} | Held: {duration_minutes} min"
         )
         send_telegram_message(msg, force=True)
 
-        return absolute_profit  # Return absolute profit for further processing
+        return absolute_profit
 
     except Exception as e:
         log(f"[TP Logger] Error logging trade for {symbol}: {e}", level="ERROR")
         from telegram.telegram_utils import send_telegram_message
 
         send_telegram_message(f"❌ Error logging trade for {symbol}: {str(e)}", force=True)
-        return 0
+        return 0.0
 
 
 def get_last_trade():
-    """Get the last trade from logs."""
+    """Возвращает последнюю запись из EXPORT_PATH (или None, если пусто)."""
     if not os.path.exists(EXPORT_PATH):
         return None
     try:
@@ -279,7 +273,9 @@ def get_last_trade():
 
 
 def get_human_summary_line():
-    """Get a summary of the last trade in human-readable format."""
+    """
+    Возвращает последний трейд в человекочитаемом виде (примерно).
+    """
     if not os.path.exists(EXPORT_PATH):
         return "No trade data available."
     try:
@@ -289,80 +285,66 @@ def get_human_summary_line():
         last = df.iloc[-1]
         result = last["Result"]
         symbol = last["Symbol"]
-
-        # Use net profit if available
-        if "Net PnL (%)" in last:
-            pnl = last["Net PnL (%)"]
-        else:
-            pnl = last["PnL (%)"]
-
-        # Use absolute profit if available (better for small accounts)
-        abs_profit_text = ""
-        if "Absolute Profit" in last:
-            abs_profit = last["Absolute Profit"]
-            abs_profit_text = f", ${abs_profit:.3f}"
-
+        pnl = last.get("Net PnL (%)", last.get("PnL (%)", 0.0))
+        abs_profit = last.get("Absolute Profit", 0.0)
         held = last.get("Held (min)", "?")
-        return f"{symbol} — {result} ({pnl:.2f}%{abs_profit_text}), held for {held} min"
+
+        return f"{symbol} — {result} ({pnl:.2f}%, ${abs_profit:.2f}), held for {held} min"
     except Exception as e:
         return f"Summary error: {e}"
 
 
 def get_trade_stats():
-    """Get trade statistics: count and win rate with improved calculations for small accounts."""
+    """
+    Простейшая статистика по логам (кол-во сделок и винрейт).
+    """
     if not os.path.exists(EXPORT_PATH):
         return 0, 0.0
     try:
         df = pd.read_csv(EXPORT_PATH)
-        df = df[df["Date"].str.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", na=False) & ~df["Date"].str.startswith("#", na=False)]
         if df.empty:
-            log("[INFO] No trade records found in tp_performance.csv", level="INFO")
+            log("[INFO] No trade records in the CSV", level="INFO")
             return 0, 0.0
 
-        df["Date"] = pd.to_datetime(df["Date"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
-        df = df.dropna(subset=["Date"])
-
-        # Include SOFT_EXIT and TRAILING as valid results
-        df = df[df["Result"].isin(["TP1", "TP2", "SL", "MANUAL", "SOFT_EXIT", "TRAILING"])]
         total = len(df)
-
-        # TP1, TP2 and SOFT_EXIT count as wins
-        win = len(df[df["Result"].isin(["TP1", "TP2", "SOFT_EXIT"])])
-
-        # Check by net profit if available (more accurate)
         if "Net PnL (%)" in df.columns:
-            profitable_trades = len(df[df["Net PnL (%)"] > 0])
-            win_rate_by_pnl = profitable_trades / total if total else 0
-
-            # Enhanced metrics for small accounts analysis
-            if "Absolute Profit" in df.columns:
-                total_profit = df["Absolute Profit"].sum()
-                total_commission = df["Commission"].sum() if "Commission" in df.columns else 0
-                avg_profit = df[df["Net PnL (%)"] > 0]["Absolute Profit"].mean() if len(df[df["Net PnL (%)"] > 0]) > 0 else 0
-                avg_loss = df[df["Net PnL (%)"] <= 0]["Absolute Profit"].mean() if len(df[df["Net PnL (%)"] <= 0]) > 0 else 0
-
-                log(f"[Stats] Total profit: ${total_profit:.2f}, Commissions: ${total_commission:.2f}, " f"Avg win: ${avg_profit:.2f}, Avg loss: ${avg_loss:.2f}", level="INFO")
-
-            return total, max(win / total if total else 0, win_rate_by_pnl)
-
-        return total, (win / total) if total else 0.0
+            wins = len(df[df["Net PnL (%)"] > 0])
+            return total, (wins / total if total else 0.0)
+        else:
+            # Или используем столбец "PnL (%)" (грубая оценка)
+            wins = len(df[df["PnL (%)"] > 0])
+            return total, (wins / total if total else 0.0)
     except Exception as e:
         log(f"[ERROR] Failed to read trade statistics: {e}", level="INFO")
         return 0, 0.0
 
 
 def get_daily_stats():
-    """Get today's trading statistics (especially useful for small accounts)."""
+    """
+    Возвращает ежедневную сводку:
+    - кол-во сделок, побед, поражений
+    - комиссии, профит, чистый профит
+    """
     with daily_stats_lock:
         stats = daily_trade_stats.copy()
 
-    win_rate = stats["win"] / stats["count"] if stats["count"] > 0 else 0
+    if stats["count"] == 0:
+        return {
+            "trades_today": 0,
+            "wins_today": 0,
+            "losses_today": 0,
+            "win_rate_today": 0.0,
+            "profit_today": 0.0,
+            "commission_today": 0.0,
+            "net_today": 0.0,
+        }
 
+    win_rate = stats["win"] / stats["count"]
     return {
         "trades_today": stats["count"],
         "wins_today": stats["win"],
         "losses_today": stats["loss"],
-        "win_rate_today": win_rate * 100,
+        "win_rate_today": round(win_rate * 100, 2),
         "profit_today": stats["profit_total"],
         "commission_today": stats["commission_total"],
         "net_today": stats["profit_total"] - stats["commission_total"],
@@ -370,7 +352,9 @@ def get_daily_stats():
 
 
 def reset_daily_stats():
-    """Reset daily statistics (call at midnight)."""
+    """
+    Сброс ежедневной статистики (вызов перед новым сутками).
+    """
     with daily_stats_lock:
         daily_trade_stats["count"] = 0
         daily_trade_stats["win"] = 0
@@ -380,7 +364,9 @@ def reset_daily_stats():
 
 
 def get_total_trade_count():
-    """Return total number of trades recorded in the log."""
+    """
+    Возвращает общее количество сделок, записанных в EXPORT_PATH.
+    """
     if not os.path.exists(EXPORT_PATH):
         return 0
     try:

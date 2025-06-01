@@ -5,9 +5,8 @@ Controls position limits, size calculations, and validates new position requests
 """
 
 # Import from project modules
-from common.config_loader import get_max_positions
 from core.risk_utils import calculate_position_value_limit
-from utils_core import get_cached_balance, safe_call_retry
+from utils_core import get_cached_balance, get_max_positions, safe_call_retry
 from utils_logging import log
 
 

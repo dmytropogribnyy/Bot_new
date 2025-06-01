@@ -5,9 +5,10 @@ IP-related and miscellaneous Telegram command handlers for BinanceBot
 
 import json
 
+from trade_engine import close_dry_trade, trade_manager
+
 from common.config_loader import DRY_RUN, FIXED_PAIRS
 from core.fail_stats_tracker import get_signal_failure_stats
-from core.trade_engine import close_dry_trade, trade_manager
 from ip_monitor import (
     cancel_router_reboot_mode,
     enable_router_reboot_mode,

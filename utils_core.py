@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import time
@@ -5,40 +6,34 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-import pandas as pd
-
 from common.config_loader import LEVERAGE_MAP, SYMBOLS_ACTIVE
-from constants import STATE_FILE
+from constants import ENTRY_LOG_FILE, STATE_FILE
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
-DEFAULT_STATE = {
-    "stopping": False,
-    "shutdown": False,
-    "allowed_user_id": 383821734,
-}
-
-RANGE_LIMITS = {
-    "score_threshold": (1.2, 3.5),
-    "momentum_min": (0.0, 2.5),
-    "wick_sensitivity": (0.0, 1.0),
-    "htf_required": (0, 1),
-}
-
+# Глобальные настройки кеша
 CACHE_TTL = 30
 api_cache = {
     "balance": {"value": None, "timestamp": 0},
     "positions": {"value": [], "timestamp": 0},
 }
 cache_lock = Lock()
+
+# Состояние бота
+DEFAULT_STATE = {
+    "stopping": False,
+    "shutdown": False,
+    "allowed_user_id": 383821734,
+}
 state_lock = Lock()
 
+# Runtime config
 RUNTIME_CONFIG_FILE = Path("data/runtime_config.json")
 
 
 def ensure_data_directory():
-    """Убедиться, что директория data/ существует и доступна"""
+    """Убедиться, что директория data/ существует и доступна."""
     data_dir = "data/"
     if not os.path.exists(data_dir):
         try:
@@ -60,129 +55,34 @@ def ensure_data_directory():
         return False
 
 
-def get_last_signal_time():
-    path = "data/last_signal.txt"
-    if not os.path.exists(path):
-        log(f"Last signal file {path} not found.", level="INFO")
-        return None
-    try:
-        with open(path, "r") as f:
-            ts = f.read().strip()
-            return datetime.fromisoformat(ts)
-    except Exception as e:
-        log(f"Error reading last signal time from {path}: {e}", level="ERROR")
-        return None
-
-
-def update_last_signal_time():
-    path = "data/last_signal.txt"
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(datetime.now().isoformat())
-        log(f"Updated last signal time in {path}.", level="INFO")
-    except Exception as e:
-        log(f"Error updating last signal time in {path}: {e}", level="ERROR")
-
-
-def adjust_from_missed_opportunities():
-    """
-    Adapt runtime configuration based on missed trading opportunities.
-    Analyzes missed_opportunities.json to identify patterns and adjust parameters.
-    """
-    import json
-    from pathlib import Path
-
-    from utils_logging import log
-
-    path = Path("data/missed_opportunities.json")
-    if not path.exists():
-        log("[MissedFeedback] missed_opportunities.json not found", level="WARNING")
-        return
-
-    try:
-        with open(path, "r") as f:
-            data = json.load(f)
-
-        if not data:
-            return
-
-        # Sort by profit descending
-        top = sorted(data.items(), key=lambda x: x[1].get("profit", 0), reverse=True)[:3]
-        avg_profit = sum(v.get("profit", 0) for _, v in top) / len(top)
-        log(f"[MissedFeedback] Top missed avg profit: {avg_profit:.2f}", level="DEBUG")
-
-        updates = {}
-        if avg_profit > 5:
-            config = get_runtime_config()
-
-            # Use RANGE_LIMITS from utils_core for parameter boundaries
-            if config.get("momentum_min", 0) > 0.3:
-                updates["momentum_min"] = max(config["momentum_min"] - 0.1, RANGE_LIMITS["momentum_min"][0])
-
-            if config.get("score_threshold", 0) > 2.0:
-                updates["score_threshold"] = max(config["score_threshold"] - 0.05, RANGE_LIMITS["score_threshold"][0])
-
-        if updates:
-            log(f"[MissedFeedback] Adapting config from missed opportunities: {updates}", level="INFO")
-            update_runtime_config(updates)
-
-    except Exception as e:
-        log(f"[MissedFeedback] Error processing missed_opportunities: {e}", level="ERROR")
-
-
-def get_open_symbols():
-    try:
-        open_syms = []
-        positions = get_cached_positions()
-        for p in positions:
-            if float(p.get("contracts", 0)) > 0:
-                open_syms.append(p["symbol"])
-        log(f"Fetched open symbols: {open_syms}", level="INFO")
-        return open_syms
-    except Exception as e:
-        log(f"Error fetching open symbols: {e}", level="ERROR")
-        return []
-
-
 def get_cached_balance():
+    """Получает кэшированный баланс (totalMarginBalance)."""
     with cache_lock:
         now = time.time()
-        log("Checking balance cache...", level="DEBUG")
-        if now - api_cache["balance"]["timestamp"] > CACHE_TTL or api_cache["balance"]["value"] is None:
+        if (now - api_cache["balance"]["timestamp"] > CACHE_TTL) or (api_cache["balance"]["value"] is None):
             try:
-                log("[DEBUG] Fetching balance from exchange...", level="DEBUG")
                 balance_info = exchange.fetch_balance()
-                total_margin_balance = float(balance_info["info"].get("totalMarginBalance", 0))
-                log(
-                    f"[DEBUG] Fetched balance (totalMarginBalance): {total_margin_balance}",
-                    level="DEBUG",
-                )
-                api_cache["balance"]["value"] = total_margin_balance
+                total_margin = float(balance_info["info"].get("totalMarginBalance", 0))
+                api_cache["balance"]["value"] = total_margin
                 api_cache["balance"]["timestamp"] = now
-                log(
-                    f"Updated balance cache: {api_cache['balance']['value']} USDC",
-                    level="DEBUG",
-                )
+                log(f"Updated balance cache: {total_margin} USDC", level="DEBUG")
             except Exception as e:
                 log(f"Error fetching balance: {e}", level="ERROR")
                 send_telegram_message(f"⚠️ Failed to fetch balance: {e}", force=True)
                 return api_cache["balance"]["value"] if api_cache["balance"]["value"] is not None else 0.0
-        log(f"Returning cached balance: {api_cache['balance']['value']}", level="DEBUG")
         return api_cache["balance"]["value"]
 
 
 def get_cached_positions():
+    """Получает кэшированные позиции (exchange.fetch_positions)."""
     with cache_lock:
         now = time.time()
-        if now - api_cache["positions"]["timestamp"] > CACHE_TTL or not api_cache["positions"]["value"]:
+        if (now - api_cache["positions"]["timestamp"] > CACHE_TTL) or (not api_cache["positions"]["value"]):
             try:
-                api_cache["positions"]["value"] = exchange.fetch_positions()
+                all_positions = exchange.fetch_positions()
+                api_cache["positions"]["value"] = all_positions
                 api_cache["positions"]["timestamp"] = now
-                log(
-                    f"Updated positions cache: {len(api_cache['positions']['value'])} positions",
-                    level="DEBUG",
-                )
+                log(f"Updated positions cache: {len(all_positions)} positions", level="DEBUG")
             except Exception as e:
                 log(f"Error fetching positions: {e}", level="ERROR")
                 send_telegram_message(f"⚠️ Failed to fetch positions: {e}", force=True)
@@ -191,6 +91,7 @@ def get_cached_positions():
 
 
 def initialize_cache():
+    """Инициализация кэша и проверка директории data/."""
     if not ensure_data_directory():
         send_telegram_message("⚠️ Проблема с доступом к директории data/. Проверьте права доступа.", force=True)
 
@@ -200,84 +101,62 @@ def initialize_cache():
 
 
 def load_state():
+    """Загружает состояние бота (stopping, shutdown и пр.) из STATE_FILE."""
     with state_lock:
         try:
             if not os.path.exists(STATE_FILE):
                 log(f"State file {STATE_FILE} not found, using default state.", level="INFO")
                 return DEFAULT_STATE.copy()
+
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
-                log(f"Loaded state from {STATE_FILE}: {state}", level="DEBUG")
-                for key, value in DEFAULT_STATE.items():
-                    if key not in state:
-                        state[key] = value
-                return state
+            # Заполним недостающие ключи значениями по умолчанию
+            for k, v in DEFAULT_STATE.items():
+                if k not in state:
+                    state[k] = v
+            return state
+
         except json.JSONDecodeError as e:
-            log(
-                f"Error decoding state file {STATE_FILE}: {e}. Using default state.",
-                important=True,
-                level="ERROR",
-            )
-            send_telegram_message(
-                f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.",
-                force=True,
-            )
+            log(f"Error decoding state file {STATE_FILE}: {e}. Using default state.", level="ERROR", important=True)
+            send_telegram_message(f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.", force=True)
             return DEFAULT_STATE.copy()
         except Exception as e:
-            log(
-                f"Unexpected error loading state file {STATE_FILE}: {e}. Using default state.",
-                important=True,
-                level="ERROR",
-            )
-            send_telegram_message(
-                f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.",
-                force=True,
-            )
+            log(f"Unexpected error loading state file {STATE_FILE}: {e}. Using default state.", level="ERROR", important=True)
+            send_telegram_message(f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.", force=True)
             return DEFAULT_STATE.copy()
 
 
 def save_state(state, retries=3, delay=1):
+    """Сохраняет текущее состояние бота в STATE_FILE с попытками ретрая."""
     attempt = 0
     while attempt < retries:
         with state_lock:
             try:
-                log(
-                    f"Attempting to save state (attempt {attempt + 1}/{retries}): {state}",
-                    level="DEBUG",
-                )
-                os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
                 temp_file = STATE_FILE + ".tmp"
                 with open(temp_file, "w", encoding="utf-8") as f:
                     json.dump(state, f, indent=4)
                 os.replace(temp_file, STATE_FILE)
+
+                # Проверка, что сохранили корректно
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     saved_state = json.load(f)
-                log(f"Successfully saved state to {STATE_FILE}: {saved_state}", level="DEBUG")
                 if saved_state != state:
-                    log(
-                        f"State mismatch after save: expected {state}, got {saved_state}",
-                        level="ERROR",
-                    )
+                    log(f"State mismatch after save: expected {state}, got {saved_state}", level="ERROR")
                     raise ValueError("State mismatch after save")
                 return
             except Exception as e:
                 attempt += 1
-                log(
-                    f"Attempt {attempt}/{retries} - Error saving state to {STATE_FILE}: {e}",
-                    important=True,
-                    level="ERROR",
-                )
+                log(f"Attempt {attempt}/{retries} - Error saving state to {STATE_FILE}: {e}", level="ERROR", important=True)
                 if attempt == retries:
-                    send_telegram_message(
-                        f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}",
-                        force=True,
-                    )
+                    send_telegram_message(f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}", force=True)
                 else:
                     time.sleep(delay)
+
     log(f"Failed to save state after {retries} retries.", level="ERROR")
 
 
 def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
+    """Универсальная функция повторных вызовов для API."""
     for attempt in range(tries):
         try:
             result = func(*args, **kwargs)
@@ -295,6 +174,7 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
 
 
 def get_runtime_config() -> dict:
+    """Загружает runtime_config.json, возвращает dict или пустой dict при ошибке."""
     if RUNTIME_CONFIG_FILE.exists():
         try:
             with open(RUNTIME_CONFIG_FILE, "r") as f:
@@ -305,9 +185,9 @@ def get_runtime_config() -> dict:
 
 
 def update_runtime_config(new_values: dict):
+    """Обновляет runtime_config.json и логирует изменения."""
     config = get_runtime_config()
     config.update(new_values)
-
     try:
         with open(RUNTIME_CONFIG_FILE, "w") as f:
             json.dump(config, f, indent=2)
@@ -315,22 +195,21 @@ def update_runtime_config(new_values: dict):
     except Exception as e:
         log(f"⚠️ Failed to update runtime_config.json: {e}", level="ERROR")
 
-    # Parameter history logging
+    # Логирование истории изменений
+    history_path = Path("data/parameter_history.json")
     try:
-        history_path = Path("data/parameter_history.json")
         if history_path.exists():
             with open(history_path, "r") as f:
                 history = json.load(f)
         else:
             history = []
-
         history.append({"timestamp": datetime.utcnow().isoformat(), "updates": new_values})
         with open(history_path, "w") as f:
             json.dump(history[-100:], f, indent=2)
     except Exception as e:
         log(f"⚠️ Error logging parameter history: {e}", level="WARNING")
 
-    # Telegram notification of changes
+    # Telegram-уведомление
     try:
         summary = "\n".join([f"{k}: {v}" for k, v in new_values.items()])
         send_telegram_message(f"🔧 *runtime_config updated:*\n```\n{summary}\n```", markdown=True)
@@ -340,260 +219,113 @@ def update_runtime_config(new_values: dict):
 
 
 def set_leverage_for_symbols():
+    """Устанавливает плечо для активных символов."""
     for symbol in SYMBOLS_ACTIVE:
         leverage = LEVERAGE_MAP.get(symbol, 5)
-        safe_call_retry(
-            exchange.set_leverage,
-            leverage,
-            symbol,
-            tries=3,
-            delay=1,
-            label=f"set_leverage {symbol}",
-        )
+        safe_call_retry(exchange.set_leverage, leverage, symbol, tries=3, delay=1, label=f"set_leverage {symbol}")
     log("Leverage set for all symbols", level="INFO")
 
 
+def log_rejected_entry(symbol, reasons, breakdown):
+    """
+    Логирует отказ от входа в сделку. (Без упоминания score).
+    """
+    row = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "symbol": symbol,
+        "reasons": ",".join(reasons),
+        "components": ";".join([f"{k}:{v:.2f}" for k, v in breakdown.items()]),
+    }
+    try:
+        with open(ENTRY_LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=row.keys())
+            if f.tell() == 0:
+                writer.writeheader()
+            writer.writerow(row)
+    except Exception as e:
+        log(f"Failed to log rejected entry for {symbol}: {e}", level="ERROR")
+
+
+def initialize_runtime_adaptive_config():
+    """
+    Устанавливает базовые значения в runtime_config при старте (без HTF, score и т.д.).
+    """
+    balance = get_cached_balance() or 100
+
+    if balance < 120:
+        max_positions = 3
+    elif balance < 300:
+        max_positions = 5
+    elif balance < 600:
+        max_positions = 7
+    else:
+        max_positions = 10
+
+    current_config = get_runtime_config()
+    defaults = {
+        "max_concurrent_positions": max_positions,
+        "risk_multiplier": 1.0,
+        "wick_sensitivity": 0.3,
+        "rsi_threshold": 50,
+        "rel_volume_threshold": 0.5,
+        "SL_PERCENT": 0.015,
+        "last_adaptation_timestamp": None,
+        # Можете убрать "strategy_aggressiveness": 1.0, если нигде не используете
+        "strategy_aggressiveness": 1.0,
+    }
+
+    # Проверим, не хватает ли каких-то ключей
+    missing = {k: v for k, v in defaults.items() if k not in current_config}
+    if missing:
+        update_runtime_config(missing)
+        log(f"Initialized missing runtime config values: {missing}", level="INFO")
+
+
+# Примеры функций для расчёта
 def get_adaptive_risk_percent(balance):
     """
-    Returns adaptive risk percentage based on account size.
-
-    Args:
-        balance: Account balance in USDC
-
-    Returns:
-        Risk percentage for the given account size
+    Пример адаптивного риска, чистая версия без score.
     """
     if balance < 120:
-        return 0.01  # 1% for micro accounts (0-119 USDC)
+        return 0.01  # 1%
     elif balance < 300:
-        return 0.02  # 2% for small accounts (120-299 USDC)
+        return 0.02  # 2%
     else:
-        return 0.05  # 5% for standard accounts (300+ USDC)
+        return 0.05  # 5%
 
 
 def get_max_positions(balance):
     """
-    Returns maximum number of positions based on account size.
-
-    Args:
-        balance: Account balance in USDC
-
-    Returns:
-        Maximum number of open positions allowed
+    Пример функции, дающей максимальное число позиций.
     """
     if balance < 120:
-        return 2  # Micro tier: max 2 positions (0-119 USDC)
+        return 2
     elif balance < 300:
-        return 3  # Small tier: max 3 positions (120-299 USDC)
+        return 3
     else:
-        return 5  # Standard tier: max 5 positions (300+ USDC)
+        return 5
 
 
 def get_min_net_profit(balance):
-    """
-    Returns minimum acceptable profit for a trade based on account size.
-
-    Args:
-        balance: Account balance in USDC
-
-    Returns:
-        Minimum profit in USDC
-    """
-    if balance < 120:
-        return 0.2  # $0.2 for micro accounts (0-119 USDC)
-    elif balance < 300:
-        return 0.3  # $0.3 for small accounts (120-299 USDC)
-    else:
-        return 0.5  # $0.5 for standard accounts (300+ USDC)
-
-
-def calculate_volatility(df):
-    """Calculate volatility based on price range."""
-    if df is None or len(df) < 2:
-        return 0
-    df["range"] = df["high"] - df["low"]
-    return df["range"].mean() / df["close"].mean()
-
-
-def calculate_atr_volatility(df, period=14):
-    """Calculate ATR-based volatility."""
-    if df is None or len(df) < period + 1:
-        return 0
-
-    # Calculate True Range
-    df["tr1"] = abs(df["high"] - df["low"])
-    df["tr2"] = abs(df["high"] - df["close"].shift(1))
-    df["tr3"] = abs(df["low"] - df["close"].shift(1))
-    df["tr"] = df[["tr1", "tr2", "tr3"]].max(axis=1)
-
-    # Calculate ATR
-    df["atr"] = df["tr"].rolling(period).mean()
-
-    if len(df) > period and not pd.isna(df["atr"].iloc[-1]):
-        return df["atr"].iloc[-1] / df["close"].iloc[-1]
-    else:
-        return 0
-
-
-def get_btc_volatility(threshold=0.003):
-    from pair_selector import fetch_symbol_data
-
-    df = fetch_symbol_data("BTC/USDC:USDC")
-    if df is None or df.empty:
-        return False  # нет данных
-
-    atr_val = calculate_atr_volatility(df, period=14)  # берем ATR
-    if atr_val < threshold:
-        return True  # рынок «тихий»
-    return False
-
-
-def normalize_symbol(symbol: str) -> str:
-    """
-    Приводит символ к формату XXX/USDC:USDC, если нет :USDC на конце.
-    """
-    return symbol if ":USDC" in symbol else f"{symbol}:USDC"
-
-
-def calculate_risk_reward_ratio(entry_price, tp_price, sl_price, side):
-    """
-    Рассчитывает соотношение риск/прибыль для сделки.
-
-    Args:
-        entry_price: Цена входа
-        tp_price: Цена тейк-профита
-        sl_price: Цена стоп-лосса
-        side: Направление ("buy" или "sell")
-
-    Returns:
-        Соотношение риск/прибыль (reward / risk)
-    """
-    if side.lower() == "buy":
-        reward = abs(tp_price - entry_price)
-        risk = abs(entry_price - sl_price)
-    else:  # side == "sell"
-        reward = abs(entry_price - tp_price)
-        risk = abs(sl_price - entry_price)
-
-    if risk == 0:
-        return 0  # Избегаем деления на ноль
-
-    return reward / risk
-
-
-def check_min_profit(entry_price, tp_price, qty, tp_share, side, taker_fee_rate, min_profit):
-    """
-    Проверяет, обеспечивает ли сделка минимальную прибыль после комиссий.
-
-    Args:
-        entry_price: Цена входа
-        tp_price: Цена тейк-профита
-        qty: Количество
-        tp_share: Доля позиции, закрываемая на TP (0-1)
-        side: Направление ("buy" или "sell")
-        taker_fee_rate: Комиссия тейкера
-        min_profit: Минимальная требуемая прибыль в USDC
-
-    Returns:
-        (bool, float): Результат проверки и ожидаемая прибыль
-    """
-    # Рассчитываем прибыль без комиссий
-    if side.lower() == "buy":
-        gross_profit = qty * tp_share * (tp_price - entry_price)
-    else:  # side == "sell"
-        gross_profit = qty * tp_share * (entry_price - tp_price)
-
-    # Рассчитываем комиссии
-    open_commission = qty * entry_price * taker_fee_rate
-    close_commission = qty * tp_share * tp_price * taker_fee_rate
-    total_commission = open_commission + close_commission
-
-    # Чистая прибыль
-    net_profit = gross_profit - total_commission
-
-    return net_profit >= min_profit, net_profit
-
-
-def get_market_volatility_index():
-    """
-    Рассчитывает индекс волатильности рынка на основе ключевых пар.
-    Возвращает значение обычно между 0.5 (низкая волатильность) и 2.0 (высокая волатильность).
-    """
-    try:
-        from core.binance_api import fetch_ohlcv
-
-        # Используем основные пары для оценки общей волатильности рынка
-        key_pairs = ["BTC/USDC", "ETH/USDC"]
-        volatilities = []
-
-        for pair in key_pairs:
-            data = fetch_ohlcv(pair, timeframe="15m", limit=24)
-            if data and len(data) >= 24:
-                closes = [candle[4] for candle in data]
-                highs = [candle[2] for candle in data]
-                lows = [candle[3] for candle in data]
-
-                # Расчет относительного диапазона цен
-                ranges = [(h - low) / c for h, low, c in zip(highs, lows, closes)]
-                avg_range = sum(ranges) / len(ranges)
-
-                # Сравнение с "нормальным" диапазоном (базовое значение 0.01 или 1%)
-                rel_volatility = avg_range / 0.01
-                volatilities.append(rel_volatility)
-
-        if volatilities:
-            return sum(volatilities) / len(volatilities)
-
-        return 1.0  # Дефолтное значение - нормальная волатильность
-    except Exception as e:
-        log(f"Error calculating market volatility index: {e}", level="ERROR")
-        return 1.0  # Дефолтное значение в случае ошибки
+    """Если не нужна логика минимальной прибыли, возвращаем 0."""
+    return 0.0
 
 
 def reset_state_flags():
-    """Reset stop and shutdown flags in the state file."""
-    state = load_state()
-    state["stopping"] = False
-    state["shutdown"] = False
-    save_state(state)
-    from utils_logging import log
-
+    """Сбрасывает stopping и shutdown в state-файле."""
+    st = load_state()
+    st["stopping"] = False
+    st["shutdown"] = False
+    save_state(st)
     log("Reset stopping and shutdown flags in state file", level="INFO")
 
 
-# =======================
-# Open Interest Cache
-# =======================
-
-_symbol_oi_cache = {}
-
-
-def get_cached_symbol_open_interest(symbol):
-    return _symbol_oi_cache.get(symbol, 0.0)
-
-
-def update_cached_symbol_open_interest(symbol, value):
-    _symbol_oi_cache[symbol] = value
-
-
-# Add to utils_core.py
+# Утилиты для JSON-файлов (общие)
 def load_json_file(path, default=None):
-    """
-    Load data from a JSON file with error handling.
-
-    Args:
-        path: Path to the JSON file
-        default: Default value to return if loading fails
-
-    Returns:
-        dict: The loaded JSON data or default value
-    """
-    import json
-    import os
-
+    """Загрузка JSON с обработкой ошибок."""
     try:
         if os.path.exists(path):
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         else:
             log(f"File not found: {path}", level="WARNING")
@@ -604,27 +336,13 @@ def load_json_file(path, default=None):
 
 
 def save_json_file(path, data, indent=2):
-    """
-    Save data to a JSON file with error handling.
-
-    Args:
-        path: Path to the JSON file
-        data: Data to save (must be JSON serializable)
-        indent: Indentation level for the JSON file
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    import json
-    import os
-
+    """Сохранение JSON с обработкой ошибок."""
     try:
-        # Create directory if it doesn't exist
         directory = os.path.dirname(path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory)
 
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent)
         log(f"Successfully saved data to {path}", level="DEBUG")
         return True
@@ -634,16 +352,79 @@ def save_json_file(path, data, indent=2):
 
 
 def is_optimal_trading_hour():
-    """
-    Centralized check for optimal trading hours.
-    Excludes only deep night hours (3–7 UTC).
-    """
+    """Простая проверка «не торговать глубокой ночью»."""
     inactive_hours = [3, 4, 5, 6, 7]
     current_hour = datetime.utcnow().hour
     return current_hour not in inactive_hours
 
 
+def normalize_symbol(symbol: str) -> str:
+    """
+    Приводит пару к формату BASE/QUOTE:QUOTE без повторов.
+    Пример: "BTC-USDC" → "BTC/USDC:USDC"
+    """
+    if not symbol:
+        return ""
+
+    # Отсекаем повторные двоеточия, если уже есть ":USDC"
+    # split(':')[0] убирает всё, что идёт после первого двоеточия
+    symbol = symbol.upper().split(":")[0]
+
+    # Меняем - и : на /
+    symbol = symbol.replace("-", "/").replace(":", "/")
+
+    # Если нет '/', вернём как есть
+    if "/" not in symbol:
+        return symbol
+
+    base, quote = symbol.split("/", 1)
+    return f"{base}/{quote}:{quote}"
+
+
+def calculate_atr_volatility(df, period: int = 14) -> float:
+    """
+    Вычисляет ATR (Average True Range) по DataFrame с колонками ['high', 'low', 'close'].
+    Возвращает последнее значение (float).
+    """
+    try:
+        import ta
+
+        atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=period).average_true_range()
+        return float(atr_series.iloc[-1]) if len(atr_series) else 0.0
+    except Exception as e:
+        log(f"[calculate_atr_volatility] Error: {e}", level="ERROR")
+        return 0.0
+
+
+def get_market_volatility_index() -> float:
+    """
+    Возвращает относительную волатильность BTC: ATR / текущая цена
+    (примерный диапазон: 0.5–2.0).
+    """
+    try:
+        import pandas as pd
+        import ta
+
+        from core.binance_api import fetch_ohlcv
+
+        # Загружаем последние 50 свечей BTC/USDC (15м)
+        raw = fetch_ohlcv("BTC/USDC", timeframe="15m", limit=50)
+        if not raw or len(raw) < 20:
+            return 1.0
+
+        df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
+        atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
+        atr = atr_series.iloc[-1]
+        close_price = float(df["close"].iloc[-1])
+
+        return round(atr / close_price, 4) if close_price else 1.0
+
+    except Exception as e:
+        log(f"[Volatility] Ошибка в get_market_volatility_index: {e}", level="WARNING")
+        return 1.0
+
+
 if __name__ == "__main__":
     initialize_cache()
-    print(f"Balance: {get_cached_balance()}")
-    print(f"Positions: {len(get_cached_positions())}")
+    print("Balance:", get_cached_balance())
+    print("Positions:", len(get_cached_positions()))

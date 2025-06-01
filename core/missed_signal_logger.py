@@ -1,4 +1,5 @@
 # missed_signal_logger.py
+
 import json
 import os
 from datetime import datetime
@@ -8,19 +9,18 @@ from utils_core import normalize_symbol
 from utils_logging import log
 
 
-def log_missed_signal(symbol, score, breakdown, reason=""):
+def log_missed_signal(symbol, breakdown, reason=""):
     """
-    Log missed trading signals for analysis.
+    Log missed trading signals for analysis (without score).
 
     Args:
         symbol (str): Trading pair symbol
-        score (float): Signal score
         breakdown (dict): Components breakdown
         reason (str): Reason for signal rejection
     """
     symbol = normalize_symbol(symbol)
     timestamp = datetime.utcnow().isoformat()
-    log_entry = {"timestamp": timestamp, "symbol": symbol, "score": score, "breakdown": breakdown, "reason": reason}
+    log_entry = {"timestamp": timestamp, "symbol": symbol, "breakdown": breakdown, "reason": reason}
 
     # Create directory if it doesn't exist
     os.makedirs("data", exist_ok=True)
@@ -37,13 +37,13 @@ def log_missed_signal(symbol, score, breakdown, reason=""):
         else:
             data = []
 
-        # Keep only the last 100 entries to manage file size
+        # Keep only the last 100 entries
         data = data[-99:] + [log_entry]
 
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
 
-        log(f"{symbol} Logged missed signal: {reason}, score={score:.2f}", level="DEBUG")
+        log(f"{symbol} Logged missed signal: {reason}", level="DEBUG")
     except Exception as e:
         log(f"Error logging missed signal: {e}", level="ERROR")
 
@@ -58,7 +58,9 @@ def get_recent_missed_signals(limit=10):
     Returns:
         list: Recent missed signals
     """
-    filepath = "data/missed_signals.json"
+    from constants import MISSED_SIGNALS_LOG_FILE
+
+    filepath = MISSED_SIGNALS_LOG_FILE
     if not os.path.exists(filepath):
         return []
 
@@ -66,7 +68,6 @@ def get_recent_missed_signals(limit=10):
         with open(filepath, "r") as f:
             data = json.load(f)
 
-        # Sort by timestamp (newest first) and limit
         sorted_data = sorted(data, key=lambda x: x.get("timestamp", ""), reverse=True)
         return sorted_data[:limit]
     except Exception as e:

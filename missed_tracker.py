@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from threading import Lock
 
 from constants import CACHE_FILE
-from pair_selector import calculate_atr_volatility, calculate_short_term_metrics, fetch_symbol_data
+from pair_selector import calculate_atr_volatility, fetch_symbol_data
 from utils_core import normalize_symbol
 from utils_logging import log
 
@@ -25,7 +25,6 @@ def add_missed_opportunity(symbol: str):
     if abs(potential_profit) < 5:
         return
 
-    metrics = calculate_short_term_metrics(df)
     atr_vol = calculate_atr_volatility(df)
     avg_volume = df["volume"].mean()
     now = datetime.utcnow().isoformat()
@@ -34,7 +33,6 @@ def add_missed_opportunity(symbol: str):
         "symbol": symbol,
         "timestamp": now,
         "profit": round(potential_profit, 2),
-        "momentum": round(metrics.get("momentum", 0), 2),
         "atr_vol": round(atr_vol, 4),
         "avg_volume": round(avg_volume),
     }

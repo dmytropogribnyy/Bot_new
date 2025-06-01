@@ -47,7 +47,7 @@ if last_update_id is None:
 
 def process_telegram_commands(state: dict, handler_fn):
     # Correct import for the 'cmd_missedlog' function
-    from telegram.telegram_commands import cmd_missedlog, cmd_signalstats
+    from telegram.telegram_commands import cmd_signalstats
 
     global last_update_id
     while True:
@@ -92,7 +92,7 @@ def process_telegram_commands(state: dict, handler_fn):
                 log(f"🛰 Got command: {message.get('text')} from {user_id}", level="INFO")
 
                 # Check for new commands
-                command_handlers = {"/signalstats": cmd_signalstats, "/missedlog": cmd_missedlog}
+                command_handlers = {"/signalstats": cmd_signalstats}
 
                 command = message.get("text")
                 if command in command_handlers:

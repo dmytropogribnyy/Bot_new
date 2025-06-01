@@ -5,7 +5,8 @@ Implements adaptive filter thresholds based on market conditions and account siz
 Optimized for small USDC deposits and scalping strategies
 """
 
-from core.filter_adaptation import get_adaptive_relax_factor
+from filter_adaptation_leg import get_adaptive_relax_factor
+
 from utils_core import get_runtime_config
 from utils_logging import log
 

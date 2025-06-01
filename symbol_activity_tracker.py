@@ -4,8 +4,9 @@ import time
 from collections import defaultdict
 from threading import Lock
 
-from core.filter_adaptation import get_runtime_config
-from utils_core import load_json_file, save_json_file
+# Было: from filter_adaptation_leg import get_runtime_config
+# Заменяем на utils_core (или другой модуль, где вы храните get_runtime_config):
+from utils_core import get_runtime_config, load_json_file, save_json_file
 from utils_logging import log
 
 FILE_PATH = "data/symbol_signal_activity.json"
@@ -28,20 +29,29 @@ def save_activity(data):
 
 
 def track_symbol_signal(symbol):
+    """
+    Фиксируем, что по символу пришёл сигнал.
+    Очищаем записи старше ACTIVITY_WINDOW, затем добавляем текущий таймстамп.
+    """
     now = int(time.time())
     with ACTIVITY_LOCK:
         data = load_activity()
         if symbol not in data:
             data[symbol] = []
-        # Очистка старых записей
+        # Очистка старых записей (старше 1 часа)
         data[symbol] = [ts for ts in data[symbol] if ts >= now - ACTIVITY_WINDOW]
         data[symbol].append(now)
         save_activity(data)
 
 
 def get_most_active_symbols(top_n=5, minutes=60):
+    """
+    Возвращает список самых "активных" символов за последние N минут,
+    основываясь на том, сколько сигналов было зафиксировано.
+    """
     cutoff = int(time.time()) - minutes * 60
     counts = defaultdict(int)
+
     with ACTIVITY_LOCK:
         data = load_activity()
         for symbol, timestamps in data.items():
@@ -54,7 +64,8 @@ def get_most_active_symbols(top_n=5, minutes=60):
 
 def auto_adjust_relax_factors_from_missed(min_count_threshold=3, max_relax=0.5):
     """
-    Increase relax_factor for symbols with frequent missed opportunities
+    Увеличивает relax_factor для символов, у которых часто были пропущенные сигналы
+    (хранится в missed_opportunities.json), но не выше max_relax.
     """
     try:
         missed_file = "data/missed_opportunities.json"
@@ -71,6 +82,7 @@ def auto_adjust_relax_factors_from_missed(min_count_threshold=3, max_relax=0.5):
             normalized = symbol.replace("/", "").upper()
             count = stats.get("count", 0)
             if count >= min_count_threshold:
+                # Если в filter_adaptation.json нет relax_factor для этого символа — берём дефолт из runtime_config
                 current = filter_data.get(normalized, {}).get("relax_factor", get_runtime_config().get("relax_factor", 0.35))
                 if current < max_relax:
                     new_relax = round(min(current + 0.05, max_relax), 3)
@@ -89,25 +101,39 @@ def auto_adjust_relax_factors_from_missed(min_count_threshold=3, max_relax=0.5):
 
 def get_symbol_activity_data():
     """
-    Return signal activity data in the expected format:
+    Возвращает структуру с количеством сигналов в формате:
     {
-        "DOGE/USDC": {"signal_count_24h": 5},
-        ...
+      "DOGE/USDC": {"signal_count_24h": 5},
+      "BTC/USDC":  {"signal_count_24h": 3},
+      ...
     }
+
+    В примере below: signal_count_24h расчитывается как count_1h * 24,
+    но вы можете дальше доработать под реальные требования.
     """
     from pathlib import Path
 
-    from utils_core import load_json_file
-
-    path = Path("data/symbol_signal_activity.json")
+    path = Path(FILE_PATH)
     if not path.exists():
         return {}
 
     try:
         raw = load_json_file(path)
-        return {k: {"signal_count_24h": v.get("count_1h", 0) * 24} for k, v in raw.items()}
-    except Exception as e:
-        from utils_logging import log
+        # Допустим, у нас в raw для каждого символа храним: {"timestamps": [...]} или что-то подобное.
+        # Ниже упрощённо предполагаем, что raw[symbol] = {"count_1h": X}
+        # и умножаем на 24, чтобы получить примерную оценку за сутки.
+        result = {}
+        for symbol, info in raw.items():
+            # Если вы храните иначе, подкорректируйте логику:
+            # Например, у вас может быть raw[symbol] = [timestamps...], тогда нужно len(...) и т.д.
+            if isinstance(info, dict) and "count_1h" in info:
+                count_24h = info["count_1h"] * 24
+            else:
+                # fallback - просто длина массива
+                count_24h = len(info) * 24 if isinstance(info, list) else 0
+            result[symbol] = {"signal_count_24h": count_24h}
+        return result
 
+    except Exception as e:
         log(f"[SymbolActivity] Error loading activity data: {e}", level="ERROR")
         return {}

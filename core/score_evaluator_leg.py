@@ -1,14 +1,9 @@
 # score_evaluator.py
 import threading
-from datetime import datetime
-
-import pytz
 
 from common.config_loader import (
-    DRY_RUN,
     get_priority_small_balance_pairs,
 )
-from utils_core import get_runtime_config
 from utils_logging import log
 
 last_score_data = {}
@@ -24,56 +19,71 @@ signal_performance = {
 }
 
 
+# def get_adaptive_min_score(balance, market_volatility=None, symbol=None):
+#     """
+#     Get adaptive minimum score required for trade entry based on conditions
+#     with relax_boost factor applied for dynamic adjustment
+#     """
+#     # Base threshold based on account size
+#     # if balance < 120:
+#     #     base_threshold = 2.3  # Lower threshold for micro accounts
+#     # elif balance < 300:  # Updated from 250 to 300
+#     #     base_threshold = 2.8  # Moderate threshold for small accounts
+#     # else:
+#     #     base_threshold = 3.3  # Higher threshold for larger accounts
+
+#     # Temp
+#     if balance < 120:
+#         base_threshold = 1.6  # было 2.3
+#     elif balance < 300:
+#         base_threshold = 2.0  # было 2.8
+#     else:
+#         base_threshold = 2.3  # было 3.3
+
+#     # Adjust for market volatility
+#     vol_adjustment = 0
+#     if market_volatility == "high":
+#         vol_adjustment = -0.6  # More lenient during high volatility
+#     elif market_volatility == "low":
+#         vol_adjustment = +0.4  # More strict during low volatility
+
+#     # Adjustment for trading session (time of day)
+#     # Only consider deep night hours (3-7 UTC) as inactive
+#     inactive_hours = [3, 4, 5, 6, 7]
+#     hour_utc = datetime.now(pytz.UTC).hour
+#     session_adjustment = 0
+
+#     if hour_utc in inactive_hours:
+#         session_adjustment = +0.2  # More strict during deep night hours
+#     else:
+#         session_adjustment = -0.2  # More lenient during all other hours
+
+#     # Symbol-specific adjustment (priority pairs for small accounts)
+#     symbol_adjustment = 0
+#     if balance < 300 and symbol and symbol.split("/")[0] in ["XRP", "DOGE", "ADA", "MATIC", "DOT"]:
+#         symbol_adjustment = -0.2  # Bonus for small account priority pairs
+
+#     # Apply score_relax_boost from runtime_config for dynamic activity adjustment
+#     runtime_config = get_runtime_config()
+#     relax_boost = runtime_config.get("score_relax_boost", 1.0)
+
+#     # DRY_RUN mode uses lower threshold for testing
+#     dry_run_factor = 0.3 if DRY_RUN else 1.0
+
+#     # Calculate final threshold with all adjustments applied
+#     raw_threshold = (base_threshold + vol_adjustment + session_adjustment + symbol_adjustment) * dry_run_factor
+#     threshold = raw_threshold / relax_boost  # Apply relax boost as divisor
+
+#     log(f"{symbol} Adaptive min_score: {threshold:.2f} (base={base_threshold}, relax_boost={relax_boost})", level="DEBUG")
+
+#     # return max(1.8, threshold)  # Minimum floor of 1.8
+
+#     # temp
+#     return max(1.0, threshold)  # вместо max(1.8, threshold)
+
+
 def get_adaptive_min_score(balance, market_volatility=None, symbol=None):
-    """
-    Get adaptive minimum score required for trade entry based on conditions
-    with relax_boost factor applied for dynamic adjustment
-    """
-    # Base threshold based on account size
-    if balance < 120:
-        base_threshold = 2.3  # Lower threshold for micro accounts
-    elif balance < 300:  # Updated from 250 to 300
-        base_threshold = 2.8  # Moderate threshold for small accounts
-    else:
-        base_threshold = 3.3  # Higher threshold for larger accounts
-
-    # Adjust for market volatility
-    vol_adjustment = 0
-    if market_volatility == "high":
-        vol_adjustment = -0.6  # More lenient during high volatility
-    elif market_volatility == "low":
-        vol_adjustment = +0.4  # More strict during low volatility
-
-    # Adjustment for trading session (time of day)
-    # Only consider deep night hours (3-7 UTC) as inactive
-    inactive_hours = [3, 4, 5, 6, 7]
-    hour_utc = datetime.now(pytz.UTC).hour
-    session_adjustment = 0
-
-    if hour_utc in inactive_hours:
-        session_adjustment = +0.2  # More strict during deep night hours
-    else:
-        session_adjustment = -0.2  # More lenient during all other hours
-
-    # Symbol-specific adjustment (priority pairs for small accounts)
-    symbol_adjustment = 0
-    if balance < 300 and symbol and symbol.split("/")[0] in ["XRP", "DOGE", "ADA", "MATIC", "DOT"]:
-        symbol_adjustment = -0.2  # Bonus for small account priority pairs
-
-    # Apply score_relax_boost from runtime_config for dynamic activity adjustment
-    runtime_config = get_runtime_config()
-    relax_boost = runtime_config.get("score_relax_boost", 1.0)
-
-    # DRY_RUN mode uses lower threshold for testing
-    dry_run_factor = 0.3 if DRY_RUN else 1.0
-
-    # Calculate final threshold with all adjustments applied
-    raw_threshold = (base_threshold + vol_adjustment + session_adjustment + symbol_adjustment) * dry_run_factor
-    threshold = raw_threshold / relax_boost  # Apply relax boost as divisor
-
-    log(f"{symbol} Adaptive min_score: {threshold:.2f} (base={base_threshold}, relax_boost={relax_boost})", level="DEBUG")
-
-    return max(1.8, threshold)  # Minimum floor of 1.8
+    return 1.0
 
 
 def get_risk_percent_by_score(balance, score, win_streak=0, symbol=None):
@@ -190,10 +200,9 @@ def calculate_score(df, symbol=None, trade_count=0, winrate=0.0):
     """
     import math
 
-    from utils_core import get_cached_balance, get_runtime_config
-    from utils_logging import log
+    from utils_core import get_cached_balance
 
-    _config = get_runtime_config()
+    # _config = get_runtime_config()
     _balance = get_cached_balance()
 
     latest = df.iloc[-1]

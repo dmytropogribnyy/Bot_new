@@ -33,31 +33,36 @@ def main():
     markets = exchange.load_markets()
     print(f"\n✅ Loaded {len(markets)} markets")
 
+    # Фильтруем только USDC-фьючерсы
     usdc_symbols = [s for s in markets if "USDC" in s and "/USDC" in s and markets[s].get("contract")]
     print(f"🧩 Found {len(usdc_symbols)} USDC futures symbols\n")
 
     valid_symbols = []
 
-    for symbol in usdc_symbols:
+    total_usdc = len(usdc_symbols)
+    for i, symbol in enumerate(usdc_symbols, start=1):
+        # Одной строкой выводим и символ, и результат после проверки
+        print(f"[{i}/{total_usdc}] {symbol}... ", end="")
+
         count_3m = test_fetch_ohlcv(symbol, tf="3m")
         count_5m = test_fetch_ohlcv(symbol, tf="5m")
         count_15m = test_fetch_ohlcv(symbol, tf="15m")
 
         if min(count_3m, count_5m, count_15m) >= 30:
-            print(f"✅ {symbol} — OK (3m={count_3m}, 5m={count_5m}, 15m={count_15m})")
+            print(f"✅ OK (3m={count_3m}, 5m={count_5m}, 15m={count_15m})")
             valid_symbols.append(symbol)
         else:
-            print(f"⚠️ {symbol} — INSUFFICIENT DATA (3m={count_3m}, 5m={count_5m}, 15m={count_15m})")
+            print(f"⚠️ INSUFFICIENT DATA (3m={count_3m}, 5m={count_5m}, 15m={count_15m})")
 
         sleep(0.5)
 
-    # === Save to file ===
+    # === Сохраняем результат в файл ===
     Path("data").mkdir(exist_ok=True)
     path = Path("data/valid_usdc_symbols.json")
     with path.open("w", encoding="utf-8") as f:
         json.dump(valid_symbols, f, indent=2)
 
-    # === Final summary ===
+    # === Итоговая сводка ===
     total = len(usdc_symbols)
     valid = len(valid_symbols)
     skipped = total - valid

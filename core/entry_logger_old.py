@@ -1,5 +1,4 @@
 # entry_logger.py
-
 import csv
 import os
 from datetime import datetime
@@ -13,86 +12,79 @@ FIELDNAMES = [
     "symbol",
     "direction",
     "entry_price",
+    "score",
     "notional",
-    "type",  # <-- Новое поле вместо "score"
     "mode",
     "status",
-    "account_balance",
-    "commission",
-    "expected_profit",
-    "priority_pair",
-    "account_category",
+    "account_balance",  # Added for small account context
+    "commission",  # Added for fee tracking
+    "expected_profit",  # Added for absolute profit tracking
+    "priority_pair",  # Added to track priority pairs
+    "account_category",  # Added to categorize account size
 ]
 
 
 def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
     if DRY_RUN:
-        # Если DRY_RUN, то просто выводим лог в консоль (log_dry_entry)
         log_dry_entry(trade)
         return
 
-    # Получаем баланс (для расчёта account_category)
+    # Get account balance
     from utils_core import get_cached_balance, normalize_symbol
 
     balance = get_cached_balance()
 
-    # Трёхуровневая категоризация аккаунта
-    if balance < 120:
-        account_category = "Small"
-    elif balance < 300:
-        account_category = "Medium"
-    else:
-        account_category = "Standard"
+    # Determine account category - three-tier structure
+    account_category = "Small" if balance < 120 else "Medium" if balance < 300 else "Standard"
 
-    # Рассчитываем примерную комиссию (entry + exit)
+    # Calculate commission
     entry_price = trade.get("entry", 0)
     qty = trade.get("qty", 0)
-    commission = qty * entry_price * TAKER_FEE_RATE * 2
+    commission = qty * entry_price * TAKER_FEE_RATE * 2  # Entry and exit
+
+    # Check if this is a priority pair for small accounts
+    from common.config_loader import PRIORITY_SMALL_BALANCE_PAIRS
 
     symbol = normalize_symbol(trade.get("symbol", ""))
+    is_priority = "Yes" if symbol in PRIORITY_SMALL_BALANCE_PAIRS else "No"
 
-    # Пытаемся рассчитать ожидаемую прибыль (примерно).
+    # Calculate expected profit (simple approximation)
     direction = trade.get("direction", "")
     tp1_price = trade.get("tp1", 0)
-    tp1_share = 0.7  # 70% позиции на TP1
+    tp1_share = 0.7  # Default TP1 share
+
     if tp1_price and entry_price:
         if direction.lower() == "buy":
-            gross_profit = qty * tp1_share * (tp1_price - entry_price)
+            profit = qty * tp1_share * (tp1_price - entry_price)
         else:
-            gross_profit = qty * tp1_share * (entry_price - tp1_price)
-        expected_profit = gross_profit - commission
+            profit = qty * tp1_share * (entry_price - tp1_price)
+        expected_profit = profit - commission
     else:
         expected_profit = 0
 
-    # Новое поле type (fixed/dynamic/unknown)
-    pair_type = trade.get("type", "unknown")
-
-    # Готовим словарь для записи в CSV
-    entry_dict = {
+    os.makedirs(os.path.dirname(ENTRY_LOG_PATH), exist_ok=True)
+    entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "symbol": symbol,
         "direction": direction,
         "entry_price": round(entry_price, 6),
+        "score": trade.get("score"),
         "notional": round(entry_price * qty, 2),
-        "type": pair_type,
         "mode": mode,
         "status": status,
         "account_balance": round(balance, 2),
         "commission": round(commission, 6),
         "expected_profit": round(expected_profit, 6),
-        "priority_pair": trade.get("priority_pair", "No"),
+        "priority_pair": is_priority,
         "account_category": account_category,
     }
 
-    # Если файла ещё нет, пишем заголовок
     write_header = not os.path.exists(ENTRY_LOG_PATH)
-
     try:
-        os.makedirs(os.path.dirname(ENTRY_LOG_PATH), exist_ok=True)
         with open(ENTRY_LOG_PATH, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
             if write_header:
                 writer.writeheader()
-            writer.writerow(entry_dict)
+            writer.writerow(entry)
     except Exception as e:
         log(f"[entry_logger] Failed to write log: {e}", level="ERROR")
