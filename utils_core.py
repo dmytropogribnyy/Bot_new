@@ -281,19 +281,6 @@ def initialize_runtime_adaptive_config():
         log(f"Initialized missing runtime config values: {missing}", level="INFO")
 
 
-# Примеры функций для расчёта
-def get_adaptive_risk_percent(balance):
-    """
-    Пример адаптивного риска, чистая версия без score.
-    """
-    if balance < 120:
-        return 0.01  # 1%
-    elif balance < 300:
-        return 0.02  # 2%
-    else:
-        return 0.05  # 5%
-
-
 def get_max_positions(balance):
     """
     Пример функции, дающей максимальное число позиций.

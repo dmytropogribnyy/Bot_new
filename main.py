@@ -28,7 +28,7 @@ from core.failure_logger import log_failure
 from core.risk_utils import check_drawdown_protection
 
 # ====== Новая "чистая" strategy ======
-from core.strategy import fetch_data_multiframe, last_trade_times, last_trade_times_lock, should_enter_trade
+from core.strategy import last_trade_times, last_trade_times_lock, should_enter_trade
 
 # ====== Торговый движок (без score) ======
 from core.trade_engine import close_real_trade, enter_trade, trade_manager
@@ -96,45 +96,20 @@ def get_trading_signal(symbol):
             log_failure(symbol, all_failures)
             return None
 
-        # Если есть и BUY, и SELL — берём BUY приоритет
+        # Если есть и BUY, и SELL — выбираем BUY
         if buy_signal and sell_signal:
-            direction, _, is_reentry = buy_signal
-            # В этом месте при желании можно ещё и сравнить что-то,
-            # но обычно достаточно выбрать BUY при их конфликте.
-            # Если нужен приоритет SELL, — меняете логику.
-            breakdown = buy_signal[3] if len(buy_signal) > 3 else {}
+            direction, qty, is_reentry, breakdown = buy_signal
         elif buy_signal:
-            direction, _, is_reentry = buy_signal
-            breakdown = buy_signal[3] if len(buy_signal) > 3 else {}
+            direction, qty, is_reentry, breakdown = buy_signal
         else:
-            direction, _, is_reentry = sell_signal
-            breakdown = sell_signal[3] if len(sell_signal) > 3 else {}
+            direction, qty, is_reentry, breakdown = sell_signal
 
-        # Если нужно отдельно загрузить df, расчёт qty/SL:
-        df = fetch_data_multiframe(symbol)
-        if df is None or len(df) < 10:
-            log(f"[Signal] Insufficient data for {symbol} (for qty calc)", level="WARNING")
-            return None
-
-        entry_price = df["close"].iloc[-1]
-        stop_price = entry_price * (1 - 0.007) if direction == "buy" else entry_price * (1 + 0.007)
-
-        balance = get_cached_balance()
-        from trade_engine import calculate_position_size
-
-        from common.config_loader import get_adaptive_risk_percent
-
-        risk_percent = get_adaptive_risk_percent(balance)
-        risk_amount = balance * risk_percent
-
-        qty = calculate_position_size(entry_price, stop_price, risk_amount)
-
-        # Возвращаем breakdown, если хотим логировать в enter_trade(...)
+        # Формируем итоговый dict для дальнейшей логики
         return {
             "side": direction,
             "qty": qty,
             "is_reentry": is_reentry,
-            "breakdown": breakdown,  # добавить, если нужно
+            "breakdown": breakdown,
         }
 
     except Exception as e:
@@ -423,55 +398,53 @@ def start_trading_loop():
 
 
 if __name__ == "__main__":
-    # Разделитель в логе
     add_log_separator()
-    # Сбросим флаги stopping/shutdown
     reset_state_flags()
     log("State flags reset at startup", level="INFO")
 
-    # Убедимся, что нужные файлы есть
+    # Гарантируем, что каталог data/ есть
+    os.makedirs("data", exist_ok=True)
+
+    # Проверяем файлы missed_opportunities.json, tp_performance.csv
     if not os.path.exists("data/missed_opportunities.json"):
         with open("data/missed_opportunities.json", "w") as f:
             f.write("{}")
 
     if not os.path.exists("data/tp_performance.csv"):
         with open("data/tp_performance.csv", "w") as f:
-            f.write("Date,Symbol,Side,Entry Price,Exit Price,Qty,TP1 Hit,TP2 Hit,SL Hit,PnL (%),Result,Held (min),HTF Confirmed,ATR,ADX,BB Width,Commission,Net PnL (%),Absolute Profit\n")
-    log("✅ Checked data files: missed_opportunities.json and tp_performance.csv", level="INFO")
+            f.write("Date,Symbol,Side,Entry Price,Exit Price,Qty,TP1 Hit,TP2 Hit,SL Hit," "PnL (%),Result,Held (min),Commission,Net PnL (%),Absolute Profit," "Type,ATR,Exit Reason\n")
 
-    # Почистим старые сигнал-фэилы
+    log("✅ Checked required data files", level="INFO")
+
+    # Очищаем старые сигнал-фейлы
     auto_cleanup_signal_failures()
 
-    # Инициализация базовых настроек (если нужно)
+    # Инициализируем runtime config
     initialize_runtime_adaptive_config()
-    log("✅ Adaptive config initialized (basic defaults)", level="INFO")
+    log("✅ Adaptive config initialized", level="INFO")
 
+    # Печатаем config
     config = get_runtime_config()
     log(f"Runtime config at startup: {config}", level="DEBUG")
 
-    # Обновим state
+    # Запоминаем время старта
     state = load_state()
     current_time = time.time()
     state["session_start_time"] = current_time
     save_state(state)
-    log(f"New bot session started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}", level="INFO")
+    log(f"🟢 Bot session started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}", level="INFO")
 
-    # Убедимся, что логи для TP созданы
     ensure_log_exists()
 
-    # Запустим decay
     schedule_failure_decay()
-    log("✅ Initial failure decay completed", level="INFO")
+    log("✅ Initial failure decay scheduled", level="INFO")
 
-    # Запустим initial continuous scan
     log("Running initial continuous scan...", level="INFO")
     continuous_scan()
 
-    from apscheduler.schedulers.background import BackgroundScheduler
-
     scheduler = BackgroundScheduler()
 
-    # Пример задачи пере-загрузки символов каждые 30 минут
+    # Пример ротации
     def rotate_symbols():
         syms = select_active_symbols()
         log(f"🔁 Symbol re-rotation. {len(syms)} pairs loaded.", level="INFO")
@@ -482,13 +455,13 @@ if __name__ == "__main__":
 
     ip_monitor.boot_time = time.time()
 
-    # Поток для обработки телеграм-команд
+    # Запускаем поток обработки команд Telegram
     threading.Thread(
         target=lambda: process_telegram_commands(state, lambda msg, st: telegram_commands.handle_telegram_command(msg, st, stop_event=stop_event)),
         daemon=True,
     ).start()
 
-    # Мониторинг IP
+    # Запускаем мониторинг IP
     threading.Thread(
         target=lambda: start_ip_monitor(
             lambda: telegram_commands._initiate_stop("ip_changed", stop_event=stop_event),
@@ -497,19 +470,11 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
-    # Запуск ротации символов
-    threading.Thread(
-        target=lambda: start_symbol_rotation(stop_event),
-        daemon=True,
-    ).start()
+    # Ротация символов, отчётные потоки
+    threading.Thread(target=lambda: start_symbol_rotation(stop_event), daemon=True).start()
+    threading.Thread(target=start_report_loops, daemon=True).start()
 
-    # Отчётные потоки
-    threading.Thread(
-        target=start_report_loops,
-        daemon=True,
-    ).start()
-
-    # Пример других job'ов
+    from core.risk_adjuster import auto_adjust_risk  # ✅ добавлено
     from core.status_logger import log_symbol_activity_status
 
     scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
@@ -522,13 +487,13 @@ if __name__ == "__main__":
     scheduler.add_job(check_block_health, "interval", minutes=30, id="risk_health_check")
     scheduler.add_job(log_symbol_activity_status, "interval", minutes=10, id="status_logger")
 
-    # Пример миграции (old blocking -> risk system)
+    scheduler.add_job(auto_adjust_risk, "interval", hours=1, id="risk_adjuster")
+
     from core.fail_stats_tracker import migrate_from_blocked_symbols
 
     migrate_from_blocked_symbols()
     log("✅ Migrated from old blocking to graduated risk system", level="INFO")
 
-    # Пример debug-сканера
     from common.config_loader import ENABLE_FULL_DEBUG_MONITORING
     from debug_tools import run_monitor
 
@@ -536,12 +501,8 @@ if __name__ == "__main__":
         log("✅ ENABLE_FULL_DEBUG_MONITORING is True — starting diagnostic audit", level="INFO")
         run_monitor()
 
-    # Запуск планировщика
     scheduler.start()
-    log(
-        "Scheduler started with daily summary, pair rotation, missed opportunities, " "failure decay, risk health checks, etc.",
-        level="INFO",
-    )
+    log("✅ Scheduler started (daily summary, symbol rotation, missed ops, etc.)", level="INFO")
 
     try:
         start_trading_loop()

@@ -9,7 +9,6 @@ import threading
 import time
 from threading import Lock, Thread
 
-# === Импортируйте нужные функции и константы ===
 from common.config_loader import (
     DRY_RUN,
     LEVERAGE_MAP,
@@ -25,8 +24,16 @@ from ip_monitor import (
 from stats import send_daily_report
 from telegram.registry import COMMAND_REGISTRY
 from telegram.telegram_handler import handle_errors
-from telegram.telegram_utils import escape_markdown_v2, register_command, send_telegram_message
-from utils_core import get_cached_balance, get_runtime_config, save_state
+from telegram.telegram_utils import (
+    escape_markdown_v2,
+    register_command,
+    send_telegram_message,
+)
+from utils_core import (
+    get_cached_balance,
+    get_runtime_config,
+    save_state,
+)
 from utils_logging import get_recent_logs, log
 
 command_lock = Lock()
@@ -38,12 +45,13 @@ command_lock = Lock()
 
 
 def _format_pos_real(p):
-    """Format real position for Telegram display with enhanced error handling."""
+    """Format REAL position info for Telegram (symbol, qty, entry, notional)."""
     try:
         symbol = escape_markdown_v2(p.get("symbol", ""))
         qty = float(p.get("contracts", 0))
         entry = float(p.get("entryPrice", 0))
         side = p.get("side", "").upper()
+        # По умолчанию возьмём левередж из LEVERAGE_MAP или 1
         leverage = int(p.get("leverage", LEVERAGE_MAP.get(p.get("symbol", ""), 1))) or 1
 
         if not qty or not entry:
@@ -51,6 +59,7 @@ def _format_pos_real(p):
 
         notional = qty * entry
         margin = notional / leverage
+
         return f"{symbol} ({side}, {qty:.3f}) @ {entry:.2f} ≈ {notional:.2f} USDC " f"(Lev: {leverage}x, Margin: {margin:.2f})"
     except Exception as e:
         log(f"Error formatting real position: {e}", level="ERROR")
@@ -71,6 +80,7 @@ def _format_pos_dry(t):
 
         notional = qty * entry
         margin = notional / leverage
+
         return f"{symbol} ({side}, {qty:.3f}) @ {entry:.2f} ≈ {notional:.2f} USDC " f"(Lev: {leverage}x, Margin: {margin:.2f})"
     except Exception as e:
         log(f"Error formatting DRY position: {e}", level="ERROR")
@@ -79,20 +89,21 @@ def _format_pos_dry(t):
 
 def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
     """
-    Monitor stop process with timeout, closing positions again if needed.
+    Monitor stop/shutdown process with a time limit,
+    re-closing positions if needed.
     """
     start = time.time()
     check_interval = 60
     last_notification_time = 0
     notification_interval = 30
 
-    while state.get("stopping") and time.time() - start < timeout_minutes * 60:
+    from core.binance_api import get_open_positions
+
+    while state.get("stopping") and (time.time() - start < timeout_minutes * 60):
         try:
             if DRY_RUN:
                 open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
             else:
-                from core.binance_api import get_open_positions
-
                 positions = get_open_positions()
                 open_details = [_format_pos_real(p) for p in positions]
 
@@ -112,11 +123,11 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
                     # Timeout
                     if open_details:
                         msg = (
-                            "⏰ *Stop timeout warning*.\n"
+                            f"⏰ *Stop timeout warning*.\n"
                             f"{len(open_details)} positions still open after {int((time.time()-start)//60)} min:\n" + "\n".join(open_details) + "\nUse /panic to force close."
                         )
                         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-                        log(f"[Stop] Timeout warning after {int((time.time()-start)//60)} min", level="INFO")
+                        log(f"[Stop] Timeout warning after {int((time.time() - start)//60)} min", level="INFO")
                     else:
                         send_telegram_message(
                             f"🛑 *{reason}*.\nAll positions closed. Bot will exit shortly.",
@@ -130,7 +141,6 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
                     symbols = [p.split("(")[0] for p in open_details]
                     msg = f"⏳ Still waiting on {len(open_details)} positions: {', '.join(symbols)}"
                     send_telegram_message(msg, force=True)
-
                 last_notification_time = current_time
 
         except Exception as e:
@@ -138,10 +148,8 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
 
         time.sleep(check_interval)
 
-    # Final check
+    # Final check: if not DRY_RUN
     if not DRY_RUN:
-        from core.binance_api import get_open_positions
-
         positions = get_open_positions()
         if not any(float(p.get("contracts", 0)) > 0 for p in positions):
             send_telegram_message("✅ All positions closed.", force=True)
@@ -151,7 +159,7 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
 
 
 # ---------------------------------------------------------------------
-#  Modern Commands
+#  Основные команды: /help, /stop, /open, /panic, /shutdown, etc.
 # ---------------------------------------------------------------------
 
 
@@ -202,7 +210,7 @@ def cmd_help(message, state=None, stop_event=None):
             help_msg += f"{cmd} - {desc}\n"
         help_msg += "\n"
 
-    # Остальные категории
+    # прочие категории
     for cat, commands_list in grouped.items():
         if cat not in known_cats:
             help_msg += f"📎 *{cat}*\n"
@@ -225,21 +233,17 @@ def cmd_stop(message, state=None, stop_event=None):
     """
     log("[Stop] /stop command received.", level="INFO")
 
-    # 1) Ставим stopping=True
     state["stopping"] = True
     save_state(state)
 
-    # 2) Если надо - остановим главный цикл
     if stop_event:
         stop_event.set()
 
-    # 3) Закрываем позиции (DRY или REAL)
     if DRY_RUN:
         open_details = []
         for t in trade_manager._trades.values():
             if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit"):
                 open_details.append(_format_pos_dry(t))
-        # No real close needed in DRY_RUN
     else:
         from core.binance_api import get_open_positions
 
@@ -253,9 +257,8 @@ def cmd_stop(message, state=None, stop_event=None):
                 except Exception as e:
                     log(f"[Stop] Failed to close position: {e}", level="ERROR")
 
-    # 4) Отправим уведомление
     if open_details:
-        msg = "🛑 *Stop command received*.\nClosing these positions:\n" + "\n".join(open_details) + "\nNo new trades will be opened."
+        msg = "🛑 *Stop command received*.\n" "Closing these positions:\n" + "\n".join(open_details) + "\nNo new trades will be opened."
         Thread(target=_monitor_stop_timeout, args=("Stop command", state, 30), daemon=True).start()
     else:
         msg = "🛑 *Stop command received*.\nNo open positions. Bot will stop shortly."
@@ -285,6 +288,8 @@ def cmd_open(message, state=None, stop_event=None):
             entry = float(t["entry"])
             side = t["side"].lower()
 
+            # Пример: calculate_tp_targets(...) → (tp1, tp2)
+            # Если tp2 не используется, всё равно вернёт (tp1, tp2).
             tp1, tp2 = calculate_tp_targets(symbol, side, entry)
             profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
             profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
@@ -293,11 +298,14 @@ def cmd_open(message, state=None, stop_event=None):
 
             pos_str = _format_pos_dry(t)
             open_list.append(f"{pos_str}\n→ TP1: +{profit1:.2f} | TP2: +{profit2:.2f}")
+
         header = "🔍 *Open DRY positions:*"
+
     else:
         open_list = []
         positions = exchange.fetch_positions()
         real_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
+
         for p in real_positions:
             symbol = p["symbol"]
             qty = float(p["contracts"])
@@ -319,8 +327,10 @@ def cmd_open(message, state=None, stop_event=None):
         send_telegram_message(f"{header} none.", force=True)
     else:
         msg = (
-            f"{header}\n\n" + "\n\n".join(open_list) + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({tp1_total / balance * 100:.2f}%)\n"
-            f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({tp2_total / balance * 100:.2f}%)"
+            f"{header}\n\n"
+            + "\n\n".join(open_list)
+            + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({tp1_total / balance * 100:.2f}%)\n"
+            + f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({tp2_total / balance * 100:.2f}%)"
         )
         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
 
@@ -335,6 +345,7 @@ def cmd_panic(message, state=None, stop_event=None):
     Usage: /panic
     """
     log("[Panic] /panic command received.", level="WARNING")
+
     state["stopping"] = True
     state["panic_mode"] = True
     save_state(state)
@@ -344,7 +355,6 @@ def cmd_panic(message, state=None, stop_event=None):
 
     send_telegram_message("🚨 PANIC MODE ACTIVATED! Closing all positions...", force=True)
 
-    # Ставим таймер на 30с, чтобы принудительно завершить процесс
     def force_exit():
         log("[Panic] Timeout reached - forcing exit", level="WARNING")
         send_telegram_message("⚠️ Panic timeout reached - forcing exit", force=True)
@@ -398,6 +408,7 @@ def cmd_panic(message, state=None, stop_event=None):
 
         timeout_timer.cancel()
         os._exit(0)
+
     except Exception as e:
         log(f"[Panic] Critical error: {e}", level="ERROR")
         send_telegram_message(f"❌ Panic error: {e}", force=True)
@@ -439,7 +450,7 @@ def cmd_shutdown(message, state=None, stop_event=None):
                         log(f"[Shutdown] Failed to close pos: {e}", level="ERROR")
 
         if open_details:
-            msg = "🛑 *Shutdown initiated*.\nWaiting for positions:\n" + "\n".join(open_details) + "\nBot will exit soon."
+            msg = "🛑 *Shutdown initiated*.\n" "Waiting for positions:\n" + "\n".join(open_details) + "\nBot will exit soon."
             Thread(target=_monitor_stop_timeout, args=("Shutdown", state, 15), daemon=True).start()
         else:
             msg = "🛑 *Shutdown initiated*.\nNo open positions. Exiting immediately."
@@ -455,7 +466,7 @@ def cmd_shutdown(message, state=None, stop_event=None):
 
 
 # ---------------------------------------------------------------------
-#  IP / Misc Commands
+#  IP / Misc Commands (router_reboot, etc.)
 # ---------------------------------------------------------------------
 
 
@@ -557,6 +568,11 @@ def cmd_runtime(message, state=None, stop_event=None):
     log("Sent /runtime config values.", level="INFO")
 
 
+# ---------------------------------------------------------------------
+#  Статистика/Конфигурация: /signalstats, /summary, /status, /statuslog
+# ---------------------------------------------------------------------
+
+
 @register_command("/signalstats", category="Статистика")
 @handle_errors
 def cmd_signalstats(message, state=None, stop_event=None):
@@ -570,24 +586,28 @@ def cmd_signalstats(message, state=None, stop_event=None):
         send_telegram_message("component_tracker_log.json not found.", force=True)
         return
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-    stats = {}
-    for sym, info in data.items():
-        for comp, success in info.get("components", {}).items():
-            if comp not in stats:
-                stats[comp] = {"total": 0, "success": 0}
-            stats[comp]["total"] += 1
-            if success:
-                stats[comp]["success"] += 1
+        stats = {}
+        for sym, info in data.items():
+            comps = info.get("components", {})
+            for comp, success in comps.items():
+                if comp not in stats:
+                    stats[comp] = {"total": 0, "success": 0}
+                stats[comp]["total"] += 1
+                if success:
+                    stats[comp]["success"] += 1
 
-    msg = "*📊 Component Success Rate:*\n"
-    for comp, s in stats.items():
-        rate = 100 * s["success"] / s["total"] if s["total"] > 0 else 0
-        msg += f"`{comp}`: {rate:.1f}% ({s['success']}/{s['total']})\n"
+        msg = "*📊 Component Success Rate:*\n"
+        for comp, s in stats.items():
+            rate = 100.0 * s["success"] / s["total"] if s["total"] else 0
+            msg += f"`{comp}`: {rate:.1f}% ({s['success']}/{s['total']})\n"
 
-    send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
+        send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
+    except Exception as e:
+        send_telegram_message(f"❌ /signalstats error: {e}", force=True)
 
 
 @register_command("/summary", category="Статистика")
@@ -601,7 +621,7 @@ def cmd_summary(message, state=None, stop_event=None):
     from utils_core import get_runtime_config
 
     try:
-        with open("data/dynamic_symbols.json") as f:
+        with open("data/dynamic_symbols.json", encoding="utf-8") as f:
             pairs = json.load(f)
 
         cfg = get_runtime_config()
@@ -610,7 +630,10 @@ def cmd_summary(message, state=None, stop_event=None):
         max_dyn = cfg.get("max_dynamic_pairs", "?")
         relax = cfg.get("relax_factor", "?")
 
-        msg = "*📊 Bot Summary*\n" f"• Active Pairs: `{len(pairs)}`\n" f"• Relax Factor: `{relax}`\n" f"• Min/Max Dynamic: `{min_dyn}/{max_dyn}`\n" f"• Balance: `{balance}` USDC"
+        # Если pairs — список словарей: symbol = item["symbol"]
+        symbol_count = len(pairs)
+
+        msg = "*📊 Bot Summary*\n" f"• Active Pairs: `{symbol_count}`\n" f"• Relax Factor: `{relax}`\n" f"• Min/Max Dynamic: `{min_dyn}/{max_dyn}`\n" f"• Balance: `{balance}` USDC"
         send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
     except Exception as e:
         send_telegram_message(f"❌ Failed to generate summary: {e}", force=True)
@@ -626,13 +649,13 @@ def cmd_status(message, state=None, stop_event=None):
     from utils_core import get_cached_balance, get_runtime_config
 
     try:
+        balance_now = float(get_cached_balance())
         cfg = get_runtime_config()
-        balance = get_cached_balance()
-        mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
         max_pos = cfg.get("max_concurrent_positions", "?")
         risk = cfg.get("risk_multiplier", 1.0)
+        mode = "DRY_RUN" if DRY_RUN else "REAL_RUN"
 
-        msg = "*🤖 Bot Status*\n" f"• Mode: `{mode}`\n" f"• Balance: `{balance:.2f}` USDC\n" f"• Max Positions: `{max_pos}`\n" f"• Risk Multiplier: `{risk}`"
+        msg = "*🤖 Bot Status*\n" f"• Mode: `{mode}`\n" f"• Balance: `{balance_now:.2f}` USDC\n" f"• Max Positions: `{max_pos}`\n" f"• Risk Multiplier: `{risk}`"
         send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
     except Exception as e:
         send_telegram_message(f"❌ Error in /status: {e}", force=True)
@@ -644,17 +667,16 @@ def cmd_statuslog(message, state=None, stop_event=None):
     """
     📄 Краткий лог последнего сканирования (debug_monitoring_summary.json)
     """
+    import json
+    import os
+    from datetime import datetime
+
+    path = "data/debug_monitoring_summary.json"
+    if not os.path.exists(path):
+        send_telegram_message("No debug_monitoring_summary.json found.", force=True)
+        return
+
     try:
-        import json
-        import os
-        from datetime import datetime
-
-        path = "data/debug_monitoring_summary.json"
-
-        if not os.path.exists(path):
-            send_telegram_message("No debug_monitoring_summary.json found.", force=True)
-            return
-
         with open(path, "r", encoding="utf-8") as f:
             dbg = json.load(f)
 
@@ -692,18 +714,53 @@ def cmd_signalconfig(message, state=None, stop_event=None):
         send_telegram_message(f"❌ /signalconfig error: {e}", force=True)
 
 
+@register_command("/pairstoday", category="Инструменты")
+@handle_errors
+def cmd_pairstoday(message, state=None, stop_event=None):
+    """
+    📊 Показать текущие активные пары (fixed / dynamic).
+    Usage: /pairstoday
+    """
+    import json
+
+    from common.config_loader import FIXED_PAIRS
+
+    try:
+        with open("data/dynamic_symbols.json", "r", encoding="utf-8") as f:
+            pairs = json.load(f)
+
+        fixed = [p for p in pairs if p in FIXED_PAIRS]
+        dynamic = [p for p in pairs if p not in FIXED_PAIRS]
+
+        msg = (
+            "<b>📊 Active Pairs Today</b>\n"
+            f"Total: <b>{len(pairs)}</b>\n\n"
+            f"<b>📌 Fixed:</b> {', '.join([p.split('/')[0] for p in fixed]) or 'None'}\n"
+            f"<b>⚡ Dynamic:</b> {', '.join([p.split('/')[0] for p in dynamic]) or 'None'}"
+        )
+
+        send_telegram_message(msg, force=True, parse_mode="HTML")
+    except Exception as e:
+        send_telegram_message(f"❌ /pairstoday error: {e}", force=True)
+
+
+# ---------------------------------------------------------------------
+# /rejections: без `score=...` (если в entry_log.csv поля score нет)
+# ---------------------------------------------------------------------
+
+
 @register_command("/rejections", category="Инструменты")
 @handle_errors
 def cmd_rejections(message, state=None, stop_event=None):
     """
-    ⚠️ Последние причины отказов (entry_log.csv)
+    ⚠️ Последние причины отказов (из entry_log.csv)
     """
     import csv
     import os
 
     path = "data/entry_log.csv"
     if not os.path.exists(path):
-        send_telegram_message("📭 No entry_log.csv found. No rejections logged yet.")
+        send_telegram_message("📭 No entry_log.csv found. No rejections logged yet.", force=True)
         return
 
     rows = []
@@ -713,14 +770,28 @@ def cmd_rejections(message, state=None, stop_event=None):
             rows.append(r)
 
     if not rows:
-        send_telegram_message("✅ No rejections found.")
+        send_telegram_message("✅ No rejections found.", force=True)
         return
 
-    rows = sorted(rows, key=lambda x: x["timestamp"], reverse=True)[:10]
+    # Возьмём последние 10
+    rows = sorted(rows, key=lambda x: x.get("timestamp", ""), reverse=True)[:10]
+
     msg = "⚠️ *Recent Rejections:*\n\n"
     for r in rows:
-        msg += f"{r['timestamp'][:19]} | {r['symbol']} | score={r['score']}\n" f"reasons: {r['reasons']}\n\n"
+        ts = r.get("timestamp", "")[:19]
+        sym = r.get("symbol", "???")
+        reasons = r.get("reasons", "")
+
+        # Если поле "score" отсутствует — убираем
+        # or, if you do have it:
+        # sc = r.get("score", "")
+        # msg += f"{ts} | {sym} | score={sc}\nreasons: {reasons}\n\n"
+
+        # Вариант без score:
+        msg += f"{ts} | {sym}\nreasons: {reasons}\n\n"
+
     send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
+    log("Sent /rejections info from entry_log.csv", level="INFO")
 
 
 # ---------------------------------------------------------------------
@@ -731,7 +802,8 @@ def cmd_rejections(message, state=None, stop_event=None):
 def handle_telegram_command(message, state, stop_event=None):
     """
     Главный обработчик Telegram-команд:
-    ищет команды в COMMAND_REGISTRY (через @register_command), иначе "неизвестная команда".
+    ищет команды в COMMAND_REGISTRY (через @register_command),
+    иначе - "неизвестная команда".
     """
     log(f"All registered commands: {list(COMMAND_REGISTRY.keys())}", level="DEBUG")
 

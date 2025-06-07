@@ -6,11 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import ta
 
 from common.config_loader import (
     DRY_RUN,
     MIN_NOTIONAL_OPEN,
-    SL_PERCENT,
     TAKER_FEE_RATE,
     TRADING_HOURS_FILTER,
 )
@@ -186,8 +186,9 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
       5) Определяем BUY/SELL
       6) Расчёт qty, TP, SL
       7) Запись в entry_log + Telegram
-      8) Возврат (direction, True) или (None, [reasons])
+      8) Возврат (signal_tuple, reasons) или (None, reasons)
     """
+
     # Если symbol пришёл в виде словаря
     if isinstance(symbol, dict):
         symbol = symbol.get("symbol", "")
@@ -234,32 +235,34 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # Логируем детали сигналов (удобно для отладки)
+    # Логируем детали сигналов
     log(f"[1+1] {symbol} breakdown={breakdown}, passes=True", level="DEBUG")
-
-    # Запишем компоненты как успешные
     log_component_data(symbol, breakdown, is_successful=True)
 
-    # 5) BUY/SELL (ориентируемся на macd_5m)
+    # 5) Определяем BUY/SELL (ориентируемся на macd_5m)
     macd_val = df["macd_5m"].iloc[-1]
     macd_sig = df["macd_signal_5m"].iloc[-1]
     direction = "BUY" if macd_val > macd_sig else "SELL"
 
     # 6) qty + TP/SL
     entry_price = df["close"].iloc[-1]
-    stop_price = entry_price * (1 - SL_PERCENT) if direction == "BUY" else entry_price * (1 + SL_PERCENT)
+    atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
 
+    atr = atr_series.iloc[-1]
+    atr_multiplier = 1.5
+    sl_distance = atr * atr_multiplier
+
+    stop_price = entry_price - sl_distance if direction == "BUY" else entry_price + sl_distance
     balance = get_cached_balance()
     risk_percent = get_adaptive_risk_percent(balance)
     qty = calculate_position_size(entry_price, stop_price, balance * risk_percent, symbol=symbol)
 
     if not qty:
-        # fallback при слишком маленьком qty
         qty = MIN_NOTIONAL_OPEN / entry_price
 
     notional = qty * entry_price
     commission = 2 * (qty * entry_price * TAKER_FEE_RATE)
-    net_check = (qty * abs(entry_price * 0.01)) - commission  # упрощённая оценка PnL
+    net_check = (qty * abs(entry_price * 0.01)) - commission
 
     if net_check <= 0:
         failure_reasons.append("insufficient_profit")
@@ -273,7 +276,7 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # Кулдаун (проверка, не слишком ли быстро пытаемся войти снова)
+    # Кулдаун
     with last_trade_times_lock:
         now_ts = datetime.utcnow().timestamp()
         last_t = last_trade_times.get(symbol)
@@ -294,6 +297,8 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
         "notional": round(notional, 2),
         "breakdown": breakdown,
         "pair_type": pair_type,
+        "atr": round(atr, 5),
+        "sl": round(stop_price, 5),
     }
     log_entry(entry_data, status="SUCCESS", mode="DRY_RUN" if DRY_RUN else "REAL_RUN")
 
@@ -302,9 +307,11 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
     else:
         send_telegram_message(f"🚀 OPEN {symbol} ({pair_type}) {direction} qty={qty:.3f}", force=True)
 
-    is_reentry = False  # или логика, если хочешь реализовать повторные входы
+    is_reentry = False  # или своя логика повторных входов
 
-    return (direction, True, is_reentry, breakdown), []
+    # ✔ Возвращаем кортеж (signal, reasons).
+    # Первый элемент — (direction, qty, is_reentry, breakdown), второй — пустой список причин
+    return (direction, qty, is_reentry, breakdown), []
 
 
 def calculate_tp_targets():
