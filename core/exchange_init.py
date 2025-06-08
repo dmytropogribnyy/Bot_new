@@ -3,7 +3,8 @@ import time
 
 import ccxt
 
-from common.config_loader import API_KEY, API_SECRET, DRY_RUN, LEVERAGE_MAP, SYMBOLS_ACTIVE, USE_TESTNET
+from common.config_loader import API_KEY, API_SECRET, DRY_RUN, SYMBOLS_ACTIVE, USE_TESTNET
+from common.leverage_config import LEVERAGE_MAP
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 

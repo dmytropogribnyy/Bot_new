@@ -2,6 +2,7 @@
 from common.config_loader import MIN_NOTIONAL_OPEN
 from core.binance_api import convert_symbol, safe_call_retry
 from core.exchange_init import exchange
+from utils_core import extract_symbol
 from utils_logging import log
 
 
@@ -31,6 +32,7 @@ def create_post_only_limit_order(symbol, side, amount, price):
     """
     Create a post-only limit order (to ensure maker fee).
     """
+    symbol = extract_symbol(symbol)
     api_symbol = convert_symbol(symbol)
     try:
         return safe_call_retry(exchange.create_order, api_symbol, "limit", side, amount, price, {"postOnly": True})

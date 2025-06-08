@@ -21,6 +21,9 @@ def fetch_open_interest(symbol):
 
     try:
         response = requests.get("https://fapi.binance.com/fapi/v1/openInterest", params={"symbol": binance_symbol}, timeout=5)
+        if response.status_code != 200:
+            return 0.0
+
         data = response.json()
         open_interest = float(data.get("openInterest", 0))
         _open_interest_cache[symbol] = (open_interest, now)

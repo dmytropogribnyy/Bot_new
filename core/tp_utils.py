@@ -17,47 +17,48 @@ from utils_logging import log
 
 def calculate_tp_levels(entry_price: float, side: str, df=None, regime: str = None):
     """
-    Финальный вариант для "TP1 + SL + (trailing вместо TP2)":
-
-      - TP1 = ATR * 1.0
-      - TP2 = None (убираем жёсткий потолок)
-      - SL  = ATR * 1.5
-
-    Если ATR недоступен, fallback на TP1_PERCENT, SL_PERCENT.
+    Финальный вариант расчёта TP/SL:
+      - Пытаемся взять ATR из df["atr"], если DataFrame валиден и не пуст.
+      - Если не получилось — fallback на TP1_PERCENT / SL_PERCENT.
+      - Корректируем TP/SL под режим (flat/trend).
+      - Возвращаем (tp1_price, tp2_price, sl_price, tp1_share, tp2_share).
     """
-
     if entry_price is None or entry_price <= 0:
         log(f"[calculate_tp_levels] Некорректная цена входа {entry_price}", level="ERROR")
         return None, None, None, TP1_SHARE, 0
 
-    if not side or side.lower() not in ("buy", "sell"):
-        log(f"[calculate_tp_levels] Некорректное значение side={side}", level="ERROR")
+    side_lower = side.lower()
+    if side_lower not in ("buy", "sell"):
+        log(f"[calculate_tp_levels] Некорректный side={side}", level="ERROR")
         return None, None, None, TP1_SHARE, 0
 
-    # Дефолты (fallback)
+    # Базовые проценты по умолчанию
     tp1_pct = TP1_PERCENT
     sl_pct = SL_PERCENT
 
-    if df is not None and "atr" in df.columns and not df["atr"].empty:
+    # Проверяем, что df — настоящий DataFrame с колонкой "atr"
+    valid_df = df is not None and isinstance(df, pd.DataFrame) and not df.empty and "atr" in df.columns
+    if valid_df:
         try:
-            atr = df["atr"].iloc[-1]
-            if atr and atr > 0:
-                atr_pct = atr / entry_price
-                # TP1 = ATR × 1.0
-                # SL  = ATR × 1.5
+            atr_value = df["atr"].iloc[-1]
+            if atr_value and atr_value > 0:
+                atr_pct = atr_value / entry_price
+                # Примерная логика: TP1= 1×ATR, SL=1.5×ATR
                 tp1_pct = max(atr_pct * 1.0, TP1_PERCENT)
                 sl_pct = max(atr_pct * 1.5, SL_PERCENT)
-
                 log(
-                    f"[calculate_tp_levels] ATR-based: ATR={atr:.6f}, TP1={tp1_pct:.4f}, SL={sl_pct:.4f}",
+                    f"[calculate_tp_levels] ATR-based: ATR={atr_value:.6f}, " f"TP1={tp1_pct:.4f}, SL={sl_pct:.4f}",
                     level="DEBUG",
                 )
             else:
-                log("[calculate_tp_levels] Невалидный ATR, используем fallback", level="WARNING")
+                log("[calculate_tp_levels] Невалидный ATR → fallback", level="WARNING")
         except Exception as e:
-            log(f"[calculate_tp_levels] Ошибка расчёта ATR: {e}", level="ERROR")
+            log(f"[calculate_tp_levels] Ошибка обработки df ATR: {e}", level="ERROR")
+    else:
+        # Если df не подходит — fallback
+        log("[calculate_tp_levels] df нет или пуст, используем fallback", level="DEBUG")
 
-    # Если у вас есть regime (flat/trend) — можно чуть корректировать tp1_pct / sl_pct
+    # Коррекция в зависимости от режима
     if AUTO_TP_SL_ENABLED and regime:
         if regime == "flat":
             tp1_pct *= FLAT_ADJUSTMENT
@@ -65,33 +66,27 @@ def calculate_tp_levels(entry_price: float, side: str, df=None, regime: str = No
         elif regime == "trend":
             sl_pct *= TREND_ADJUSTMENT
 
-    # Подсчитаем финальные цены
-    side_lower = side.lower()
-    try:
-        if side_lower == "buy":
-            tp1_price = entry_price * (1 + tp1_pct)
-            # tp2 = None
-            tp2_price = None
-            sl_price = entry_price * (1 - sl_pct)
-        else:
-            tp1_price = entry_price * (1 - tp1_pct)
-            tp2_price = None
-            sl_price = entry_price * (1 + sl_pct)
+    # Итоговые цены
+    if side_lower == "buy":
+        tp1_price = entry_price * (1 + tp1_pct)
+        tp2_price = None  # без второго ТП
+        sl_price = entry_price * (1 - sl_pct)
+    else:
+        tp1_price = entry_price * (1 - tp1_pct)
+        tp2_price = None
+        sl_price = entry_price * (1 + sl_pct)
 
-        # TP1 приоритет
-        qty_tp1 = TP1_SHARE
-        qty_tp2 = 0  # нет TP2
+    # Доли для ТП1/ТП2
+    qty_tp1 = TP1_SHARE
+    qty_tp2 = 0  # либо ещё что-то, если используете TP2
 
-        return (
-            round(tp1_price, 4),
-            tp2_price,
-            round(sl_price, 4),
-            qty_tp1,
-            qty_tp2,
-        )
-    except Exception as e:
-        log(f"[calculate_tp_levels] Ошибка при расчёте: {e}", level="ERROR")
-        return None, None, None, TP1_SHARE, 0
+    return (
+        round(tp1_price, 4),
+        tp2_price,
+        round(sl_price, 4),
+        qty_tp1,
+        qty_tp2,
+    )
 
 
 def log_trade_result(symbol, side, entry_price, exit_price, quantity, pnl, duration, reason=None):

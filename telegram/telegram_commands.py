@@ -5,14 +5,13 @@ All commands use @register_command(...), each with a category.
 """
 
 import os
-import threading
 import time
 from threading import Lock, Thread
 
 from common.config_loader import (
     DRY_RUN,
-    LEVERAGE_MAP,
 )
+from common.leverage_config import LEVERAGE_MAP
 from core.exchange_init import exchange
 from core.trade_engine import close_real_trade, trade_manager
 from ip_monitor import (
@@ -47,12 +46,14 @@ command_lock = Lock()
 def _format_pos_real(p):
     """Format REAL position info for Telegram (symbol, qty, entry, notional)."""
     try:
-        symbol = escape_markdown_v2(p.get("symbol", ""))
+        symbol_raw = p.get("symbol", "")
+        symbol = escape_markdown_v2(symbol_raw)
         qty = float(p.get("contracts", 0))
         entry = float(p.get("entryPrice", 0))
         side = p.get("side", "").upper()
+
         # По умолчанию возьмём левередж из LEVERAGE_MAP или 1
-        leverage = int(p.get("leverage", LEVERAGE_MAP.get(p.get("symbol", ""), 1))) or 1
+        leverage = int(p.get("leverage", LEVERAGE_MAP.get(symbol_raw, 1))) or 1
 
         if not qty or not entry:
             return f"{symbol} ({side}, 0.000) @ 0.00 (Lev: {leverage}x)"
@@ -69,11 +70,12 @@ def _format_pos_real(p):
 def _format_pos_dry(t):
     """Format DRY_RUN trade for Telegram display with enhanced error handling."""
     try:
-        symbol = escape_markdown_v2(t.get("symbol", ""))
+        symbol_raw = t.get("symbol", "")
+        symbol = escape_markdown_v2(symbol_raw)
         side = t.get("side", "").upper()
         qty = float(t.get("qty", 0))
         entry = float(t.get("entry", 0))
-        leverage = LEVERAGE_MAP.get(t.get("symbol", ""), 5)
+        leverage = LEVERAGE_MAP.get(symbol_raw, 5)
 
         if not qty or not entry:
             return f"{symbol} ({side}, 0.000) @ 0.00 (Lev: {leverage}x)"
@@ -81,7 +83,8 @@ def _format_pos_dry(t):
         notional = qty * entry
         margin = notional / leverage
 
-        return f"{symbol} ({side}, {qty:.3f}) @ {entry:.2f} ≈ {notional:.2f} USDC " f"(Lev: {leverage}x, Margin: {margin:.2f})"
+        return f"{symbol} ({side}, {qty:.3f}) @ {entry:.2f} ≈ {notional:.2f} USDC (Lev: {leverage}x, Margin: {margin:.2f})"
+
     except Exception as e:
         log(f"Error formatting DRY position: {e}", level="ERROR")
         return f"{t.get('symbol', 'Unknown')} (Error)"
@@ -267,6 +270,32 @@ def cmd_stop(message, state=None, stop_event=None):
     send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
 
 
+@register_command("/resume", category="Управление")
+@handle_errors
+def cmd_resume(message, state=None, stop_event=None):
+    """
+    ▶️ Возобновить работу бота после /stop.
+    Usage: /resume
+    """
+    # Если в state стоит "stopping" и нет "shutdown",
+    # то достаточно снять флаг stopping
+    if state.get("shutdown"):
+        send_telegram_message("⚠️ Bot is in shutdown mode, cannot resume.", force=True)
+        log("[Resume] Attempted /resume but bot is in shutdown mode.", level="WARNING")
+        return
+
+    if not state.get("stopping"):
+        send_telegram_message("Bot is already running.", force=True)
+        log("[Resume] Bot already running, no action taken.", level="INFO")
+        return
+
+    state["stopping"] = False
+    save_state(state)
+
+    send_telegram_message("✅ Trading resumed. Bot will continue scanning and opening new trades.", force=True)
+    log("[Resume] Bot resumed from /stop.", level="INFO")
+
+
 @register_command("/open", category="Активность")
 @handle_errors
 def cmd_open(message, state=None, stop_event=None):
@@ -284,12 +313,10 @@ def cmd_open(message, state=None, stop_event=None):
         trades = [t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
         for t in trades:
             symbol = t["symbol"]
-            qty = float(t["qty"])
-            entry = float(t["entry"])
-            side = t["side"].lower()
+            qty = float(t.get("qty", 0))
+            entry = float(t.get("entry", 0))
+            side = t.get("side", "").lower()
 
-            # Пример: calculate_tp_targets(...) → (tp1, tp2)
-            # Если tp2 не используется, всё равно вернёт (tp1, tp2).
             tp1, tp2 = calculate_tp_targets(symbol, side, entry)
             profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
             profit2 = (tp2 - entry) * qty if side == "buy" else (entry - tp2) * qty
@@ -308,9 +335,9 @@ def cmd_open(message, state=None, stop_event=None):
 
         for p in real_positions:
             symbol = p["symbol"]
-            qty = float(p["contracts"])
-            entry = float(p["entryPrice"])
-            side = p["side"].lower()
+            qty = float(p.get("contracts", 0))
+            entry = float(p.get("entryPrice", 0))
+            side = p.get("side", "").lower()
 
             tp1, tp2 = calculate_tp_targets(symbol, side, entry)
             profit1 = (tp1 - entry) * qty if side == "buy" else (entry - tp1) * qty
@@ -326,12 +353,10 @@ def cmd_open(message, state=None, stop_event=None):
     if not open_list:
         send_telegram_message(f"{header} none.", force=True)
     else:
-        msg = (
-            f"{header}\n\n"
-            + "\n\n".join(open_list)
-            + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({tp1_total / balance * 100:.2f}%)\n"
-            + f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({tp2_total / balance * 100:.2f}%)"
-        )
+        pct1 = (tp1_total / balance * 100) if balance else 0
+        pct2 = (tp2_total / balance * 100) if balance else 0
+
+        msg = f"{header}\n\n" + "\n\n".join(open_list) + f"\n\n📊 *Total TP1:* {tp1_total:.2f} USDC ({pct1:.2f}%)\n" + f"🏆 *Total TP2:* {tp2_total:.2f} USDC ({pct2:.2f}%)"
         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
 
     log("Sent /open positions with potential TP/SL info.", level="INFO")
@@ -340,78 +365,17 @@ def cmd_open(message, state=None, stop_event=None):
 @register_command("/panic", category="Управление")
 @handle_errors
 def cmd_panic(message, state=None, stop_event=None):
-    """
-    🚨 Форсированное закрытие всех позиций и ордеров (таймаут 30с).
-    Usage: /panic
-    """
     log("[Panic] /panic command received.", level="WARNING")
-
     state["stopping"] = True
-    state["panic_mode"] = True
     save_state(state)
-
     if stop_event:
         stop_event.set()
 
     send_telegram_message("🚨 PANIC MODE ACTIVATED! Closing all positions...", force=True)
 
-    def force_exit():
-        log("[Panic] Timeout reached - forcing exit", level="WARNING")
-        send_telegram_message("⚠️ Panic timeout reached - forcing exit", force=True)
-        os._exit(1)
+    from core.trade_engine import handle_panic
 
-    timeout_timer = threading.Timer(30, force_exit)
-    timeout_timer.daemon = True
-    timeout_timer.start()
-
-    try:
-        positions = exchange.fetch_positions()
-        active_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
-        if not active_positions:
-            log("[Panic] No active positions found", level="INFO")
-            send_telegram_message("✅ No active positions found", force=True)
-            timeout_timer.cancel()
-            os._exit(0)
-            return
-
-        # Cancel all orders
-        symbols = [p["symbol"] for p in active_positions]
-        for sym in set(symbols):
-            try:
-                exchange.futures_cancel_all_open_orders(symbol=sym.replace("/", ""))
-                log(f"[Panic] Cancelled all orders for {sym}", level="INFO")
-            except Exception as e:
-                log(f"[Panic] Failed to cancel orders for {sym}: {e}", level="ERROR")
-
-        # Force-close all positions
-        for pos in active_positions:
-            sym = pos["symbol"]
-            side = "sell" if pos["side"] == "long" else "buy"
-            qty = float(pos["contracts"])
-            try:
-                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                log(f"[Panic] Force closed {sym}: {qty} {pos['side']}", level="INFO")
-            except Exception as e:
-                log(f"[Panic] Failed to close {sym}: {e}", level="ERROR")
-                send_telegram_message(f"⚠️ Failed to close {sym}: {e}", force=True)
-
-        # Final check
-        positions = exchange.fetch_positions()
-        remaining = [p for p in positions if float(p.get("contracts", 0)) > 0]
-        if remaining:
-            rem = [p["symbol"] for p in remaining]
-            log(f"[Panic] {len(remaining)} positions still open: {', '.join(rem)}", level="WARNING")
-            send_telegram_message(f"⚠️ {len(remaining)} positions still open. Forcing exit.", force=True)
-        else:
-            log("[Panic] All positions closed", level="INFO")
-            send_telegram_message("✅ All positions closed. Exiting...", force=True)
-
-        timeout_timer.cancel()
-        os._exit(0)
-
-    except Exception as e:
-        log(f"[Panic] Critical error: {e}", level="ERROR")
-        send_telegram_message(f"❌ Panic error: {e}", force=True)
+    handle_panic(stop_event)
 
 
 @register_command("/shutdown", category="Управление")

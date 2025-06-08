@@ -4,7 +4,7 @@ from datetime import datetime
 
 from constants import INACTIVE_CANDIDATES_FILE, SYMBOLS_FILE
 from pair_selector import fetch_all_symbols, fetch_symbol_data, get_performance_score
-from utils_core import get_runtime_config, load_json_file
+from utils_core import extract_symbol, get_runtime_config, load_json_file
 from utils_logging import log
 
 
@@ -22,7 +22,9 @@ def continuous_scan():
     ]
 
     all_symbols = set(fetch_all_symbols())
-    active_symbols = set(load_json_file(SYMBOLS_FILE) or [])
+    raw_active = load_json_file(SYMBOLS_FILE) or []
+    active_symbols = set(extract_symbol(s) for s in raw_active)
+
     candidates = all_symbols - active_symbols
 
     log(f"🔍 Scanning {len(candidates)} inactive symbols across adaptive thresholds...", level="INFO")

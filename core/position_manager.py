@@ -5,8 +5,8 @@ Controls position limits, size calculations, and validates new position requests
 """
 
 # Import from project modules
-from core.risk_utils import calculate_position_value_limit
-from utils_core import get_cached_balance, get_max_positions, safe_call_retry
+from core.risk_utils import calculate_position_value_limit, get_max_positions
+from utils_core import extract_symbol, get_cached_balance, safe_call_retry
 from utils_logging import log
 
 
@@ -37,7 +37,7 @@ def can_open_new_position(balance):
     Returns:
         bool: True if a new position can be opened, False otherwise
     """
-    from common.config_loader import get_max_positions
+    from core.risk_utils import get_max_positions
 
     current_positions = get_open_positions_count()
     max_positions = get_max_positions(balance)
@@ -57,6 +57,7 @@ def get_position_size(symbol):
     Returns:
         float: Position size (positive for long, negative for short, 0 for no position)
     """
+    symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
 
     try:
@@ -80,6 +81,7 @@ def can_increase_position(symbol, additional_qty):
     Returns:
         bool: True if position can be increased, False otherwise
     """
+    symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
 
     try:
@@ -118,6 +120,7 @@ def execute_position_increase(symbol, side, additional_qty):
     Returns:
         dict: Order result or None if failed
     """
+    symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
     from utils_core import safe_call_retry
 
@@ -148,6 +151,7 @@ def execute_partial_close(symbol, side, reduction_qty):
     Returns:
         dict: Order result or None if failed
     """
+    symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
     from utils_core import safe_call_retry
 

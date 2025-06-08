@@ -5,7 +5,7 @@ from datetime import datetime
 from threading import Lock
 
 from constants import FAILURE_LOG_FILE
-from utils_core import normalize_symbol
+from utils_core import extract_symbol
 from utils_logging import log
 
 failure_log_lock = Lock()
@@ -19,7 +19,7 @@ def log_failure(symbol, reasons):
         symbol: Trading pair symbol
         reasons: List of failure reasons
     """
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
     if not reasons:
         return
 

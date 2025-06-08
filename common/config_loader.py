@@ -125,7 +125,7 @@ PAIR_ROTATION_MIN_INTERVAL = int(get_config("PAIR_ROTATION_MIN_INTERVAL", 600))
 
 # ========== Risk Management ==========
 RISK_PERCENT = None  # will be set dynamically
-MAX_POSITIONS = int(get_config("MAX_POSITIONS", 3))  # Deprecated
+MAX_POSITIONS = int(get_config("MAX_POSITIONS", 5))  # Deprecated
 MAX_OPEN_ORDERS = int(get_config("MAX_OPEN_ORDERS", 5))
 MAX_MARGIN_PERCENT = float(get_config("MAX_MARGIN_PERCENT", 0.2))
 MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
@@ -209,23 +209,6 @@ VOLATILITY_SKIP_ENABLED = get_config("VOLATILITY_SKIP_ENABLED", "True") == "True
 VOLATILITY_ATR_THRESHOLD = float(get_config("VOLATILITY_ATR_THRESHOLD", 0.0018))
 VOLATILITY_RANGE_THRESHOLD = float(get_config("VOLATILITY_RANGE_THRESHOLD", 0.004))
 
-# ========== Leverage Settings ==========
-LEVERAGE_MAP = {
-    "BTCUSDT": 5,
-    "ETHUSDT": 5,
-    "BTCUSDC": 5,
-    "ETHUSDC": 5,
-    "DOGEUSDC": 12,
-    "XRPUSDC": 12,
-    "ADAUSDC": 10,
-    "SOLUSDC": 6,
-    "BNBUSDC": 5,
-    "LINKUSDC": 8,
-    "ARBUSDC": 6,
-    "SUIUSDC": 6,
-    "MATICUSDC": 10,
-    "DOTUSDC": 8,
-}
 
 # ========== Daily Goal Tracking ==========
 TRACK_DAILY_TRADE_TARGET = get_config("TRACK_DAILY_TRADE_TARGET", "True") == "True"

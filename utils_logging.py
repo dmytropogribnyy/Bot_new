@@ -6,6 +6,7 @@ from colorama import Fore, Style, init
 from filelock import FileLock
 
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+from utils_core import extract_symbol
 
 init(autoreset=True)
 
@@ -127,7 +128,7 @@ def log_dry_entry(entry_data):
     """
     Лог для DRY-RUN (упрощённая версия без score).
     """
-    symbol = entry_data.get("symbol", "N/A")
+    symbol = extract_symbol(entry_data.get("symbol", ""))
     entry_price = entry_data.get("entry", 0)
     direction = entry_data.get("direction", "N/A")
     msg = f"DRY-RUN {symbol} {direction}@{entry_price}"

@@ -1,31 +1,33 @@
 # risk_utils.py
+from datetime import datetime
+
+from common.config_loader import SYMBOLS_ACTIVE
+from core.binance_api import fetch_open_orders
+from core.exchange_init import exchange
+from telegram.telegram_utils import send_telegram_message
+from utils_logging import log
 
 """
 Risk management utilities for BinanceBot
 Implements adaptive risk allocation, position limits, and drawdown protection
 """
 
-from datetime import datetime
-
-from core.exchange_init import exchange
-from telegram.telegram_utils import send_telegram_message
-from utils_logging import log
-
 
 def get_adaptive_risk_percent(balance, atr_percent=None, volume_usdc=None, win_streak=0):
     """
-    Simplified adaptive risk allocation without 'score' or global performance stats.
+    Adaptive risk allocation, reading max_risk from get_max_risk() and also
+    applying runtime_config["risk_multiplier"] if present.
 
     Args:
         balance (float): Current account balance in USDC
-        atr_percent (float, optional): ATR percentage of the trading pair (e.g. 0.35)
+        atr_percent (float, optional): ATR ratio (e.g. 0.35)
         volume_usdc (float, optional): 24h average volume in USDC
         win_streak (int, optional): Current consecutive winning trades
 
     Returns:
-        float: Risk percentage (e.g. 0.02-0.03) based on inputs
+        float: Risk percentage in [0, max_risk], e.g. ~0.02..0.03
     """
-    # Base risk by account tier
+    # 1) Базовый риск по размеру баланса
     if balance < 120:
         base_risk = 0.020  # 2.0% for micro tier
     elif balance < 300:
@@ -33,37 +35,47 @@ def get_adaptive_risk_percent(balance, atr_percent=None, volume_usdc=None, win_s
     else:
         base_risk = 0.028  # 2.8% for larger accounts
 
-    # Optional bonuses
+    # 2) asset_quality_bonus (по vol & ATR)
     asset_quality_bonus = 0.0
-
-    # Example: higher volatility (ATR%) => slightly higher risk
     if atr_percent is not None:
         if atr_percent > 0.4:
             asset_quality_bonus += 0.008
         elif atr_percent > 0.3:
             asset_quality_bonus += 0.005
 
-    # Example: higher volume => slightly higher risk
     if volume_usdc is not None:
         if volume_usdc > 100000:
             asset_quality_bonus += 0.006
         elif volume_usdc > 50000:
             asset_quality_bonus += 0.004
 
-    # Win streak bonus
+    # 3) Win streak bonus
     win_streak_bonus = min(win_streak * 0.002, 0.006)  # up to +0.6%
 
-    # Final cap on risk
-    max_risk = 0.03  # 3% cap by default (or fetch from get_max_risk())
+    # 4) Кап из risk_settings.json
+    max_risk = get_max_risk()  # вместо жёсткого 0.03
 
-    # Calculate final
-    final_risk = base_risk + asset_quality_bonus + win_streak_bonus
-    final_risk = min(final_risk, max_risk)
+    # 5) Складываем всё вместе
+    raw_risk = base_risk + asset_quality_bonus + win_streak_bonus
+    final_risk = min(raw_risk, max_risk)
 
+    # 6) Учитываем runtime_config["risk_multiplier"]
+    from utils_core import get_runtime_config
+
+    config = get_runtime_config()
+    risk_mult = config.get("risk_multiplier", 1.0)
+
+    final_risk *= risk_mult
+
+    # 7) Логируем всё детально
     log(
-        f"[AdaptiveRisk] base={base_risk:.3f}, asset={asset_quality_bonus:.3f}, " f"streak={win_streak_bonus:.3f}, final={final_risk:.3f}",
+        f"[AdaptiveRisk] balance={balance:.1f} | base={base_risk:.3f} "
+        f"asset_bonus={asset_quality_bonus:.3f} streak_bonus={win_streak_bonus:.3f} "
+        f"raw_risk={raw_risk:.3f} max_risk={max_risk:.3f} mult={risk_mult:.2f} "
+        f"=> final_risk={final_risk:.3f}",
         level="DEBUG",
     )
+
     return final_risk
 
 
@@ -98,27 +110,26 @@ def get_max_risk():
         return 0.03
 
 
-def check_capital_utilization(balance: float, new_position_value: float = 0) -> bool:
-    """
-    Ensure total capital utilization stays under 70%, including active positions and open limit orders.
-    """
-    try:
-        positions = exchange.fetch_positions()
-        current_exposure = sum(abs(float(pos.get("contracts", 0)) * float(pos.get("entryPrice", 0))) for pos in positions if pos.get("contracts") and pos.get("entryPrice"))
-
-        open_orders = exchange.fetch_open_orders()
-        orders_exposure = sum(float(order.get("amount", 0)) * float(order.get("price", 0)) for order in open_orders if order.get("type") == "limit")
-
-        total_exposure = current_exposure + orders_exposure + new_position_value
-        max_allowed = balance * 0.7
-
-        if total_exposure > max_allowed:
-            log(f"[Risk] Capital utilization too high: {total_exposure:.2f} > {max_allowed:.2f} (limit=70%)", level="WARNING")
-            return False
+def check_capital_utilization(balance, new_notional, threshold=0.8):
+    if balance <= 0:
         return True
-    except Exception as e:
-        log(f"[Risk] Error checking capital utilization: {e}", level="ERROR")
-        return True
+
+    total_open_notional = 0
+
+    for symbol in SYMBOLS_ACTIVE:
+        try:
+            orders = fetch_open_orders(symbol)
+            for order in orders:
+                price = float(order.get("price", 0))
+                amount = float(order.get("amount", 0))
+                total_open_notional += price * amount
+        except Exception:
+            continue
+
+    total_after_trade = total_open_notional + new_notional
+    utilization = total_after_trade / balance
+
+    return utilization <= threshold
 
 
 def set_max_risk(risk):

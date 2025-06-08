@@ -5,7 +5,7 @@ from threading import Lock
 import pandas as pd
 
 from common.config_loader import DRY_RUN, EXPORT_PATH, TP_LOG_FILE
-from utils_core import normalize_symbol
+from utils_core import extract_symbol
 from utils_logging import log
 
 # ===========================
@@ -74,15 +74,15 @@ def log_trade_result(
     absolute_profit: float = 0.0,
 ):
     """
-    Низкоуровневая запись сделки в tp_performance.csv (и TP_LOG_FILE),
-    без отправки Telegram-сообщений (чтобы не дублировать).
+    Низкоуровневая запись сделки в tp_performance.csv.
+    Нет аргумента htf_confirmed — убрали, чтобы не было ошибки.
 
-    Пишем расширенные поля:
+    Пишет расширенные поля:
       Date, Symbol, Side, Entry Price, Exit Price, Qty,
       TP1 Hit, TP2 Hit, SL Hit, PnL (%), Result, Held (min),
       Commission, Net PnL (%), Absolute Profit, Type, ATR, Exit Reason
     """
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
 
     if DRY_RUN:
         return
@@ -138,7 +138,6 @@ def log_trade_result(
             "Exit Reason",
         ]
 
-        # Запись и в TP_LOG_FILE, и в EXPORT_PATH
         for path in [TP_LOG_FILE, EXPORT_PATH]:
             exists = os.path.isfile(path)
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -148,17 +147,15 @@ def log_trade_result(
                     writer.writerow(header)
                 writer.writerow(row)
 
-        # Запись в лог
         log(
-            f"[REAL_RUN] {symbol} {final_result}: PnL={pnl_percent:.2f}%, " f"Net={net_pnl:.2f}%, Abs={absolute_profit:.2f}, ATR={atr:.3f}, Type={pair_type}, Reason={exit_reason or 'None'}",
+            f"[REAL_RUN] {symbol} {final_result}: PnL={pnl_percent:.2f}%, "
+            f"Net={net_pnl:.2f}%, Abs={absolute_profit:.2f}, ATR={atr:.3f}, "
+            f"Type={pair_type}, Reason={exit_reason or 'None'}",
             level="INFO",
         )
 
     except Exception as e:
         log(f"[TP Logger] Error writing trade for {symbol}: {e}", level="ERROR")
-        # Не отправляем телеграм здесь, чтобы не дублировать
-        # Но при желании можно fallback:
-        # send_telegram_message(f"❌ Error logging trade: {e}", force=True)
 
 
 def get_last_trade():

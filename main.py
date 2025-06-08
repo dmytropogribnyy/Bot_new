@@ -4,10 +4,12 @@ Main trading loop for BinanceBot
 Manages the core trading cycle, risk management, and drawdown protection
 """
 
+import json
 import os
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -58,12 +60,12 @@ from tp_logger import ensure_log_exists
 from tp_optimizer import run_tp_optimizer
 from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import (
+    extract_symbol,
     get_cached_balance,
     get_runtime_config,
     initialize_cache,
     initialize_runtime_adaptive_config,
     load_state,
-    normalize_symbol,
     reset_state_flags,
     save_state,
 )
@@ -76,27 +78,56 @@ initialize_risk_percent()
 stop_event = threading.Event()
 
 
+def restore_active_trades():
+    """
+    Восстанавливает активные сделки из data/active_trades.json при старте бота.
+    """
+    file_path = Path("data/active_trades.json")
+    if not file_path.exists():
+        return  # Файл не найден — пропускаем
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            trades = json.load(f)
+
+        restored = 0
+        for symbol, trade_data in trades.items():
+            trade_manager.add_trade(symbol, trade_data)
+            restored += 1
+
+        if restored > 0:
+            send_telegram_message(f"♻️ Restored {restored} active trades from file", force=True)
+            log(f"[Startup] Restored {restored} trades from active_trades.json", level="INFO")
+
+    except Exception as e:
+        log(f"[Startup] Failed to restore active trades: {e}", level="ERROR")
+
+
 def get_trading_signal(symbol):
     """
-    Генерирует торговый сигнал для указанного символа.
+    Генерирует торговый сигнал для указанного символа (строка).
     Возвращает dict или None.
     """
+
+    # Если у нас вдруг передали весь словарь вместо строки — подстраховываемся:
     if isinstance(symbol, dict):
         symbol = symbol.get("symbol", "")
 
-    symbol = normalize_symbol(symbol)
+    # Далее нормализуем строку символа (например, убираем лишние префиксы/суффиксы)
+    symbol = extract_symbol(symbol)
 
     try:
         # Вызываем should_enter_trade(...) для BUY и SELL
         buy_signal, buy_failures = should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock)
         sell_signal, sell_failures = should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock)
 
+        # Если оба None — значит сигнала нет, логируем и выходим
         if buy_signal is None and sell_signal is None:
             all_failures = list(set(buy_failures + sell_failures))
             log_failure(symbol, all_failures)
             return None
 
-        # Если есть и BUY, и SELL — выбираем BUY
+        # Если есть и BUY, и SELL одновременно — выбираем BUY приоритетно
         if buy_signal and sell_signal:
             direction, qty, is_reentry, breakdown = buy_signal
         elif buy_signal:
@@ -104,7 +135,7 @@ def get_trading_signal(symbol):
         else:
             direction, qty, is_reentry, breakdown = sell_signal
 
-        # Формируем итоговый dict для дальнейшей логики
+        # Возвращаем готовый объект со всеми данными для входа
         return {
             "side": direction,
             "qty": qty,
@@ -227,6 +258,7 @@ def start_trading_loop():
     # Статус бота -> running
     set_bot_status("running")
     initialize_cache()
+    restore_active_trades()
 
     starting_balance = get_cached_balance()
     log(f"[Startup] Starting balance: {starting_balance:.2f} USDC", level="INFO", important=True)
@@ -365,6 +397,7 @@ def start_trading_loop():
 
             # Перебираем символы текущей группы
             for symbol in current_group:
+                symbol = extract_symbol(symbol)
                 if stop_event.is_set():
                     log("[Main Loop] stop_event set, break group loop", level="INFO")
                     break
@@ -392,9 +425,12 @@ def start_trading_loop():
             send_telegram_message("🛑 Bot stopped via graceful shutdown.", force=True, parse_mode="")
 
     except KeyboardInterrupt:
+        from core.trade_engine import handle_panic  # <-- Добавляем импорт прямо здесь (либо наверху файла)
+
         log("[Main] Bot manually stopped (Ctrl+C)", important=True, level="INFO")
-        send_telegram_message("🛑 Bot manually stopped (Ctrl+C)", force=True, parse_mode="")
-        stop_event.set()
+        send_telegram_message("🛑 Bot manually stopped (Ctrl+C) → initiating panic close...", force=True)
+
+        handle_panic(stop_event)
 
 
 if __name__ == "__main__":
@@ -447,7 +483,8 @@ if __name__ == "__main__":
     # Пример ротации
     def rotate_symbols():
         syms = select_active_symbols()
-        log(f"🔁 Symbol re-rotation. {len(syms)} pairs loaded.", level="INFO")
+        symbol_names = [extract_symbol(s) for s in syms]
+        log(f"🔁 Symbol re-rotation. {len(syms)} pairs loaded: {', '.join(symbol_names)}", level="INFO")
 
     scheduler.add_job(rotate_symbols, "interval", minutes=30, id="symbol_rotation")
 
@@ -509,4 +546,5 @@ if __name__ == "__main__":
     finally:
         if scheduler.running:
             scheduler.shutdown()
+            log("🛑 Bot has shut down gracefully.", level="INFO")
             log("Scheduler shutdown completed", level="INFO")

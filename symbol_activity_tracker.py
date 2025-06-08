@@ -6,7 +6,7 @@ from threading import Lock
 
 # Было: from filter_adaptation_leg import get_runtime_config
 # Заменяем на utils_core (или другой модуль, где вы храните get_runtime_config):
-from utils_core import get_runtime_config, load_json_file, save_json_file
+from utils_core import extract_symbol, get_runtime_config, load_json_file, save_json_file
 from utils_logging import log
 
 FILE_PATH = "data/symbol_signal_activity.json"
@@ -33,6 +33,7 @@ def track_symbol_signal(symbol):
     Фиксируем, что по символу пришёл сигнал.
     Очищаем записи старше ACTIVITY_WINDOW, затем добавляем текущий таймстамп.
     """
+    symbol = extract_symbol(symbol)
     now = int(time.time())
     with ACTIVITY_LOCK:
         data = load_activity()

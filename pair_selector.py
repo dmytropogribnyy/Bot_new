@@ -24,6 +24,7 @@ from core.fail_stats_tracker import FAIL_STATS_FILE, get_symbol_risk_factor
 from telegram.telegram_utils import send_telegram_message
 from utils_core import (
     calculate_atr_volatility,
+    extract_symbol,
     get_cached_balance,
     get_market_volatility_index,
     get_runtime_config,
@@ -129,10 +130,11 @@ def fetch_all_symbols():
 
 def fetch_symbol_data(symbol, timeframe="15m", limit=100):
     try:
+        symbol = extract_symbol(symbol)  # 💡 ключевой шаг
         api_symbol = convert_symbol(symbol)
         ohlcv = safe_call_retry(exchange.fetch_ohlcv, api_symbol, timeframe, limit=limit, label=f"fetch_ohlcv {symbol}")
-        if not ohlcv:
-            log(f"No OHLCV data for {symbol}", level="ERROR")
+        if not ohlcv or len(ohlcv) < 10:
+            log(f"No or insufficient OHLCV data for {symbol}", level="WARNING")
             return None
 
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -379,7 +381,11 @@ def start_symbol_rotation(stop_event):
     while not stop_event.is_set():
         try:
             update_interval = get_update_interval()
-            select_active_symbols()
+            syms = select_active_symbols()
+
+            # Логируем, какие пары выбраны (безопасно)
+            symbol_names = [extract_symbol(s) for s in syms]
+            log(f"🔁 Rotation: {len(syms)} symbols → {', '.join(symbol_names)}", level="INFO")
             log(f"Next rotation in {update_interval/60:.1f} minutes", level="DEBUG")
 
             sleep_interval = 10
@@ -390,7 +396,7 @@ def start_symbol_rotation(stop_event):
         except Exception as e:
             log(f"Symbol rotation error: {e}", level="ERROR")
             send_telegram_message(f"⚠️ Symbol rotation failed: {e}", force=True)
-            time.sleep(60)  # Delay before retry on error
+            time.sleep(60)
 
 
 def get_update_interval():

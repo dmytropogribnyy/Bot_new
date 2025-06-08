@@ -1,8 +1,8 @@
 # core/risk_adjuster.py
 
-from common.config_loader import get_cached_balance, trade_stats
+from common.config_loader import trade_stats
 from telegram.telegram_utils import send_telegram_message
-from utils_core import update_runtime_config
+from utils_core import get_cached_balance, update_runtime_config
 from utils_logging import log
 
 

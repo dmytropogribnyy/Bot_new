@@ -4,6 +4,7 @@ from datetime import datetime
 
 from core.binance_api import fetch_ohlcv
 from core.signal_utils import add_indicators
+from utils_core import extract_symbol
 from utils_logging import log
 
 OUTPUT_FILE = "data/debug_monitoring_summary.json"
@@ -63,7 +64,8 @@ def run_monitor():
     print(f"\n✅ Found {total} symbols\n")
 
     for i, item in enumerate(symbols, start=1):
-        symbol = item["symbol"] if isinstance(item, dict) else item
+        symbol = extract_symbol(item)
+
         print(f"[{i}/{total}] Scanning {symbol} ...", end=" ")
         result = scan_symbol(symbol)
         summary[symbol] = result

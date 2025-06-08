@@ -5,6 +5,7 @@ from datetime import datetime
 from core.fail_stats_tracker import get_symbols_failure_count
 from core.tp_utils import get_tp_performance_stats
 from symbol_activity_tracker import get_symbol_activity_data
+from utils_core import extract_symbol
 from utils_logging import log
 
 PRIORITY_JSON_PATH = "data/priority_pairs.json"
@@ -92,7 +93,8 @@ def gather_symbol_data():
         ticker_data = {}
 
         # Fetch data for each symbol individually
-        for symbol in active_symbols:
+        for raw_symbol in active_symbols:
+            symbol = extract_symbol(raw_symbol)
             try:
                 ticker_data[symbol] = get_ticker_data(symbol)
             except Exception as e:

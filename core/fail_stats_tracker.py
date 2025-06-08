@@ -5,7 +5,7 @@ from datetime import datetime
 from threading import Lock
 
 from constants import FAIL_STATS_FILE
-from utils_core import get_runtime_config, normalize_symbol, update_runtime_config
+from utils_core import extract_symbol, get_runtime_config, update_runtime_config
 from utils_logging import log
 
 fail_stats_lock = Lock()
@@ -27,7 +27,8 @@ def record_failure_reason(symbol, reasons):
         symbol (str): Trading pair symbol
         reasons (list): List of failure reasons (strings)
     """
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
+
     if not reasons:
         return
 
@@ -167,14 +168,15 @@ def apply_failure_decay(accelerated=False):
 def get_symbol_risk_factor(symbol):
     """
     Calculate risk factor based on failure count.
-    Returns a value between 0.1-1.0 with 1.0 being full risk.
+    Returns a value between 0.1–1.0 with 1.0 being full risk.
 
     Returns:
-        tuple: (risk_factor: float 0.0-1.0, info: dict or None)
+        tuple: (risk_factor: float 0.0–1.0, info: dict or None)
         - 1.0 means full position size (no risk reduction)
-        - 0.0-0.25 means high risk reduction
+        - 0.0–0.25 means high risk reduction
     """
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
+
     try:
         # Get total failures for the symbol
         stats = get_signal_failure_stats()
@@ -185,7 +187,7 @@ def get_symbol_risk_factor(symbol):
 
         # Progressive risk factor calculation
         if total_failures <= 5:
-            risk_factor = 1.0  # Normal risk for few failures
+            risk_factor = 1.0
         elif total_failures <= 15:
             risk_factor = max(0.7, 1.0 - (total_failures - 5) / 30)
         elif total_failures <= 30:
@@ -193,14 +195,12 @@ def get_symbol_risk_factor(symbol):
         else:
             risk_factor = max(0.1, 0.4 - (total_failures - 30) / 100)
 
-        # Return risk factor and info dict for reference
         info = {"total_failures": total_failures}
         return risk_factor, info
 
     except Exception as e:
         log(f"Error calculating risk factor for {symbol}: {e}", level="ERROR")
-        # On error, use conservative position size
-        return 0.5, None
+        return 0.5, None  # Conservative fallback
 
 
 def reset_failure_count(symbol):
@@ -211,7 +211,8 @@ def reset_failure_count(symbol):
     Args:
         symbol (str): Trading pair symbol
     """
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
+
     with fail_stats_lock:
         try:
             if os.path.exists(FAIL_STATS_FILE):
@@ -326,12 +327,13 @@ def check_risk_distribution():
 
         risk_levels = {
             "critical": 0,  # risk < 0.25
-            "high": 0,  # risk < 0.5
-            "medium": 0,  # risk < 0.75
+            "high": 0,  # 0.25 <= risk < 0.5
+            "medium": 0,  # 0.5 <= risk < 0.75
             "low": 0,  # risk >= 0.75
         }
 
         for symbol in all_symbols:
+            symbol = extract_symbol(symbol)
             risk_factor, _ = get_symbol_risk_factor(symbol)
 
             if risk_factor < 0.25:
@@ -343,8 +345,11 @@ def check_risk_distribution():
             else:
                 risk_levels["low"] += 1
 
-        # Add percentages
-        result = {"total": total_symbols, "levels": risk_levels, "percentages": {level: count / total_symbols if total_symbols > 0 else 0 for level, count in risk_levels.items()}}
+        result = {
+            "total": total_symbols,
+            "levels": risk_levels,
+            "percentages": {level: count / total_symbols for level, count in risk_levels.items()},
+        }
 
         return result
 

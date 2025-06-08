@@ -11,15 +11,14 @@ from common.config_loader import (
 )
 from core.binance_api import convert_symbol
 from core.exchange_init import exchange
-from core.risk_utils import get_adaptive_risk_percent
+from core.risk_utils import get_adaptive_risk_percent, get_max_positions
 from core.tp_utils import calculate_tp_levels
 from telegram.telegram_utils import send_telegram_message
 from utils_core import (
     calculate_order_quantity,
     check_min_profit,
-    get_max_positions,
+    extract_symbol,
     get_min_net_profit,
-    normalize_symbol,
 )
 from utils_logging import log
 
@@ -32,7 +31,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     Возвращает словарь с планом сделки или None, если вход отменён.
     """
 
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
     try:
         # Быстрая проверка входных данных
         if any(v is None for v in (symbol, balance, last_trade_times, lock)):

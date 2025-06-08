@@ -6,11 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-from common.config_loader import LEVERAGE_MAP, SYMBOLS_ACTIVE
 from constants import ENTRY_LOG_FILE, STATE_FILE
-from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
-from utils_logging import log
 
 # Глобальные настройки кеша
 CACHE_TTL = 30
@@ -34,6 +31,8 @@ RUNTIME_CONFIG_FILE = Path("data/runtime_config.json")
 
 def ensure_data_directory():
     """Убедиться, что директория data/ существует и доступна."""
+    from utils_logging import log
+
     data_dir = "data/"
     if not os.path.exists(data_dir):
         try:
@@ -57,6 +56,9 @@ def ensure_data_directory():
 
 def get_cached_balance():
     """Получает кэшированный баланс (totalMarginBalance)."""
+    from core.exchange_init import exchange
+    from utils_logging import log
+
     with cache_lock:
         now = time.time()
         if (now - api_cache["balance"]["timestamp"] > CACHE_TTL) or (api_cache["balance"]["value"] is None):
@@ -75,6 +77,9 @@ def get_cached_balance():
 
 def get_cached_positions():
     """Получает кэшированные позиции (exchange.fetch_positions)."""
+    from core.exchange_init import exchange
+    from utils_logging import log
+
     with cache_lock:
         now = time.time()
         if (now - api_cache["positions"]["timestamp"] > CACHE_TTL) or (not api_cache["positions"]["value"]):
@@ -92,6 +97,8 @@ def get_cached_positions():
 
 def initialize_cache():
     """Инициализация кэша и проверка директории data/."""
+    from utils_logging import log
+
     if not ensure_data_directory():
         send_telegram_message("⚠️ Проблема с доступом к директории data/. Проверьте права доступа.", force=True)
 
@@ -102,6 +109,8 @@ def initialize_cache():
 
 def load_state():
     """Загружает состояние бота (stopping, shutdown и пр.) из STATE_FILE."""
+    from utils_logging import log
+
     with state_lock:
         try:
             if not os.path.exists(STATE_FILE):
@@ -128,6 +137,8 @@ def load_state():
 
 def save_state(state, retries=3, delay=1):
     """Сохраняет текущее состояние бота в STATE_FILE с попытками ретрая."""
+    from utils_logging import log
+
     attempt = 0
     while attempt < retries:
         with state_lock:
@@ -156,25 +167,40 @@ def save_state(state, retries=3, delay=1):
 
 
 def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
-    """Универсальная функция повторных вызовов для API."""
+    import time
+
+    from telegram.telegram_utils import send_telegram_message
+    from utils_logging import log
+
     for attempt in range(tries):
         try:
             result = func(*args, **kwargs)
             if result is None:
                 raise ValueError(f"{label} returned None")
+
+            if attempt > 0:
+                log(f"{label} succeeded on attempt {attempt+1}/{tries}", level="INFO")
+
             return result
+
         except Exception as e:
             log(f"{label} failed (attempt {attempt + 1}/{tries}): {e}", level="ERROR")
+
             if attempt < tries - 1:
-                time.sleep(delay)
+                sleep_time = delay * (2**attempt)
+                log(f"{label} retrying in {sleep_time} s...", level="WARNING")
+                time.sleep(sleep_time)
             else:
                 log(f"{label} exhausted retries", level="ERROR")
                 send_telegram_message(f"⚠️ {label} failed after {tries} retries", force=True)
+                # Возвращаем None, а не str(e)
                 return None
 
 
 def get_runtime_config() -> dict:
     """Загружает runtime_config.json, возвращает dict или пустой dict при ошибке."""
+    from utils_logging import log
+
     if RUNTIME_CONFIG_FILE.exists():
         try:
             with open(RUNTIME_CONFIG_FILE, "r") as f:
@@ -186,6 +212,8 @@ def get_runtime_config() -> dict:
 
 def update_runtime_config(new_values: dict):
     """Обновляет runtime_config.json и логирует изменения."""
+    from utils_logging import log
+
     config = get_runtime_config()
     config.update(new_values)
     try:
@@ -218,18 +246,13 @@ def update_runtime_config(new_values: dict):
         log(f"[RuntimeConfig] Telegram notification failed: {e}", level="WARNING")
 
 
-def set_leverage_for_symbols():
-    """Устанавливает плечо для активных символов."""
-    for symbol in SYMBOLS_ACTIVE:
-        leverage = LEVERAGE_MAP.get(symbol, 5)
-        safe_call_retry(exchange.set_leverage, leverage, symbol, tries=3, delay=1, label=f"set_leverage {symbol}")
-    log("Leverage set for all symbols", level="INFO")
-
-
 def log_rejected_entry(symbol, reasons, breakdown):
     """
     Логирует отказ от входа в сделку. (Без упоминания score).
     """
+    from utils_logging import log
+
+    symbol = extract_symbol(symbol)
     row = {
         "timestamp": datetime.utcnow().isoformat(),
         "symbol": symbol,
@@ -250,6 +273,8 @@ def initialize_runtime_adaptive_config():
     """
     Устанавливает базовые значения в runtime_config при старте (без HTF, score и т.д.).
     """
+    from utils_logging import log
+
     balance = get_cached_balance() or 100
 
     if balance < 120:
@@ -281,18 +306,6 @@ def initialize_runtime_adaptive_config():
         log(f"Initialized missing runtime config values: {missing}", level="INFO")
 
 
-def get_max_positions(balance):
-    """
-    Пример функции, дающей максимальное число позиций.
-    """
-    if balance < 120:
-        return 2
-    elif balance < 300:
-        return 3
-    else:
-        return 5
-
-
 def get_min_net_profit(balance):
     """Если не нужна логика минимальной прибыли, возвращаем 0."""
     return 0.0
@@ -300,6 +313,8 @@ def get_min_net_profit(balance):
 
 def reset_state_flags():
     """Сбрасывает stopping и shutdown в state-файле."""
+    from utils_logging import log
+
     st = load_state()
     st["stopping"] = False
     st["shutdown"] = False
@@ -310,6 +325,8 @@ def reset_state_flags():
 # Утилиты для JSON-файлов (общие)
 def load_json_file(path, default=None):
     """Загрузка JSON с обработкой ошибок."""
+    from utils_logging import log
+
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -324,6 +341,8 @@ def load_json_file(path, default=None):
 
 def save_json_file(path, data, indent=2):
     """Сохранение JSON с обработкой ошибок."""
+    from utils_logging import log
+
     try:
         directory = os.path.dirname(path)
         if directory and not os.path.exists(directory):
@@ -373,6 +392,8 @@ def calculate_atr_volatility(df, period: int = 14) -> float:
     Вычисляет ATR (Average True Range) по DataFrame с колонками ['high', 'low', 'close'].
     Возвращает последнее значение (float).
     """
+    from utils_logging import log
+
     try:
         import ta
 
@@ -388,6 +409,8 @@ def get_market_volatility_index() -> float:
     Возвращает относительную волатильность BTC: ATR / текущая цена
     (примерный диапазон: 0.5–2.0).
     """
+    from utils_logging import log
+
     try:
         import pandas as pd
         import ta
@@ -409,6 +432,11 @@ def get_market_volatility_index() -> float:
     except Exception as e:
         log(f"[Volatility] Ошибка в get_market_volatility_index: {e}", level="WARNING")
         return 1.0
+
+
+def extract_symbol(s):
+    return normalize_symbol(s.get("symbol", "") if isinstance(s, dict) else s)
+    # and then use  like symbol = extract_symbol(symbol)
 
 
 if __name__ == "__main__":

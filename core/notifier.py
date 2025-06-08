@@ -1,6 +1,7 @@
 # notifier.py
 
 from telegram.telegram_utils import send_telegram_message
+from utils_core import extract_symbol
 from utils_logging import log
 
 
@@ -9,7 +10,7 @@ def notify_dry_trade(trade_data):
     Notify about a DRY_RUN trade.
     No longer logs 'score' because new logic doesn't use 'score'.
     """
-    symbol = trade_data["symbol"]
+    symbol = extract_symbol(trade_data.get("symbol", ""))
     direction = trade_data["direction"]
     qty = trade_data["qty"]
     entry_price = trade_data.get("entry", 0.0)

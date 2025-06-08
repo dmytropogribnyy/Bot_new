@@ -6,6 +6,7 @@ from datetime import datetime
 
 from common.config_loader import DRY_RUN, TAKER_FEE_RATE
 from constants import ENTRY_LOG_PATH
+from utils_core import extract_symbol
 from utils_logging import log, log_dry_entry
 
 FIELDNAMES = [
@@ -32,7 +33,7 @@ def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
         return
 
     # Получаем баланс (для расчёта account_category)
-    from utils_core import get_cached_balance, normalize_symbol
+    from utils_core import get_cached_balance
 
     balance = get_cached_balance()
 
@@ -49,7 +50,7 @@ def log_entry(trade: dict, status="SUCCESS", mode="DRY_RUN"):
     qty = trade.get("qty", 0)
     commission = qty * entry_price * TAKER_FEE_RATE * 2
 
-    symbol = normalize_symbol(trade.get("symbol", ""))
+    symbol = extract_symbol(trade.get("symbol", ""))
 
     # Пытаемся рассчитать ожидаемую прибыль (примерно).
     direction = trade.get("direction", "")

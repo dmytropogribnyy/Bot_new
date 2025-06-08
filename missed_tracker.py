@@ -5,7 +5,7 @@ from threading import Lock
 
 from constants import CACHE_FILE
 from pair_selector import calculate_atr_volatility, fetch_symbol_data
-from utils_core import normalize_symbol
+from utils_core import extract_symbol
 from utils_logging import log
 
 CACHE_LOCK = Lock()
@@ -13,7 +13,7 @@ MAX_ENTRIES = 1000
 
 
 def add_missed_opportunity(symbol: str):
-    symbol = normalize_symbol(symbol)
+    symbol = extract_symbol(symbol)
     df = fetch_symbol_data(symbol, timeframe="15m", limit=96)
     if df is None or len(df) < 20:
         return

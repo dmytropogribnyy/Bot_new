@@ -178,15 +178,19 @@ def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
 
 def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock):
     """
-    Основная функция проверки входа:
-      1) fetch_data_multiframe
-      2) (опц.) торговые часы
-      3) passes_filters
-      4) get_signal_breakdown + passes_1plus1
-      5) Определяем BUY/SELL
-      6) Расчёт qty, TP, SL
-      7) Запись в entry_log + Telegram
-      8) Возврат (signal_tuple, reasons) или (None, reasons)
+    Основная функция проверки входа и генерации сигнала для enter_trade(...).
+    Возвращает (signal_tuple, failure_reasons),
+    где:
+      - signal_tuple = (direction, qty, is_reentry, breakdown) или None
+      - failure_reasons = list строк с причинами отказа
+
+    Пример использования:
+      buy_signal, buy_failures = should_enter_trade(...)
+      if buy_signal is None:
+          # отказ, buy_failures содержит причины
+      else:
+          direction, qty, is_reentry, breakdown = buy_signal
+          # идём дальше
     """
 
     # Если symbol пришёл в виде словаря
@@ -198,7 +202,7 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
 
     log(f"[Entry] Checking {symbol} for entry...", level="DEBUG")
 
-    # Узнаём тип пары (fixed / dynamic), если есть
+    # Если нужно определять пару (fixed / dynamic)
     pair_type = symbol_type_map.get(symbol, "unknown")
 
     # 1) Данные
@@ -209,7 +213,11 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # 2) Торговые часы
+    if not isinstance(df, pd.DataFrame):
+        log(f"[Reject] {symbol} => fetch_data_multiframe returned {type(df).__name__}", level="ERROR")
+        return None, ["data_format_error"]
+
+    # 2) Проверка торговых часов (опционально)
     if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
         failure_reasons.append("non_optimal_hours")
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
@@ -221,7 +229,7 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # 4) Сигналы (1+1)
+    # 4) Сигнал "1+1"
     breakdown = get_signal_breakdown(df)
     if not breakdown:
         failure_reasons.append("no_breakdown")
@@ -235,60 +243,61 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # Логируем детали сигналов
+    # Лог компонентов
     log(f"[1+1] {symbol} breakdown={breakdown}, passes=True", level="DEBUG")
     log_component_data(symbol, breakdown, is_successful=True)
 
-    # 5) Определяем BUY/SELL (ориентируемся на macd_5m)
+    # 5) Определяем BUY/SELL, например по macd_5m
     macd_val = df["macd_5m"].iloc[-1]
     macd_sig = df["macd_signal_5m"].iloc[-1]
     direction = "BUY" if macd_val > macd_sig else "SELL"
 
-    # 6) qty + TP/SL
+    # 6) Расчёт qty (псевдо)
     entry_price = df["close"].iloc[-1]
     atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
+    atr = atr_series.iloc[-1] if len(atr_series) else 0.0
 
-    atr = atr_series.iloc[-1]
     atr_multiplier = 1.5
     sl_distance = atr * atr_multiplier
-
     stop_price = entry_price - sl_distance if direction == "BUY" else entry_price + sl_distance
+
     balance = get_cached_balance()
     risk_percent = get_adaptive_risk_percent(balance)
     qty = calculate_position_size(entry_price, stop_price, balance * risk_percent, symbol=symbol)
 
+    # На случай если qty=0
     if not qty:
-        qty = MIN_NOTIONAL_OPEN / entry_price
+        qty = MIN_NOTIONAL_OPEN / entry_price  # fallback
 
     notional = qty * entry_price
+
+    # Быстрая проверка комиссии и потенциала
     commission = 2 * (qty * entry_price * TAKER_FEE_RATE)
     net_check = (qty * abs(entry_price * 0.01)) - commission
-
     if net_check <= 0:
         failure_reasons.append("insufficient_profit")
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # TP/SL
+    # TP/SL расчёт
     tp1, tp2, sl_price, share1, share2 = calculate_tp_levels(entry_price, direction, df=df)
     if not tp1 or not sl_price:
         failure_reasons.append("invalid_tp_sl")
         log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # Кулдаун
+    # 7) Кулдаун
     with last_trade_times_lock:
         now_ts = datetime.utcnow().timestamp()
         last_t = last_trade_times.get(symbol)
         cooldown_sec = get_runtime_config().get("cooldown_minutes", 30) * 60
-
         if last_t and (now_ts - last_t.timestamp()) < cooldown_sec:
             failure_reasons.append("cooldown_active")
             log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
             return None, failure_reasons
         last_trade_times[symbol] = datetime.utcnow()
 
-    # 7) Лог в entry_log.csv + Telegram
+    # 8) Логируем успех (entry_log) и Telegram
     entry_data = {
         "symbol": symbol,
         "direction": direction,
@@ -307,10 +316,11 @@ def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock
     else:
         send_telegram_message(f"🚀 OPEN {symbol} ({pair_type}) {direction} qty={qty:.3f}", force=True)
 
-    is_reentry = False  # или своя логика повторных входов
+    # Пример логики re-entry
+    is_reentry = False
 
-    # ✔ Возвращаем кортеж (signal, reasons).
-    # Первый элемент — (direction, qty, is_reentry, breakdown), второй — пустой список причин
+    # ✔ Возвращаем успех:
+    # ( (direction, qty, is_reentry, breakdown), [] )
     return (direction, qty, is_reentry, breakdown), []
 
 

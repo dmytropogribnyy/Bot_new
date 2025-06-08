@@ -2,7 +2,7 @@
 import pandas as pd
 import ta
 
-from utils_core import log
+from utils_logging import log
 
 
 def detect_ema_crossover(df, fast_window=9, slow_window=21):

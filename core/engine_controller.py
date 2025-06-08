@@ -12,12 +12,7 @@ from core.exchange_init import exchange
 from core.notifier import notify_dry_trade, notify_error
 from core.risk_utils import get_max_positions
 from telegram.telegram_utils import send_telegram_message
-from utils_core import (
-    get_cached_balance,
-    get_cached_positions,
-    load_state,
-    set_leverage_for_symbols,
-)
+from utils_core import extract_symbol, get_cached_balance, get_cached_positions, load_state, set_leverage_for_symbols
 from utils_logging import log
 
 last_trade_times = {}
@@ -81,6 +76,7 @@ def run_trading_cycle(symbols, stop_event):
 
     # Проходим по символам
     for symbol in symbols:
+        symbol = extract_symbol(symbol)
         if stop_event.is_set():
             log(f"[Trading Cycle] Stop signal → abort cycle for {symbol}.", level="INFO")
             break
