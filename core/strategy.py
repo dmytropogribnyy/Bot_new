@@ -196,7 +196,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     from core.trade_engine import calculate_position_size
     from open_interest_tracker import fetch_open_interest
     from tp_logger import get_today_pnl_from_csv
-    from utils_core import get_cached_balance, get_min_net_profit, get_runtime_config, normalize_symbol
+    from utils_core import get_cached_balance, get_runtime_config, normalize_symbol
     from utils_logging import log
 
     symbol = normalize_symbol(symbol)
@@ -301,7 +301,8 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
         log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
 
-        min_profit_required = get_min_net_profit(balance)
+        min_profit_required = get_runtime_config().get("min_profit_threshold", 0.06)
+
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
         log(f"[ProfitCalc] {symbol} → NetProfit=${net_profit:.2f} (required=${min_profit_required:.2f})", level="DEBUG")
 

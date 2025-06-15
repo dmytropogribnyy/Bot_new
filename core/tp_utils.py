@@ -176,16 +176,29 @@ def get_tp_performance_stats():
         return {}
 
 
-def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit_usd):
+def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit_usd=None):
     """
     Проверяет, даст ли TP1 достаточно чистой прибыли.
     Возвращает (bool: хватает ли, float: ожидаемая чистая прибыль)
     """
+    from utils_core import get_cached_balance
+    from utils_logging import log
+
+    # 🧠 Адаптивный порог в зависимости от баланса
+    if min_profit_usd is None:
+        balance = get_cached_balance()
+        if balance <= 300:
+            min_profit_usd = 0.06
+        elif balance <= 500:
+            min_profit_usd = 0.08
+        else:
+            min_profit_usd = 0.10
+
+        log(f"[ProfitCheck] Adaptive threshold → balance={balance:.2f} → min_profit={min_profit_usd:.2f}$", level="DEBUG")
+
     gross_profit = abs(tp1 - entry) * qty * share_tp1
     commission = 2 * qty * entry * fee_rate  # вход + выход
     net_profit = gross_profit - commission
-
-    from utils_logging import log
 
     log(f"[ProfitCheck] expected={net_profit:.2f}$ vs required={min_profit_usd:.2f}$ → {'✅ OK' if net_profit >= min_profit_usd else '❌ reject'}", level="DEBUG")
 

@@ -21,7 +21,7 @@ from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
 from core.risk_utils import get_adaptive_risk_percent
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, get_cached_positions, initialize_cache, load_state, normalize_symbol, safe_call_retry
+from utils_core import get_cached_balance, initialize_cache, load_state, normalize_symbol, safe_call_retry
 from utils_logging import log
 
 _active_trades_save_lock = Lock()
@@ -192,48 +192,59 @@ def calculate_risk_amount(balance, risk_percent=None, symbol=None, atr_percent=N
     return balance * risk_percent
 
 
-def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None, balance=None, max_margin_percent=80):
+def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None, balance=None):
     """
     Calculate position size with graduated risk adjustment, bounded by max margin and leverage.
     """
+    from common.leverage_config import get_leverage_for_symbol
+    from core.fail_stats_tracker import get_symbol_risk_factor
+    from utils_core import get_runtime_config
+    from utils_logging import log
+
     if entry_price <= 0 or stop_price <= 0:
         return 0
 
+    # === Step 1: Risk factor
     risk_factor = 1.0
     if symbol:
-        from common.leverage_config import get_leverage_for_symbol  # 💡 для учёта плеча
-        from core.fail_stats_tracker import get_symbol_risk_factor
-
         rf, _ = get_symbol_risk_factor(symbol)
         risk_factor = rf
         if risk_factor < 1.0:
-            log(f"Applied risk reduction to {symbol}: {risk_factor:.2f}x position size", level="INFO")
+            log(f"[Risk] Applied risk reduction to {symbol}: {risk_factor:.2f}x position size", level="INFO")
 
     adjusted_risk = risk_amount * risk_factor
     price_delta = abs(entry_price - stop_price)
     if price_delta == 0:
         return 0
 
+    # === Step 2: Raw position size
     raw_position_size = adjusted_risk / price_delta
 
-    # === Ограничение по капиталу с учётом плеча
-    if balance is not None and max_margin_percent > 0:
+    # === Step 3: Capital constraint (max margin usage)
+    if balance is not None:
+        cfg = get_runtime_config()
+        max_margin_percent = cfg.get("max_margin_percent", 0.75)  # ← expects float like 0.75
         leverage = get_leverage_for_symbol(symbol) if symbol else 5
-        max_notional = (balance * leverage) * (max_margin_percent / 100)
+        max_notional = balance * leverage * max_margin_percent
         max_qty = max_notional / entry_price
 
         if raw_position_size > max_qty:
             log(f"[Risk] ⚠️ Limiting position size for {symbol}: {raw_position_size:.4f} → {max_qty:.4f} due to capital constraint (leverage={leverage}x)", level="WARNING")
+            log(f"[Risk] Capital utilization for {symbol}: {max_qty * entry_price:.2f} ≈ {max_margin_percent * 100:.1f}% of balance", level="DEBUG")
             return max_qty
 
+    log(f"[PositionSize] {symbol}: qty={raw_position_size:.4f}, notional={raw_position_size * entry_price:.2f}, risk={adjusted_risk:.2f}", level="DEBUG")
     return raw_position_size
 
 
 def get_position_size(symbol):
     """
     Возвращает объём открытой позиции (в контрактах) для заданного symbol.
-    Проверяет contracts / positionAmt / amount.
+    Проверяет contracts / positionAmt / amount. Возвращает abs(amount).
     """
+    from utils_core import get_cached_positions, normalize_symbol
+    from utils_logging import log
+
     try:
         positions = get_cached_positions()
         symbol_norm = normalize_symbol(symbol)
@@ -247,13 +258,16 @@ def get_position_size(symbol):
             raw_value = pos.get("contracts") or pos.get("positionAmt") or pos.get("amount")
             try:
                 amount = float(raw_value)
-                if amount > 0:
-                    log(f"[get_position_size] {symbol} → {amount} contracts", level="DEBUG")
-                    return amount
+                abs_amount = abs(amount)
+                if abs_amount > 0:
+                    log(f"[get_position_size] {symbol} → {abs_amount} contracts", level="DEBUG")
+                    return abs_amount
                 else:
-                    log(f"[get_position_size] {symbol} → zero or negative position: {amount}", level="DEBUG")
+                    log(f"[get_position_size] {symbol} → zero position: {amount}", level="DEBUG")
             except (TypeError, ValueError) as e:
                 log(f"[get_position_size] Invalid numeric value for {symbol}: {raw_value} ({e})", level="ERROR")
+
+        log(f"[get_position_size] {symbol} → not found in active positions", level="DEBUG")
 
     except Exception as e:
         log(f"[get_position_size] Error while fetching size for {symbol}: {e}", level="ERROR")
@@ -381,6 +395,7 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             log(f"❌ Signal rejected by passes_1plus1() for {symbol}", level="WARNING")
             send_telegram_message(f"🧱 Skipping {symbol}: failed passes_1plus1 check", force=True)
             return
+        log_component_data(symbol, breakdown, is_successful=True)
 
     state = load_state()
     if state.get("stopping"):
@@ -398,7 +413,6 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
 
     balance = get_cached_balance()
 
-    # ✅ Централизованная проверка лимитов
     can_enter, reason = check_entry_allowed(balance)
     if not can_enter:
         log(f"[Limit] Entry denied for {symbol}: {reason}", level="INFO")
@@ -420,11 +434,9 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             send_telegram_message(f"🔁 Skipping re-entry: already in position {symbol}", force=True)
             return
 
-        if breakdown:
-            log_component_data(symbol, breakdown, is_successful=True)
-
         rf, _ = get_symbol_risk_factor(symbol)
         min_rf = get_runtime_config().get("min_risk_factor", 0.9)
+        log(f"[Risk] {symbol}: risk_factor={rf:.2f} vs min_rf={min_rf}", level="DEBUG")
         if rf < min_rf:
             log(f"[Skip] {symbol}: risk_factor {rf:.2f} < min_risk_factor {min_rf}", level="INFO")
             send_telegram_message(f"⚠️ Skipping {symbol}: risk factor too low ({rf:.2f} < {min_rf})", force=True)
@@ -440,7 +452,6 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             send_telegram_message(f"🧱 {symbol} skipped due to capital utilization", force=True)
             return
 
-        # Дополнительная проверка margin
         required_margin = notional / leverage
         max_margin = balance * MAX_MARGIN_PERCENT
         if required_margin > max_margin * 0.92:
@@ -451,10 +462,8 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
         precision = exchange.markets[api_symbol]["precision"]["amount"]
         min_qty = exchange.markets[api_symbol]["limits"]["amount"]["min"]
         qty = round(qty, precision)
-        if qty < min_qty:
-            qty = max(min_qty, qty)
-        elif qty == 0:
-            qty = 10**-precision
+        if qty < min_qty or qty <= 0:
+            qty = min_qty
 
         if qty * entry_price < MIN_NOTIONAL_OPEN:
             log(f"{symbol} ⚠️ Notional too small: {qty * entry_price:.2f} < {MIN_NOTIONAL_OPEN}", level="WARNING")
@@ -477,7 +486,6 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             send_telegram_message(f"❌ Failed to open trade {symbol}: {result['error']}", force=True)
             return
 
-        # ✅ Успешная сделка — засчитываем в лимит
         update_trade_count()
 
         regime = get_market_regime(symbol)
