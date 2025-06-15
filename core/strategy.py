@@ -2,38 +2,21 @@
 
 import json
 import threading
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import ta
 
-from common.config_loader import (
-    DRY_RUN,
-    MIN_NOTIONAL_OPEN,
-    TAKER_FEE_RATE,
-    TRADING_HOURS_FILTER,
-)
 from core.binance_api import fetch_ohlcv
-from core.component_tracker import log_component_data
-from core.entry_logger import log_entry
-from core.missed_signal_logger import log_missed_signal
-from core.risk_utils import get_adaptive_risk_percent
 
 # Импорт из signal_utils
 from core.signal_utils import (
     detect_ema_crossover,
     detect_volume_spike,
-    get_signal_breakdown,
-    passes_1plus1,
 )
-from core.tp_utils import calculate_tp_levels
-from core.trade_engine import calculate_position_size, trade_manager
-from telegram.telegram_utils import send_telegram_message
+from core.trade_engine import trade_manager
 from utils_core import (
-    get_cached_balance,
     get_runtime_config,
-    is_optimal_trading_hour,
     normalize_symbol,
 )
 from utils_logging import log
@@ -74,7 +57,6 @@ def fetch_data_multiframe(symbol):
     Загружаем OHLCV по 3m, 5m, 15m. Считаем RSI, MACD, ATR, volume_spike и т. д.
     Возвращаем общий df или None при ошибке.
     """
-    import ta  # Импорт только для этой функции
 
     try:
         tf_map = {"3m": 300, "5m": 300, "15m": 300}
@@ -148,25 +130,40 @@ def fetch_data_multiframe(symbol):
 
 def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
     """
-    Минимальные фильтры: rsi_15m > порога, rel_volume_15m > порога, atr_15m > 0.
+    Фильтры по RSI, относительному и абсолютному объёму, ATR%:
+    - rsi_15m >= threshold
+    - rel_volume_15m >= threshold
+    - atr_15m / price >= atr_threshold_percent
+    - volume_usdt >= volume_threshold_usdc
     """
     try:
         config = get_runtime_config()
         rsi_thr = config.get("rsi_threshold", 50)
-        vol_thr = config.get("rel_volume_threshold", 0.5)
+        vol_thr = config.get("rel_volume_threshold", 0.3)
+        atr_thr_pct = config.get("atr_threshold_percent", 0.0015)
+        vol_abs_min = config.get("volume_threshold_usdc", 600)
 
         latest = df.iloc[-1]
+        close = latest.get("close", 0)
+        atr = latest.get("atr_15m", 0)
+        atr_pct = atr / close if close > 0 else 0
+        rel_volume = latest.get("rel_volume_15m", 0)
+        volume_usdt = latest.get("volume_usdt_15m", 0)
 
         if latest.get("rsi_15m", 0) < rsi_thr:
             log(f"[Filter] {symbol} ❌ rsi_15m < {rsi_thr}", level="DEBUG")
             return False
 
-        if latest.get("rel_volume_15m", 0) < vol_thr:
+        if rel_volume < vol_thr:
             log(f"[Filter] {symbol} ❌ rel_volume_15m < {vol_thr}", level="DEBUG")
             return False
 
-        if latest.get("atr_15m", 0) <= 0:
-            log(f"[Filter] {symbol} ❌ atr_15m <= 0", level="DEBUG")
+        if atr_pct < atr_thr_pct:
+            log(f"[Filter] {symbol} ❌ atr_pct {atr_pct:.5f} < {atr_thr_pct}", level="DEBUG")
+            return False
+
+        if volume_usdt < vol_abs_min:
+            log(f"[Filter] {symbol} ❌ volume_usdt {volume_usdt:.1f} < {vol_abs_min}", level="DEBUG")
             return False
 
         return True
@@ -176,168 +173,219 @@ def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
         return False
 
 
-def should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock):
+def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     """
-    Основная функция проверки входа и генерации сигнала для enter_trade(...).
-    Возвращает (signal_tuple, failure_reasons),
-    где:
-      - signal_tuple = (direction, qty, is_reentry, breakdown) или None
-      - failure_reasons = list строк с причинами отказа
-
-    Пример использования:
-      buy_signal, buy_failures = should_enter_trade(...)
-      if buy_signal is None:
-          # отказ, buy_failures содержит причины
-      else:
-          direction, qty, is_reentry, breakdown = buy_signal
-          # идём дальше
+    Генерирует сигнал на вход в сделку.
+    Возвращает: (direction, qty, is_reentry, breakdown), либо None + причины отказа.
     """
+    from datetime import datetime
 
-    # Если symbol пришёл в виде словаря
-    if isinstance(symbol, dict):
-        symbol = symbol.get("symbol", "")
+    import numpy as np
+    import pandas as pd
+    import ta
+
+    from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE, is_monitoring_hours_utc
+    from core.component_tracker import log_component_data
+    from core.entry_logger import log_entry
+    from core.missed_signal_logger import log_missed_signal
+    from core.position_manager import check_entry_allowed
+    from core.risk_utils import get_adaptive_risk_percent
+    from core.runtime_state import is_symbol_paused, is_trading_globally_paused, pause_all_trading
+    from core.runtime_stats import is_hourly_limit_reached
+    from core.signal_utils import get_signal_breakdown, passes_1plus1
+    from core.strategy import fetch_data_multiframe, symbol_type_map
+    from core.tp_utils import calculate_tp_levels, check_min_profit
+    from core.trade_engine import calculate_position_size
+    from open_interest_tracker import fetch_open_interest
+    from tp_logger import get_today_pnl_from_csv
+    from utils_core import get_cached_balance, get_min_net_profit, get_runtime_config, normalize_symbol
+    from utils_logging import log
 
     symbol = normalize_symbol(symbol)
     failure_reasons = []
 
+    log(f"[SignalCheck] 🟢 Evaluating {symbol}", level="DEBUG")
+
+    try:
+        if get_today_pnl_from_csv() < -5.0:
+            pause_all_trading(minutes=60)
+    except Exception as e:
+        log(f"[WARN] Could not evaluate daily PnL: {e}", level="WARNING")
+
+    if is_trading_globally_paused():
+        failure_reasons.append("daily_loss_limit")
+        return None, failure_reasons
+    if is_symbol_paused(symbol):
+        failure_reasons.append("symbol_paused")
+        return None, failure_reasons
+    if is_hourly_limit_reached(max_trades=6):
+        failure_reasons.append("hourly_limit_reached")
+        return None, failure_reasons
+
     log(f"[Entry] Checking {symbol} for entry...", level="DEBUG")
 
-    # Если нужно определять пару (fixed / dynamic)
     pair_type = symbol_type_map.get(symbol, "unknown")
-
-    # 1) Данные
     df = fetch_data_multiframe(symbol)
-    if df is None:
+    if df is None or not isinstance(df, pd.DataFrame):
         failure_reasons.append("data_fetch_error")
-        log_missed_signal(symbol, 0, {}, reason="data_fetch_error")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
+        log_missed_signal(symbol, {}, reason="data_fetch_error")
         return None, failure_reasons
 
-    if not isinstance(df, pd.DataFrame):
-        log(f"[Reject] {symbol} => fetch_data_multiframe returned {type(df).__name__}", level="ERROR")
-        return None, ["data_format_error"]
-
-    # 2) Проверка торговых часов (опционально)
-    if TRADING_HOURS_FILTER and not is_optimal_trading_hour():
-        failure_reasons.append("non_optimal_hours")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
-        return None, failure_reasons
-
-    # 3) Фильтры
-    if not passes_filters(df, symbol):
-        failure_reasons.append("filter_fail")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
-        return None, failure_reasons
-
-    # 4) Сигнал "1+1"
     breakdown = get_signal_breakdown(df)
     if not breakdown:
         failure_reasons.append("no_breakdown")
         log_missed_signal(symbol, {}, reason="no_breakdown")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
     if not passes_1plus1(breakdown):
         failure_reasons.append("missing_1plus1")
         log_missed_signal(symbol, breakdown, reason="missing_1plus1")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
         return None, failure_reasons
 
-    # Лог компонентов
-    log(f"[1+1] {symbol} breakdown={breakdown}, passes=True", level="DEBUG")
     log_component_data(symbol, breakdown, is_successful=True)
 
-    # 5) Определяем BUY/SELL, например по macd_5m
-    macd_val = df["macd_5m"].iloc[-1]
-    macd_sig = df["macd_signal_5m"].iloc[-1]
-    direction = "BUY" if macd_val > macd_sig else "SELL"
+    try:
+        open_interest = fetch_open_interest(symbol)
+        breakdown["open_interest"] = round(open_interest, 2)
+    except Exception as e:
+        log(f"[OI] Failed to fetch open_interest for {symbol}: {e}", level="WARNING")
+        breakdown["open_interest"] = 0.0
 
-    # 6) Расчёт qty (псевдо)
-    entry_price = df["close"].iloc[-1]
+    try:
+        macd_val = df["macd_5m"].iloc[-1]
+        macd_sig = df["macd_signal_5m"].iloc[-1]
+        if pd.isna(macd_val) or pd.isna(macd_sig):
+            raise ValueError("MACD is NaN")
+        direction = "BUY" if macd_val > macd_sig else "SELL"
+    except Exception:
+        failure_reasons.append("macd_error")
+        log_missed_signal(symbol, breakdown, reason="macd_error")
+        return None, failure_reasons
+
+    try:
+        entry_price = df["close"].iloc[-1]
+        if pd.isna(entry_price) or entry_price <= 0:
+            raise ValueError("entry_price invalid")
+    except Exception:
+        failure_reasons.append("entry_error")
+        log_missed_signal(symbol, breakdown, reason="entry_error")
+        return None, failure_reasons
+
     atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
     atr = atr_series.iloc[-1] if len(atr_series) else 0.0
-
-    atr_multiplier = 1.5
-    sl_distance = atr * atr_multiplier
+    sl_distance = atr * 1.5
     stop_price = entry_price - sl_distance if direction == "BUY" else entry_price + sl_distance
 
     balance = get_cached_balance()
-    risk_percent = get_adaptive_risk_percent(balance)
+
+    log(f"[DEBUG] Capital pre-check: balance={balance:.2f}", level="DEBUG")
+
+    # 🔐 Check capital & position limits
+    can_enter, reason = check_entry_allowed(balance)
+    if not can_enter:
+        failure_reasons.append(reason)
+        log_missed_signal(symbol, breakdown, reason=reason)
+        return None, failure_reasons
+
+    atr_pct = atr / entry_price if entry_price > 0 else 0
+    risk_percent = get_adaptive_risk_percent(balance, atr_percent=atr_pct)
     qty = calculate_position_size(entry_price, stop_price, balance * risk_percent, symbol=symbol)
 
-    # На случай если qty=0
-    if not qty:
-        qty = MIN_NOTIONAL_OPEN / entry_price  # fallback
+    if not qty or qty <= 0:
+        fallback_qty = MIN_NOTIONAL_OPEN / entry_price
+        log(f"[Fallback] {symbol} qty fallback: {fallback_qty:.4f}", level="DEBUG")
+        qty = fallback_qty
 
     notional = qty * entry_price
 
-    # Быстрая проверка комиссии и потенциала
-    commission = 2 * (qty * entry_price * TAKER_FEE_RATE)
-    net_check = (qty * abs(entry_price * 0.01)) - commission
-    if net_check <= 0:
-        failure_reasons.append("insufficient_profit")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
-        return None, failure_reasons
+    try:
+        tp1, tp2, sl_price, share1, share2 = calculate_tp_levels(entry_price, direction, df=df)
+        if any(x is None or (isinstance(x, float) and np.isnan(x)) for x in (tp1, sl_price, share1)):
+            raise ValueError("TP/SL invalid")
 
-    # TP/SL расчёт
-    tp1, tp2, sl_price, share1, share2 = calculate_tp_levels(entry_price, direction, df=df)
-    if not tp1 or not sl_price:
+        log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
+
+        min_profit_required = get_min_net_profit(balance)
+        enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
+        log(f"[ProfitCalc] {symbol} → NetProfit=${net_profit:.2f} (required=${min_profit_required:.2f})", level="DEBUG")
+
+        if not enough_profit:
+            failure_reasons.append("insufficient_profit")
+            log_missed_signal(symbol, breakdown, reason="insufficient_profit")
+            return None, failure_reasons
+
+    except Exception:
         failure_reasons.append("invalid_tp_sl")
-        log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
+        log_missed_signal(symbol, breakdown, reason="invalid_tp_sl")
         return None, failure_reasons
 
-    # 7) Кулдаун
+    cfg = get_runtime_config()
     with last_trade_times_lock:
         now_ts = datetime.utcnow().timestamp()
         last_t = last_trade_times.get(symbol)
-        cooldown_sec = get_runtime_config().get("cooldown_minutes", 30) * 60
+        cooldown_sec = cfg.get("cooldown_minutes", 5) * 60
         if last_t and (now_ts - last_t.timestamp()) < cooldown_sec:
             failure_reasons.append("cooldown_active")
-            log(f"[Reject] {symbol} => {failure_reasons}", level="DEBUG")
+            log_missed_signal(symbol, breakdown, reason="cooldown_active")
             return None, failure_reasons
         last_trade_times[symbol] = datetime.utcnow()
 
-    # 8) Логируем успех (entry_log) и Telegram
+    # 🔍 Monitoring Hours Filter
+    is_reentry = breakdown.get("is_reentry", False)
+    if is_monitoring_hours_utc():
+        score = breakdown.get("score", 0)
+        if not is_reentry and score < 8.5:
+            failure_reasons.append("monitoring_hours")
+            log(f"[TimeFilter] ⏰ {symbol} skipped in monitoring hours (score={score})", level="DEBUG")
+            log_missed_signal(symbol, breakdown, reason="monitoring_hours")
+            return None, failure_reasons
+
     entry_data = {
         "symbol": symbol,
         "direction": direction,
-        "entry_price": entry_price,
+        "entry": entry_price,
         "qty": qty,
         "notional": round(notional, 2),
         "breakdown": breakdown,
         "pair_type": pair_type,
         "atr": round(atr, 5),
-        "sl": round(stop_price, 5),
+        "sl": round(sl_price, 5),
     }
-    log_entry(entry_data, status="SUCCESS", mode="DRY_RUN" if DRY_RUN else "REAL_RUN")
 
-    if DRY_RUN:
-        send_telegram_message(f"🧪 DRY_RUN {symbol} ({pair_type}) {direction} qty={qty:.3f}", force=True)
-    else:
-        send_telegram_message(f"🚀 OPEN {symbol} ({pair_type}) {direction} qty={qty:.3f}", force=True)
+    try:
+        log_entry(entry_data, status="SUCCESS")
+    except Exception as e:
+        log(f"[WARN] Failed to log_entry for {symbol}: {e}", level="WARNING")
 
-    # Пример логики re-entry
-    is_reentry = False
+    if direction not in ("BUY", "SELL") or not qty or qty <= 0:
+        failure_reasons.append("invalid_signal_structure")
+        log_missed_signal(symbol, breakdown, reason="invalid_signal_structure")
+        return None, failure_reasons
 
-    # ✔ Возвращаем успех:
-    # ( (direction, qty, is_reentry, breakdown), [] )
+    if failure_reasons:
+        log(f"[SignalCheck] ❌ Rejected {symbol} | reasons: {failure_reasons}", level="DEBUG")
+
     return (direction, qty, is_reentry, breakdown), []
 
 
 def calculate_tp_targets():
     """
-    Пример функции расчёта TP (если нужно где-то в отчётах).
+    Возвращает текущие TP цели по активным сделкам (по tp1_price, fallback = +5%)
     """
     try:
-        positions = trade_manager._trades  # или exchange.fetch_positions()
+        positions = trade_manager._trades
         results = []
+
         for symbol, data in positions.items():
             entry_price = data.get("entry", 0)
-            if entry_price > 0:
-                # Пример: +5% от цены
-                tp_price = entry_price * 1.05
+            if not entry_price or entry_price <= 0:
+                continue
+
+            tp_price = data.get("tp1_price") or entry_price * 1.05
+            if tp_price > 0:
                 results.append({"symbol": symbol, "tp_price": tp_price})
                 log(f"[TP] {symbol} => {tp_price}", level="DEBUG")
+
         return results
 
     except Exception as e:

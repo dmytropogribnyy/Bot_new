@@ -79,12 +79,16 @@ def fetch_open_orders(symbol):
 
 
 def fetch_positions():
-    """Получает открытые позиции."""
-    result = safe_call_retry(lambda: exchange.fetch_positions(), label="fetch_positions")
-    if not isinstance(result, list):
-        log(f"[fetch_positions] Invalid result: {type(result)}", level="ERROR")
+    """Получает открытые позиции через Binance Futures endpoint напрямую."""
+    try:
+        result = safe_call_retry(lambda: exchange.fapiPrivate_get_positionrisk(), label="fetch_positions")
+        if not isinstance(result, list):
+            log(f"[fetch_positions] Invalid result: {type(result)}", level="ERROR")
+            return []
+        return result
+    except Exception as e:
+        log(f"[fetch_positions] Error via fapiPrivate_get_positionrisk: {e}", level="ERROR")
         return []
-    return result
 
 
 def load_markets():
@@ -185,37 +189,43 @@ def create_safe_market_order(symbol, side, amount):
       {"success": True, "result": ...}
       {"success": False, "error": ...}
     """
-    from utils_core import extract_symbol
+    from utils_core import normalize_symbol
 
-    symbol = extract_symbol(symbol)
+    symbol = normalize_symbol(symbol)
 
     # 1) Валидация ордера
     is_valid, error = validate_order_size(symbol, side, amount)
     if not is_valid:
-        log(f"[create_safe_market_order] Validation failed: {error}", level="ERROR")
+        price = get_current_price(symbol)
+        log(f"[MarketOrder] ❌ Validation failed for {symbol}: {error} (qty={amount}, price={price})", level="ERROR")
         return {"success": False, "error": error}
 
-    # 2) Рассчитываем комиссию для лога (не обязательно)
+    # 2) Рассчитываем комиссию
     price = get_current_price(symbol)
     if price is not None:
         commission = calculate_commission(amount, price, is_maker=False)
-        log(f"{symbol} {side} order — estimated commission: {commission:.6f} USDC", level="DEBUG")
+        log(f"[MarketOrder] {symbol} {side} qty={amount:.4f} — estimated fee ≈ {commission:.6f} USDC", level="DEBUG")
 
-    # 3) Вызываем create_market_order(...) внутри safe_call_retry
+    # 3) Исполнение
     try:
         result = create_market_order(symbol, side, amount)
+        log(f"[MarketOrder] Binance raw result: {result}", level="DEBUG")
+
         if isinstance(result, dict):
+            log(f"[MarketOrder] ✅ Order success: {symbol} {side} qty={amount}", level="INFO")
             return {"success": True, "result": result}
         else:
-            log(f"[create_safe_market_order] Unexpected result type: {type(result)}", level="ERROR")
-            return {"success": False, "error": "Unexpected result type from create_market_order"}
+            msg = f"[MarketOrder] ❌ Unexpected result type: {type(result)} for {symbol}"
+            log(msg, level="ERROR")
+            return {"success": False, "error": msg}
+
     except Exception as e:
         error_str = str(e)
         if "MIN_NOTIONAL" in error_str:
-            log(f"Minimum notional error for {symbol}: {error_str}", level="ERROR")
-            return {"success": False, "error": "Order size too small for exchange minimum requirements"}
+            log(f"[MarketOrder] ❌ Notional too low for {symbol}: {error_str}", level="ERROR")
+            return {"success": False, "error": "Order size too small for exchange minimum"}
 
-        log(f"[create_safe_market_order] Exception: {error_str}", level="ERROR")
+        log(f"[MarketOrder] ❌ Exception during order for {symbol}: {error_str}", level="ERROR")
         return {"success": False, "error": error_str}
 
 
@@ -229,9 +239,22 @@ def get_open_positions():
         if not isinstance(positions, list):
             log("[get_open_positions] Invalid fetch_positions result", level="ERROR")
             return []
-        return [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
+
+        open_positions = []
+        for pos in positions:
+            size = pos.get("contracts") or pos.get("positionAmt") or pos.get("amount") or 0
+            try:
+                size = float(size)
+            except (TypeError, ValueError):
+                size = 0
+            if size != 0:
+                open_positions.append(pos)
+
+        log(f"[get_open_positions] Found {len(open_positions)} open positions", level="DEBUG")
+        return open_positions
+
     except Exception as e:
-        log(f"Error fetching open positions: {e}", level="ERROR")
+        log(f"[get_open_positions] Error: {e}", level="ERROR")
         return []
 
 

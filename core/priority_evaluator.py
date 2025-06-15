@@ -4,7 +4,6 @@ from datetime import datetime
 
 from core.fail_stats_tracker import get_symbols_failure_count
 from core.tp_utils import get_tp_performance_stats
-from symbol_activity_tracker import get_symbol_activity_data
 from utils_core import extract_symbol
 from utils_logging import log
 
@@ -106,9 +105,6 @@ def gather_symbol_data():
         # Get failure counts
         failure_counts = get_symbols_failure_count()
 
-        # Get signal activity data
-        activity_data = get_symbol_activity_data()
-
         # For each symbol, gather comprehensive data
         for symbol in ticker_data:
             symbol_data = {
@@ -116,7 +112,7 @@ def gather_symbol_data():
                 "atr": ticker_data[symbol].get("atr", 0),
                 "atr_percent": ticker_data[symbol].get("atr_percent", 0),
                 "volume_usdc": ticker_data[symbol].get("volume_usdc", 0),
-                "signal_activity": activity_data.get(symbol, {}).get("signal_count_24h", 0),
+                "signal_activity": 0,
                 "tp_winrate": tp_stats.get(symbol, {}).get("winrate", 0),
                 "tp2_winrate": tp_stats.get(symbol, {}).get("tp2_winrate", 0),
                 "fail_count": failure_counts.get(symbol, 0),
@@ -239,3 +235,8 @@ def regenerate_priority_pairs():
         return f"✅ Generated {len(pairs)} priority pairs"
     else:
         return "❌ Failed to generate priority pairs"
+
+
+if __name__ == "__main__":
+    msg = regenerate_priority_pairs()
+    print(msg)

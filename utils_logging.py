@@ -1,12 +1,12 @@
 import os
 import shutil
+from contextlib import contextmanager
 from datetime import datetime
 
 from colorama import Fore, Style, init
 from filelock import FileLock
 
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import extract_symbol
 
 init(autoreset=True)
 
@@ -27,31 +27,40 @@ LOG_COLORS = {
     "ERROR": Fore.RED,
 }
 
-_in_error_handling = False
+_error_state = {"in_handling": False}
+
+
+@contextmanager
+def error_handling_guard():
+    if _error_state["in_handling"]:
+        yield False
+    else:
+        _error_state["in_handling"] = True
+        try:
+            yield True
+        finally:
+            _error_state["in_handling"] = False
 
 
 def notify_error(msg):
-    """
-    Вывод ошибки только в консоль (чтобы не зациклиться через telegram).
-    DO NOT call send_telegram_message здесь, иначе риск рекурсии.
-    """
-    print(f"\nERROR: {msg}\n")
+    try:
+        print(f"\nERROR: {msg}\n")
+    except Exception:
+        pass
 
 
 def log(message: str, important=False, level="INFO"):
-    # Подгружаем настройки логирования только внутри функции
     from common.config_loader import DRY_RUN, LOG_FILE_PATH, LOG_LEVEL
 
-    # Фильтруем SmartSwitch предупреждения, если бот останавливается
     if level == "WARNING" and "[SmartSwitch]" in message and "No active trade found for" in message:
         try:
             from utils_core import load_state
 
             state = load_state()
             if state.get("stopping") or state.get("shutdown"):
-                return  # Не логируем такие сообщения при остановке
+                return
         except Exception:
-            pass  # Если не удалось проверить state, продолжаем обычное логирование
+            pass
 
     message_level = LOG_LEVELS.get(level, LOG_LEVELS["INFO"])
     min_level = LOG_LEVELS.get(LOG_LEVEL, LOG_LEVELS["INFO"])
@@ -68,9 +77,7 @@ def log(message: str, important=False, level="INFO"):
     lock = FileLock(f"{LOG_FILE_PATH}.lock")
     try:
         with lock:
-            # Ротация лога, если он превысил MAX_LOG_SIZE
             if os.path.exists(LOG_FILE_PATH) and os.path.getsize(LOG_FILE_PATH) > MAX_LOG_SIZE:
-                # Сдвигаем старые версии
                 for i in range(BACKUP_COUNT - 1, 0, -1):
                     old_file = f"{LOG_FILE_PATH}.{i}"
                     new_file = f"{LOG_FILE_PATH}.{i + 1}"
@@ -83,12 +90,10 @@ def log(message: str, important=False, level="INFO"):
                 with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
                     f.write("--- Telegram Log ---\n")
 
-            # Если файла нет, создадим с заголовком
             if not os.path.exists(LOG_FILE_PATH):
                 with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
                     f.write("--- Telegram Log ---\n")
 
-            # Запись в лог
             with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
                 f.write(full_msg + "\n")
     except Exception as e:
@@ -96,24 +101,17 @@ def log(message: str, important=False, level="INFO"):
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
         print(f"{Fore.RED}{full_msg}{Style.RESET_ALL}\n")
     else:
-        # Выводим в консоль, если важно / DRY_RUN / уровень WARNING+
         if important or DRY_RUN or message_level >= LOG_LEVELS["WARNING"]:
             color = LOG_COLORS.get(level, Fore.WHITE)
             print(f"{color}{full_msg}{Style.RESET_ALL}\n")
 
-            # Если ERROR, вывести в консоль через notify_error (но 1 раз)
             if message_level >= LOG_LEVELS["ERROR"]:
-                global _in_error_handling
-                if not _in_error_handling:
-                    _in_error_handling = True
-                    try:
+                with error_handling_guard() as allowed:
+                    if allowed:
                         notify_error(message)
-                    finally:
-                        _in_error_handling = False
 
 
 def get_recent_logs(n=50):
-    """Возвращает последние n строк лога."""
     from common.config_loader import LOG_FILE_PATH
 
     if not os.path.exists(LOG_FILE_PATH):
@@ -124,30 +122,26 @@ def get_recent_logs(n=50):
         return "".join(lines[-n:])
 
 
-def log_dry_entry(entry_data):
-    """
-    Лог для DRY-RUN (упрощённая версия без score).
-    """
-    symbol = extract_symbol(entry_data.get("symbol", ""))
-    entry_price = entry_data.get("entry", 0)
-    direction = entry_data.get("direction", "N/A")
-    msg = f"DRY-RUN {symbol} {direction}@{entry_price}"
-    log(msg, important=False, level="INFO")
+# def log_dry_entry(entry_data):
+#     symbol = extract_symbol(entry_data.get("symbol", ""))
+#     entry_price = entry_data.get("entry", 0)
+#     direction = entry_data.get("direction", "N/A")
+#     msg = f"DRY-RUN {symbol} {direction}@{entry_price}"
+#     log(msg, important=False, level="INFO")
 
 
 def now():
-    """Возвращает текущее локальное время (datetime)."""
     return datetime.now()
 
 
 def backup_config():
-    """Пример бэкапа некоего config.py (если он у вас используется)."""
     backup_dir = "data/backups"
+    source_file = "runtime_config.json"
     try:
         os.makedirs(backup_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        backup_file = f"{backup_dir}/config_{timestamp}.py"
-        shutil.copy("config.py", backup_file)
+        backup_file = f"{backup_dir}/runtime_config_{timestamp}.json"
+        shutil.copy(source_file, backup_file)
         send_telegram_message(
             f"📂 Config backup saved as {escape_markdown_v2(os.path.basename(backup_file))}",
             force=True,
@@ -159,8 +153,8 @@ def backup_config():
 
 
 def restore_config(backup_file=None):
-    """Пример восстановления config.py из backup."""
     backup_dir = "data/backups"
+    source_file = "runtime_config.json"
     try:
         os.makedirs(backup_dir, exist_ok=True)
         backups = sorted(os.listdir(backup_dir), reverse=True)
@@ -170,10 +164,9 @@ def restore_config(backup_file=None):
             return
         if not backup_file:
             backup_file = backups[0]
-        shutil.copy(f"{backup_dir}/{backup_file}", "config.py")
+        shutil.copy(f"{backup_dir}/{backup_file}", source_file)
         send_telegram_message(f"🔄 Restored config from {escape_markdown_v2(backup_file)}", force=True)
         log(f"Restored config from {backup_file}", level="INFO")
-        # Удаление старых бэкапов, если нужно
         if len(backups) > 5:
             for old in backups[5:]:
                 os.remove(f"{backup_dir}/{old}")
@@ -184,7 +177,6 @@ def restore_config(backup_file=None):
 
 
 def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
-    """Пример оповещения о смене IP-адреса."""
     try:
         message = f"⚠️ *IP Address Changed!*\n\n" f"🕒 `{timestamp}`\n" f"🌐 Old IP: `{old_ip}`\n" f"🌐 New IP: `{new_ip}`\n"
         if forced_stop:
@@ -196,7 +188,6 @@ def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
 
 
 def add_log_separator():
-    """Добавляет визуальный разделитель в лог-файл между перезапусками бота."""
     from common.config_loader import LOG_FILE_PATH
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -206,12 +197,9 @@ def add_log_separator():
     lock = FileLock(f"{LOG_FILE_PATH}.lock")
     try:
         with lock:
-            # Если файла нет, создаём
             if not os.path.exists(LOG_FILE_PATH):
                 with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
                     f.write("--- Telegram Log ---\n")
-
-            # Пишем разделитель
             with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
                 f.write(separator_message)
 

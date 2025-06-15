@@ -1,10 +1,5 @@
 # component_tracker.py
-import json
 import os
-from datetime import datetime
-
-from constants import COMPONENT_TRACKER_LOG_FILE
-from utils_logging import log
 
 
 def log_component_data(symbol, breakdown, is_successful=True):
@@ -16,6 +11,12 @@ def log_component_data(symbol, breakdown, is_successful=True):
         breakdown (dict): Signal components breakdown
         is_successful (bool): Whether the trade was successful
     """
+    import json
+    from datetime import datetime
+
+    from constants import COMPONENT_TRACKER_LOG_FILE
+    from utils_logging import log
+
     filepath = COMPONENT_TRACKER_LOG_FILE
 
     try:
@@ -28,9 +29,15 @@ def log_component_data(symbol, breakdown, is_successful=True):
                 try:
                     data = json.load(f)
                 except json.JSONDecodeError:
-                    data = {"symbols": {}, "components": {}, "candlestick_rejections": 0}
+                    log("[ComponentTracker] JSON decode error, recreating log file.", level="WARNING")
+                    data = {}
         else:
-            data = {"symbols": {}, "components": {}, "candlestick_rejections": 0}
+            data = {}
+
+        # === Ensure expected structure ===
+        data.setdefault("symbols", {})
+        data.setdefault("components", {})
+        data.setdefault("candlestick_rejections", 0)
 
         # Initialize symbol data if not exists
         if symbol not in data["symbols"]:
@@ -44,7 +51,7 @@ def log_component_data(symbol, breakdown, is_successful=True):
         # Update counts for each active component
         for component, value in breakdown.items():
             if value > 0:
-                # Update global component stats
+                # Global component stats
                 if component not in data["components"]:
                     data["components"][component] = {"count": 0, "successful": 0, "last_used": ""}
 
@@ -53,7 +60,7 @@ def log_component_data(symbol, breakdown, is_successful=True):
                     data["components"][component]["successful"] += 1
                 data["components"][component]["last_used"] = datetime.utcnow().isoformat()
 
-                # Update symbol-specific component stats
+                # Symbol-specific component stats
                 if component not in data["symbols"][symbol]["components"]:
                     data["symbols"][symbol]["components"][component] = {"count": 0, "successful": 0}
 

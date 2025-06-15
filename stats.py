@@ -10,7 +10,6 @@ from common.config_loader import (
     DAILY_TRADE_TARGET,
     EXPORT_PATH,
     LOG_LEVEL,
-    TIMEZONE,
     WEEKLY_PROFIT_TARGET,
     trade_stats,
     trade_stats_lock,
@@ -22,7 +21,7 @@ from utils_logging import log
 
 
 def now_with_timezone():
-    return datetime.now(TIMEZONE)
+    return datetime.utcnow()
 
 
 def format_report_header(title: str) -> str:
@@ -302,7 +301,8 @@ def generate_pnl_graph(days=7):
     plt.savefig("data/pnl_graph.png")
     plt.close()
 
-    send_telegram_message("data/pnl_graph.png", caption=f"PnL Graph ({days}d)")
+    send_telegram_message("data/pnl_graph.png", caption_override="PnL Graph \\(7d\\)", parse_mode="MarkdownV2")
+
     log("PnL graph sent", level="INFO")
 
 

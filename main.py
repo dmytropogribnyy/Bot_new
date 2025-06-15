@@ -1,4 +1,3 @@
-# main.py
 """
 Main trading loop for BinanceBot
 Manages the core trading cycle, risk management, and drawdown protection
@@ -6,6 +5,7 @@ Manages the core trading cycle, risk management, and drawdown protection
 
 import json
 import os
+import signal
 import threading
 import time
 from datetime import datetime
@@ -13,36 +13,24 @@ from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-import telegram.telegram_commands as telegram_commands
 from common.config_loader import (
     DRY_RUN,
-    IP_MONITOR_INTERVAL_SECONDS,
-    MAX_POSITIONS,
     RUNNING,
     USE_TESTNET,
-    VERBOSE,
-    initialize_risk_percent,
     set_bot_status,
 )
 from core.exchange_init import exchange
-from core.fail_stats_tracker import apply_failure_decay, get_symbol_risk_factor, schedule_failure_decay
-from core.failure_logger import log_failure
-from core.risk_utils import check_drawdown_protection
-
-# ====== Новая "чистая" strategy ======
-from core.strategy import last_trade_times, last_trade_times_lock, should_enter_trade
-
-# ====== Торговый движок (без score) ======
-from core.trade_engine import close_real_trade, enter_trade, trade_manager
-from ip_monitor import start_ip_monitor
-from missed_tracker import flush_best_missed_opportunities
-from pair_selector import (
-    auto_cleanup_signal_failures,
-    auto_update_valid_pairs_if_needed,
-    select_active_symbols,
-    start_symbol_rotation,
-    track_missed_opportunities,
+from core.fail_stats_tracker import (
+    apply_failure_decay,
+    get_symbol_risk_factor,
+    migrate_from_blocked_symbols,
+    schedule_failure_decay,
 )
+from core.failure_logger import log_failure
+from core.strategy import last_trade_times, last_trade_times_lock, should_enter_trade
+from core.trade_engine import close_real_trade, trade_manager
+from missed_tracker import flush_best_missed_opportunities
+from pair_selector import auto_cleanup_signal_failures, auto_update_valid_pairs_if_needed, select_active_symbols, start_symbol_rotation, track_missed_opportunities
 from stats import (
     generate_daily_report,
     send_halfyear_report,
@@ -52,52 +40,61 @@ from stats import (
     send_yearly_report,
     should_run_optimizer,
 )
-from symbol_activity_tracker import auto_adjust_relax_factors_from_missed
+from telegram.telegram_commands import handle_telegram_command
 from telegram.telegram_handler import process_telegram_commands
 from telegram.telegram_utils import send_daily_summary, send_telegram_message
 from tools.continuous_scanner import continuous_scan, fetch_all_symbols
 from tp_logger import ensure_log_exists
 from tp_optimizer import run_tp_optimizer
-from tp_optimizer_ml import analyze_and_optimize_tp
 from utils_core import (
-    extract_symbol,
     get_cached_balance,
-    get_runtime_config,
     initialize_cache,
     initialize_runtime_adaptive_config,
     load_state,
+    normalize_symbol,
     reset_state_flags,
     save_state,
 )
 from utils_logging import add_log_separator, log
 
-# Инициализация RISK_PERCENT (по желанию — если вам всё ещё нужно)
-initialize_risk_percent()
-
-# Глобальное событие для остановки
+# Опциональная инициализация
 stop_event = threading.Event()
 
 
 def restore_active_trades():
     """
     Восстанавливает активные сделки из data/active_trades.json при старте бота.
+    Удаляет записи, по которым позиции на Binance уже закрыты.
     """
+    from core.trade_engine import get_position_size
+
     file_path = Path("data/active_trades.json")
     if not file_path.exists():
-        return  # Файл не найден — пропускаем
+        return
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             trades = json.load(f)
 
         restored = 0
+        still_open = {}
+
         for symbol, trade_data in trades.items():
-            trade_manager.add_trade(symbol, trade_data)
-            restored += 1
+            if get_position_size(symbol) > 0:
+                trade_manager.add_trade(symbol, trade_data)
+                still_open[symbol] = trade_data
+                restored += 1
+            else:
+                log(f"[Startup] Skipping {symbol} — position not open on Binance", level="INFO")
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(still_open, f, indent=2)
 
         if restored > 0:
             send_telegram_message(f"♻️ Restored {restored} active trades from file", force=True)
             log(f"[Startup] Restored {restored} trades from active_trades.json", level="INFO")
+        else:
+            log("[Startup] No valid active trades to restore", level="INFO")
 
     except Exception as e:
         log(f"[Startup] Failed to restore active trades: {e}", level="ERROR")
@@ -105,37 +102,26 @@ def restore_active_trades():
 
 def get_trading_signal(symbol):
     """
-    Генерирует торговый сигнал для указанного символа (строка).
-    Возвращает dict или None.
+    Генерирует торговый сигнал по символу с логированием причин отказа.
     """
 
-    # Если у нас вдруг передали весь словарь вместо строки — подстраховываемся:
     if isinstance(symbol, dict):
         symbol = symbol.get("symbol", "")
-
-    # Далее нормализуем строку символа (например, убираем лишние префиксы/суффиксы)
-    symbol = extract_symbol(symbol)
+    symbol = normalize_symbol(symbol)
 
     try:
-        # Вызываем should_enter_trade(...) для BUY и SELL
         buy_signal, buy_failures = should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock)
-        sell_signal, sell_failures = should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock)
 
-        # Если оба None — значит сигнала нет, логируем и выходим
-        if buy_signal is None and sell_signal is None:
-            all_failures = list(set(buy_failures + sell_failures))
-            log_failure(symbol, all_failures)
+        if buy_signal is None:
+            log(f"[Signal] ❌ No signal for {symbol} | Reasons: {buy_failures}", level="DEBUG")
+            log_failure(symbol, buy_failures)
             return None
 
-        # Если есть и BUY, и SELL одновременно — выбираем BUY приоритетно
-        if buy_signal and sell_signal:
-            direction, qty, is_reentry, breakdown = buy_signal
-        elif buy_signal:
-            direction, qty, is_reentry, breakdown = buy_signal
-        else:
-            direction, qty, is_reentry, breakdown = sell_signal
+        direction, qty, is_reentry, breakdown = buy_signal
 
-        # Возвращаем готовый объект со всеми данными для входа
+        log(f"[Signal] ✅ Signal generated for {symbol} | dir={direction}, qty={qty:.3f}, reentry={is_reentry}", level="DEBUG")
+        log(f"[Signal] 🔍 Breakdown: {breakdown}", level="DEBUG")
+
         return {
             "side": direction,
             "qty": qty,
@@ -144,19 +130,19 @@ def get_trading_signal(symbol):
         }
 
     except Exception as e:
-        log(f"[Signal] Error generating signal for {symbol}: {e}", level="ERROR")
+        log(f"[Signal] ❌ Exception generating signal for {symbol}: {e}", level="ERROR")
         log_failure(symbol, ["exception", str(e)])
         return None
 
 
 def load_symbols():
     """
-    Получаем активные символы, иначе останавливаем бота
+    Загружает активные пары или завершает бот, если пусто.
     """
     symbols = select_active_symbols()
     if not symbols:
         log("No active symbols loaded, stopping bot", level="ERROR")
-        send_telegram_message("⚠️ No active symbols loaded, stopping bot", force=True)
+        send_telegram_message("⚠️ No active symbols loaded. Stopping bot.", force=True)
         stop_event.set()
         return []
     return symbols
@@ -164,387 +150,270 @@ def load_symbols():
 
 def start_report_loops():
     """
-    Запуск фоновых потоков для отчётов
+    Запускает фоновые потоки для ежедневных и расширенных отчётов.
     """
 
     def daily_loop():
         while not stop_event.is_set():
-            t = datetime.now()
-            if t.hour == 21 and t.minute == 0:
+            now = datetime.now()
+            if now.hour == 21 and now.minute == 0:
                 generate_daily_report()
                 time.sleep(60)
             time.sleep(10)
 
     def weekly_loop():
         while not stop_event.is_set():
-            t = datetime.now()
-            # Воскресенье (weekday=6), 21:00
-            if t.weekday() == 6 and t.hour == 21 and t.minute == 0:
+            now = datetime.now()
+            if now.weekday() == 6 and now.hour == 21 and now.minute == 0:
                 send_weekly_report()
                 time.sleep(60)
             time.sleep(10)
 
-    def extended_reports_loop():
+    def extended_loop():
         while not stop_event.is_set():
-            t = datetime.now()
-            if t.day == 1 and t.hour == 21 and t.minute == 0:
-                send_monthly_report()
-            if t.day == 1 and t.month in [1, 4, 7, 10] and t.hour == 21 and t.minute == 5:
-                send_quarterly_report()
-            if t.day == 1 and t.month in [1, 7] and t.hour == 21 and t.minute == 10:
-                send_halfyear_report()
-            if t.day == 1 and t.month == 1 and t.hour == 21 and t.minute == 15:
-                send_yearly_report()
+            now = datetime.now()
+            if now.day == 1:
+                if now.hour == 21 and now.minute == 0:
+                    send_monthly_report()
+                if now.month in [1, 4, 7, 10] and now.minute == 5:
+                    send_quarterly_report()
+                if now.month in [1, 7] and now.minute == 10:
+                    send_halfyear_report()
+                if now.month == 1 and now.minute == 15:
+                    send_yearly_report()
             time.sleep(10)
 
     def optimizer_loop():
         while not stop_event.is_set():
-            t = datetime.now()
-            # Каждые 2 дня в 21:30
-            if t.day % 2 == 0 and t.hour == 21 and t.minute == 30:
+            now = datetime.now()
+            if now.day % 2 == 0 and now.hour == 21 and now.minute == 30:
                 if should_run_optimizer():
-                    run_tp_optimizer()  # tp_optimizer.py (простая оптимизация)
-                    analyze_and_optimize_tp()  # tp_optimizer_ml.py (ML версия)
+                    run_tp_optimizer()
                 else:
                     send_telegram_message("Not enough recent trades to optimize (min: 20)", force=True)
                 time.sleep(60)
             time.sleep(10)
 
-    # Запуск потоков
     threading.Thread(target=daily_loop, daemon=True).start()
     threading.Thread(target=weekly_loop, daemon=True).start()
-    threading.Thread(target=extended_reports_loop, daemon=True).start()
+    threading.Thread(target=extended_loop, daemon=True).start()
     threading.Thread(target=optimizer_loop, daemon=True).start()
 
 
 def check_block_health():
-    """
-    Мониторим risk_factor, при необходимости ускоряем decay
-    """
     try:
         all_symbols = fetch_all_symbols()
         if not all_symbols:
-            log("[HealthCheck] No symbols returned from fetch_all_symbols", level="WARNING")
+            log("[HealthCheck] No symbols returned", level="WARNING")
             return
 
-        high_risk_count = sum(1 for s in all_symbols if get_symbol_risk_factor(s)[0] < 0.25)
-        ratio = high_risk_count / len(all_symbols)
-
-        log(f"[HealthCheck] High risk symbols: {high_risk_count}/{len(all_symbols)} ({ratio:.1%})", level="INFO")
+        high_risk = [s for s in all_symbols if get_symbol_risk_factor(s)[0] < 0.25]
+        ratio = len(high_risk) / len(all_symbols)
+        log(f"[HealthCheck] High risk: {len(high_risk)}/{len(all_symbols)} ({ratio:.1%})", level="INFO")
 
         if ratio > 0.3:
-            log("[HealthCheck] ⚠️ Triggering accelerated decay (ratio>0.3)", level="WARNING")
             apply_failure_decay(accelerated=True)
-
+            log("Accelerated decay triggered", level="WARNING")
             if ratio > 0.5:
-                examples = [s for s in all_symbols if get_symbol_risk_factor(s)[0] < 0.25][:5]
+                examples = high_risk[:5]
                 send_telegram_message(
-                    f"🚨 Critical risk level: {high_risk_count}/{len(all_symbols)} symbols "
-                    f"({ratio:.1%}) have high risk factors.\n"
-                    f"Applying accelerated recovery.\n\n"
-                    f"Examples: {', '.join(examples)}",
+                    f"🚨 High risk level: {len(high_risk)}/{len(all_symbols)} ({ratio:.1%})\n" f"Applying accelerated recovery\n" f"Examples: {', '.join(examples)}",
                     force=True,
                 )
     except Exception as e:
-        log(f"[HealthCheck] ❌ Error: {e}", level="ERROR")
+        log(f"[HealthCheck] Error: {e}", level="ERROR")
 
 
 def start_trading_loop():
-    """
-    Main trading loop
-    """
-    log("Starting BinanceBot main trading loop", level="INFO")
+    from core.binance_api import get_open_positions
+    from core.engine_controller import run_trading_cycle
 
-    # Статус бота -> running
+    # === Force loading market info (for minNotional etc.)
+    from core.exchange_init import exchange
+    from utils_core import get_runtime_config
+
+    exchange.load_markets()
+    log("[Startup] exchange.load_markets() completed", level="DEBUG")
+
+    # === Force refresh positions cache
+    from utils_core import api_cache
+
+    api_cache["positions"]["timestamp"] = 0
+    log("[Startup] positions cache invalidated", level="DEBUG")
+
+    # === Инициализация ===
     set_bot_status("running")
     initialize_cache()
+
     restore_active_trades()
 
-    starting_balance = get_cached_balance()
-    log(f"[Startup] Starting balance: {starting_balance:.2f} USDC", level="INFO", important=True)
+    start_balance = get_cached_balance()
+    log(f"[Startup] Start balance: {start_balance:.2f} USDC", level="INFO")
 
-    # Проверяем, нет ли «лишних» позиций
-    positions = exchange.fetch_positions()
-    active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
-    if active_positions > MAX_POSITIONS:
-        log(f"[Startup] Found {active_positions} positions > MAX_POSITIONS={MAX_POSITIONS}. Closing excess...", level="INFO")
-        for pos in positions:
-            if float(pos.get("contracts", 0)) != 0:
-                symbol = pos["symbol"]
-                close_real_trade(symbol)
-                active_positions -= 1
-                if active_positions <= MAX_POSITIONS:
-                    break
+    # === Лог runtime_config ===
+    runtime_config = get_runtime_config()
+    log(
+        f"[Config] Loaded runtime_config: "
+        f"max_positions={runtime_config.get('max_concurrent_positions')}, "
+        f"SL={runtime_config.get('SL_PERCENT')*100:.2f}%, "
+        f"TP1~{runtime_config.get('auto_profit_threshold')}%, "
+        f"hold_time={runtime_config.get('max_hold_minutes')}min, "
+        f"volume≥{runtime_config.get('volume_threshold_usdc')} USDC, "
+        f"ATR≥{runtime_config.get('atr_threshold_percent')*100:.2f}%",
+        level="INFO",
+    )
 
-    # Сброс state, сохраним
+    # === Обнуление флагов состояния ===
     state = load_state()
     state["stopping"] = False
     state["shutdown"] = False
     save_state(state)
 
+    # === Telegram стартовое сообщение ===
     mode = "TESTNET" if USE_TESTNET else "REAL_RUN"
     if DRY_RUN:
         mode += " (DRY_RUN)"
-    log(f"[Startup] Starting bot in {mode} mode...", important=True, level="INFO")
+    send_telegram_message(
+        f"🚀 Bot started: {mode}\n"
+        f"Balance: {start_balance:.2f} USDC\n"
+        f"Max Positions: {runtime_config.get('max_concurrent_positions')}\n"
+        f"SL: {runtime_config.get('SL_PERCENT')*100:.2f}%, TP1~{runtime_config.get('auto_profit_threshold')}%",
+        force=True,
+    )
 
-    # Уведомление Telegram
-    message = f"Bot started in {mode} mode\n" f"Balance: {starting_balance:.2f} USDC\n" f"DRY_RUN: {DRY_RUN}, VERBOSE: {VERBOSE}"
-    send_telegram_message(message, force=True, parse_mode="")
-
-    # Обновим valидные пары, если нужно
+    # === Получение символов ===
     auto_update_valid_pairs_if_needed()
-
     symbols = load_symbols()
-    if symbols:
-        symbol_names = [item.get("symbol", "?") for item in symbols]
-        log(f"[Startup] Loaded {len(symbols)} active symbols: {', '.join(symbol_names)}", important=True, level="INFO")
-    else:
-        log("[Startup] No active symbols loaded, exiting bot.", important=True, level="ERROR")
+    symbols = [normalize_symbol(s) for s in symbols]  # ✅ Нормализация
+    if not symbols:
+        send_telegram_message("⚠️ No symbols loaded for trading. Bot will not run.", force=True)
         return
 
-    group_size = 5
-    symbol_groups = [symbols[i : i + group_size] for i in range(0, len(symbols), group_size)]
-    current_group_index = 0
+    log(f"[Startup] Loaded {len(symbols)} symbols for trading", level="INFO")
 
-    last_drawdown_check = 0
-    trades_executed = 0
+    # === Telegram-лог списка загруженных пар ===
+    from common.config_loader import FIXED_PAIRS
+
+    fixed_set = set([s.replace("/", "").upper() for s in FIXED_PAIRS])
+    symbol_log = []
+    for sym in symbols:
+        norm = sym.replace("/", "").upper()
+        tag = "🧷F" if norm in fixed_set else "🔁D"
+        symbol_log.append(f"{tag} {norm}")
+
+    msg = "📊 Active Pairs Loaded:\n" + "\n".join(symbol_log)
+    send_telegram_message(msg, force=True)
+
+    # ✅ Очистка cooldown таймеров (важно!)
+    from core.runtime_state import last_trade_times, last_trade_times_lock
+
+    with last_trade_times_lock:
+        last_trade_times.clear()
+        log("[Cooldown] Reset last_trade_times on new run", level="DEBUG")
 
     try:
         while RUNNING and not stop_event.is_set():
-            state = load_state()
-
-            # Проверяем остановку бота
-            if state.get("stopping") or state.get("shutdown"):
-                from core.binance_api import get_open_positions
-
-                open_positions = get_open_positions()
-                if not open_positions:
-                    # Всё закрыто
-                    msg = "[Main] Bot is stopping. No open trades. "
-                    if state.get("shutdown"):
-                        msg += "Shutting down..."
-                        log(msg, level="INFO", important=True)
-                        send_telegram_message("✅ Shutdown complete. No open trades. Exiting...", force=True)
-                        state["stopping"] = False
-                        state["shutdown"] = False
-                        save_state(state)
-                        os._exit(0)
-                    else:
-                        msg += "Will stop shortly..."
-                        log(msg, level="INFO")
-                        time.sleep(30)
-                        continue
-                else:
-                    # Есть открытые позиции — закроем
-                    syms_open = [pos["symbol"] for pos in open_positions]
-                    msg = f"⏳ Still open positions ({len(open_positions)}): {', '.join(syms_open)}. Waiting..."
-                    log(msg, level="INFO")
-                    send_telegram_message(msg, force=True)
-
-                    for pos in open_positions:
-                        symbol = pos["symbol"]
-                        log(f"[Stop] Closing position for {symbol}", level="INFO")
-                        close_real_trade(symbol)
-                        time.sleep(1)
-                    time.sleep(10)
-                    continue
-
-            # Проверим, не превышен ли лимит позиций
-            try:
-                positions = exchange.fetch_positions()
-                active_positions = sum(1 for pos in positions if float(pos.get("contracts", 0)) != 0)
-                if active_positions >= MAX_POSITIONS:
-                    log(f"[Main] Max open positions ({MAX_POSITIONS}) reached. Active: {active_positions}. Skipping cycle...", level="INFO")
-                    time.sleep(30)
-                    continue
-                # Примеры «синхронизации» trade_manager
-                if active_positions > 0 and not trade_manager._trades:
-                    log(f"[Main] State mismatch: {active_positions} exchange positions, but trade_manager is empty. Force-closing all to sync...", level="WARNING")
-                    for pos in positions:
-                        if float(pos.get("contracts", 0)) != 0:
-                            close_real_trade(pos["symbol"])
-                    continue
-            except Exception as e:
-                log(f"[Main] Failed to fetch positions: {e}", level="ERROR")
-                time.sleep(10)
+            # === Стоп и выход при закрытых всех позициях ===
+            if load_state().get("stopping") or stop_event.is_set():
+                open_pos = get_open_positions()
+                if not open_pos:
+                    send_telegram_message("✅ No open positions. Bot exiting.", force=True)
+                    return
+                for pos in open_pos:
+                    close_real_trade(pos["symbol"])
+                    time.sleep(1)
                 continue
 
-            current_group = symbol_groups[current_group_index]
-
-            if state.get("stopping") or stop_event.is_set():
-                log("[Main] Stopping detected before trading cycle...", level="INFO")
-                time.sleep(10)
-                continue
-
-            # Проверяем drawdown каждую минуту или после сделок
-            balance = get_cached_balance()
-            if not balance:
-                log("Failed to fetch balance. Retrying in 30 seconds.", level="ERROR")
-                time.sleep(30)
-                continue
-
-            now_ts = time.time()
-            if now_ts - last_drawdown_check >= 60 or trades_executed > 0:
-                drawdown_status = check_drawdown_protection(balance)
-                last_drawdown_check = now_ts
-
-                if drawdown_status["status"] == "paused":
-                    log("Bot paused due to critical drawdown. Manual intervention required.", level="ERROR")
-                    continue
-                elif drawdown_status["status"] == "reduced_risk":
-                    log(f"Risk reduced due to drawdown: {drawdown_status['drawdown']:.2f}%", level="WARNING")
-                trades_executed = 0  # сбрасываем счётчик
-
-            # Перебираем символы текущей группы
-            for symbol in current_group:
-                symbol = extract_symbol(symbol)
-                if stop_event.is_set():
-                    log("[Main Loop] stop_event set, break group loop", level="INFO")
-                    break
-                try:
-                    signal = get_trading_signal(symbol)
-                    if signal:
-                        side = signal["side"]
-                        qty = signal["qty"]
-                        is_reentry = signal.get("is_reentry", False)
-                        breakdown = signal.get("breakdown", {})
-
-                        log(f"[Main] Got trading signal for {symbol}: {side}, qty={qty:.4f}", level="INFO")
-                        enter_trade(symbol, side, qty, is_reentry=is_reentry, breakdown=breakdown)
-                        trades_executed += 1
-                except Exception as e:
-                    log(f"Error processing symbol {symbol}: {e}", level="ERROR")
-                    continue
-
-            # Переходим к следующей группе
-            current_group_index = (current_group_index + 1) % len(symbol_groups)
+            # === Запуск торгового цикла ===
+            run_trading_cycle(symbols, stop_event)
             time.sleep(10)
 
-        if not stop_event.is_set():
-            log("[Main] RUNNING = False detected. Graceful shutdown triggered.", important=True, level="INFO")
-            send_telegram_message("🛑 Bot stopped via graceful shutdown.", force=True, parse_mode="")
-
     except KeyboardInterrupt:
-        from core.trade_engine import handle_panic  # <-- Добавляем импорт прямо здесь (либо наверху файла)
+        from core.trade_engine import handle_panic
 
-        log("[Main] Bot manually stopped (Ctrl+C)", important=True, level="INFO")
-        send_telegram_message("🛑 Bot manually stopped (Ctrl+C) → initiating panic close...", force=True)
-
+        log("🚩 Manual stop (Ctrl+C)", level="INFO")
+        send_telegram_message("🚩 Bot manually stopped. Initiating panic close...", force=True)
+        stop_event.set()
         handle_panic(stop_event)
 
 
 if __name__ == "__main__":
+    # === Стартовый лог и подготовка окружения ===
     add_log_separator()
     reset_state_flags()
-    log("State flags reset at startup", level="INFO")
-
-    # Гарантируем, что каталог data/ есть
     os.makedirs("data", exist_ok=True)
+    log("📦 Runtime environment initialized", level="INFO")
 
-    # Проверяем файлы missed_opportunities.json, tp_performance.csv
-    if not os.path.exists("data/missed_opportunities.json"):
-        with open("data/missed_opportunities.json", "w") as f:
-            f.write("{}")
+    # === Убедимся, что все ключевые файлы существуют ===
+    Path("data/missed_opportunities.json").write_text("{}", encoding="utf-8") if not Path("data/missed_opportunities.json").exists() else None
 
-    if not os.path.exists("data/tp_performance.csv"):
-        with open("data/tp_performance.csv", "w") as f:
-            f.write("Date,Symbol,Side,Entry Price,Exit Price,Qty,TP1 Hit,TP2 Hit,SL Hit," "PnL (%),Result,Held (min),Commission,Net PnL (%),Absolute Profit," "Type,ATR,Exit Reason\n")
+    if not Path("data/tp_performance.csv").exists():
+        with open("data/tp_performance.csv", "w", encoding="utf-8") as f:
+            f.write("timestamp,symbol,side,entry,exit,qty,pnl_percent,result,tp1_hit,tp2_hit,sl_hit,commission\n")
 
-    log("✅ Checked required data files", level="INFO")
-
-    # Очищаем старые сигнал-фейлы
+    # === Инициализация конфигураций и адаптаций ===
     auto_cleanup_signal_failures()
-
-    # Инициализируем runtime config
     initialize_runtime_adaptive_config()
-    log("✅ Adaptive config initialized", level="INFO")
-
-    # Печатаем config
-    config = get_runtime_config()
-    log(f"Runtime config at startup: {config}", level="DEBUG")
-
-    # Запоминаем время старта
-    state = load_state()
-    current_time = time.time()
-    state["session_start_time"] = current_time
-    save_state(state)
-    log(f"🟢 Bot session started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}", level="INFO")
-
     ensure_log_exists()
-
     schedule_failure_decay()
-    log("✅ Initial failure decay scheduled", level="INFO")
-
-    log("Running initial continuous scan...", level="INFO")
     continuous_scan()
+    migrate_from_blocked_symbols()
 
-    scheduler = BackgroundScheduler()
+    # === Обновляем символы и только после — debug_monitor
+    auto_update_valid_pairs_if_needed()
+    symbols = load_symbols()
+    symbols = [normalize_symbol(s) for s in symbols]
+    if not symbols:
+        exit(1)
 
-    # Пример ротации
-    def rotate_symbols():
-        syms = select_active_symbols()
-        symbol_names = [extract_symbol(s) for s in syms]
-        log(f"🔁 Symbol re-rotation. {len(syms)} pairs loaded: {', '.join(symbol_names)}", level="INFO")
+    from debug_tools import run_monitor
 
-    scheduler.add_job(rotate_symbols, "interval", minutes=30, id="symbol_rotation")
+    threading.Thread(target=run_monitor, daemon=True).start()
 
-    import ip_monitor
+    # === Запоминаем старт сессии ===
+    state = load_state()
+    state["session_start_time"] = time.time()
+    save_state(state)
 
-    ip_monitor.boot_time = time.time()
+    # === Планировщик (APScheduler) ===
+    scheduler = BackgroundScheduler(job_defaults={"max_instances": 3})
+    scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
+    scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
+    scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
+    scheduler.add_job(schedule_failure_decay, "interval", hours=1)
+    scheduler.add_job(continuous_scan, "interval", minutes=15)
+    scheduler.add_job(check_block_health, "interval", minutes=30)
+    scheduler.add_job(run_monitor, "interval", minutes=15)
 
-    # Запускаем поток обработки команд Telegram
+    from core.risk_adjuster import auto_adjust_risk
+
+    scheduler.add_job(auto_adjust_risk, "interval", hours=1)
+
+    # === Telegram и фоновая логика ===
     threading.Thread(
-        target=lambda: process_telegram_commands(state, lambda msg, st: telegram_commands.handle_telegram_command(msg, st, stop_event=stop_event)),
+        target=lambda: process_telegram_commands(state, lambda msg, st: handle_telegram_command(msg, st, stop_event)),
         daemon=True,
     ).start()
-
-    # Запускаем мониторинг IP
-    threading.Thread(
-        target=lambda: start_ip_monitor(
-            lambda: telegram_commands._initiate_stop("ip_changed", stop_event=stop_event),
-            interval_seconds=IP_MONITOR_INTERVAL_SECONDS,
-        ),
-        daemon=True,
-    ).start()
-
-    # Ротация символов, отчётные потоки
     threading.Thread(target=lambda: start_symbol_rotation(stop_event), daemon=True).start()
     threading.Thread(target=start_report_loops, daemon=True).start()
 
-    from core.risk_adjuster import auto_adjust_risk  # ✅ добавлено
-    from core.status_logger import log_symbol_activity_status
+    # === Обработка Ctrl+C / SIGTERM ===
+    def handle_exit_signal(signum, frame):
+        log("🛑 Termination signal", level="WARNING")
+        stop_event.set()
+        if scheduler.running:
+            scheduler.shutdown()
+            log("🛑 Scheduler stopped", level="INFO")
 
-    scheduler.add_job(send_daily_summary, "cron", hour=23, minute=59)
-    scheduler.add_job(analyze_and_optimize_tp, "cron", day_of_week="sun", hour=10)
-    scheduler.add_job(track_missed_opportunities, "interval", minutes=30)
-    scheduler.add_job(flush_best_missed_opportunities, "interval", minutes=30)
-    scheduler.add_job(auto_adjust_relax_factors_from_missed, "interval", minutes=30)
-    scheduler.add_job(schedule_failure_decay, "interval", hours=1, id="failure_decay")
-    scheduler.add_job(continuous_scan, "interval", minutes=15, id="symbol_scanner")
-    scheduler.add_job(check_block_health, "interval", minutes=30, id="risk_health_check")
-    scheduler.add_job(log_symbol_activity_status, "interval", minutes=10, id="status_logger")
-
-    scheduler.add_job(auto_adjust_risk, "interval", hours=1, id="risk_adjuster")
-
-    from core.fail_stats_tracker import migrate_from_blocked_symbols
-
-    migrate_from_blocked_symbols()
-    log("✅ Migrated from old blocking to graduated risk system", level="INFO")
-
-    from common.config_loader import ENABLE_FULL_DEBUG_MONITORING
-    from debug_tools import run_monitor
-
-    if ENABLE_FULL_DEBUG_MONITORING:
-        log("✅ ENABLE_FULL_DEBUG_MONITORING is True — starting diagnostic audit", level="INFO")
-        run_monitor()
+    signal.signal(signal.SIGINT, handle_exit_signal)
+    signal.signal(signal.SIGTERM, handle_exit_signal)
 
     scheduler.start()
-    log("✅ Scheduler started (daily summary, symbol rotation, missed ops, etc.)", level="INFO")
+    log("✅ Scheduler started", level="INFO")
 
     try:
         start_trading_loop()
     finally:
         if scheduler.running:
             scheduler.shutdown()
-            log("🛑 Bot has shut down gracefully.", level="INFO")
-            log("Scheduler shutdown completed", level="INFO")
+            log("🛑 Bot shutdown complete", level="INFO")

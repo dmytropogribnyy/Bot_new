@@ -5,8 +5,8 @@ Controls position limits, size calculations, and validates new position requests
 """
 
 # Import from project modules
-from core.risk_utils import calculate_position_value_limit, get_max_positions
-from utils_core import extract_symbol, get_cached_balance, safe_call_retry
+from core.risk_utils import get_max_positions
+from utils_core import extract_symbol, safe_call_retry
 from utils_logging import log
 
 
@@ -29,79 +29,117 @@ def get_open_positions_count():
 
 def can_open_new_position(balance):
     """
-    Limit simultaneous positions based on account size.
+    Проверяет, можно ли открыть новую позицию с учётом лимитов:
+    - лимит на число одновременных позиций
+    - лимит на задействованный капитал (≤85%)
 
     Args:
-        balance (float): Current account balance in USDC
+        balance (float): Текущий баланс аккаунта в USDC
 
     Returns:
-        bool: True if a new position can be opened, False otherwise
+        bool: True, если можно открыть позицию; False — если лимит превышен
     """
     from core.risk_utils import get_max_positions
+    from utils_core import get_total_position_value
+    from utils_logging import log
 
     current_positions = get_open_positions_count()
     max_positions = get_max_positions(balance)
 
-    log(f"Position check: {current_positions}/{max_positions} positions used. " f"Balance: {balance:.2f} USDC", level="DEBUG")
+    # Проверка лимита по количеству позиций
+    if current_positions >= max_positions:
+        log(f"[PositionLimit] ❌ {current_positions}/{max_positions} позиции уже заняты", level="INFO")
+        return False
 
-    return current_positions < max_positions
+    # Проверка капитального использования
+    position_value = get_total_position_value()
+    cap_usage = position_value / balance if balance > 0 else 1
+
+    # 🔍 Детализация капитального использования
+    log(f"[DEBUG] Capital check → position_value={position_value:.2f}, balance={balance:.2f}, usage={cap_usage:.2%}", level="DEBUG")
+
+    if cap_usage > 0.85:
+        log(f"[CapitalLimit] ❌ Использовано {cap_usage:.2%} капитала (>85%)", level="INFO")
+        return False
+
+    log(f"[PositionCheck] ✅ {current_positions}/{max_positions} позиций. Capital used: {cap_usage:.2%}", level="DEBUG")
+    return True
 
 
-def get_position_size(symbol):
+def check_entry_allowed(balance):
     """
-    Get the current position size for a specific symbol
-
-    Args:
-        symbol (str): Trading pair symbol
-
-    Returns:
-        float: Position size (positive for long, negative for short, 0 for no position)
+    Проверяет, можно ли открыть новую позицию.
+    Возвращает (True, None) если да,
+             или (False, причина) если нет.
     """
-    symbol = extract_symbol(symbol)
-    from core.exchange_init import exchange
+    from core.risk_utils import get_max_positions
+    from utils_core import get_total_position_value
+    from utils_logging import log
 
-    try:
-        position = safe_call_retry(exchange.fetch_position, symbol)
-        if position:
-            return float(position.get("positionAmt", 0))
-        return 0
-    except Exception as e:
-        log(f"Error in get_position_size for {symbol}: {e}", level="ERROR")
-        return 0
+    current_positions = get_open_positions_count()
+    max_positions = get_max_positions(balance)
+
+    if current_positions >= max_positions:
+        log(f"[EntryCheck] ❌ Too many positions: {current_positions}/{max_positions}", level="INFO")
+        return False, "position_limit_reached"
+
+    position_value = get_total_position_value()
+    cap_usage = position_value / balance if balance > 0 else 1
+
+    # 🔍 Логируем детализацию капитала
+    log(f"[DEBUG] Capital check → position_value={position_value:.2f}, balance={balance:.2f}, usage={cap_usage:.2%}", level="DEBUG")
+
+    if cap_usage > 0.85:
+        log(f"[EntryCheck] ❌ Capital usage too high: {cap_usage:.2%}", level="INFO")
+        return False, "capital_utilization_limit"
+
+    log(f"[EntryCheck] ✅ Allowed to enter. Positions: {current_positions}/{max_positions}, Capital used: {cap_usage:.2%}", level="DEBUG")
+    return True, None
 
 
 def can_increase_position(symbol, additional_qty):
     """
-    Check if we can safely increase an existing position
+    Проверяет, можно ли безопасно увеличить существующую позицию.
 
     Args:
-        symbol (str): Trading pair symbol
-        additional_qty (float): Additional position size to add
+        symbol (str): Тикер
+        additional_qty (float): Дополнительный объём
 
     Returns:
-        bool: True if position can be increased, False otherwise
+        bool: True если можно, False если превышает лимит или нет позиции
     """
     symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
+    from core.risk_utils import calculate_position_value_limit
+    from utils_core import get_cached_balance, safe_call_retry
+    from utils_logging import log
 
     try:
-        # Get current balance and position
         balance = get_cached_balance()
         position = safe_call_retry(exchange.fetch_position, symbol)
 
         if not position or float(position.get("positionAmt", 0)) == 0:
-            return False  # Can't increase a non-existent position
+            log(f"[Check] ❌ Нельзя увеличить — позиция по {symbol} не активна", level="DEBUG")
+            return False
 
-        # Calculate current and new position values
         current_value = abs(float(position.get("positionValue", 0)))
         current_price = float(position.get("entryPrice", 0))
         additional_value = additional_qty * current_price
+        new_total = current_value + additional_value
 
-        # Calculate maximum allowed position value using the correct function
         max_position_value = calculate_position_value_limit(balance)
 
-        # Check if new total would exceed maximum allowed
-        return (current_value + additional_value) <= max_position_value
+        # 🔍 Логируем лимиты по позиции
+        log(
+            f"[DEBUG] Increase check for {symbol} → current_value={current_value:.2f}, " f"add={additional_value:.2f}, new_total={new_total:.2f}, max={max_position_value:.2f}", level="DEBUG"
+        )
+
+        if new_total > max_position_value:
+            log(f"[Check] ❌ Превышен лимит позиции {symbol}: {new_total:.2f} > {max_position_value:.2f}", level="INFO")
+            return False
+
+        log(f"[Check] ✅ Можно увеличить позицию {symbol} на {additional_qty}", level="DEBUG")
+        return True
 
     except Exception as e:
         log(f"Error in can_increase_position for {symbol}: {e}", level="ERROR")
@@ -110,28 +148,32 @@ def can_increase_position(symbol, additional_qty):
 
 def execute_position_increase(symbol, side, additional_qty):
     """
-    Increase an existing position by adding to it
+    Увеличивает существующую позицию.
 
     Args:
-        symbol (str): Trading pair symbol
-        side (str): 'buy' or 'sell'
-        additional_qty (float): Additional position size to add
+        symbol (str): Тикер
+        side (str): 'BUY' или 'SELL'
+        additional_qty (float): Объём добавления
 
     Returns:
-        dict: Order result or None if failed
+        dict: Результат ордера или None при ошибке
     """
     symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
     from utils_core import safe_call_retry
+    from utils_logging import log
 
     try:
         order_type = "MARKET"
         side = side.upper()
 
-        # Execute the additional order
+        log(f"[DEBUG] Executing position increase: {symbol}, side={side}, qty={additional_qty}", level="DEBUG")
+
         order = safe_call_retry(exchange.create_order, symbol=symbol, type=order_type, side=side, amount=additional_qty)
 
-        log(f"{symbol} 📈 Position increased by {additional_qty} through {side} {order_type}", level="INFO")
+        log(f"[Position] {symbol} 📈 Увеличена позиция на {additional_qty} через {side} {order_type}", level="INFO")
+        log(f"[DEBUG] Order result: {order}", level="DEBUG")
+
         return order
 
     except Exception as e:
@@ -141,29 +183,32 @@ def execute_position_increase(symbol, side, additional_qty):
 
 def execute_partial_close(symbol, side, reduction_qty):
     """
-    Close part of an existing position
+    Частично закрывает открытую позицию.
 
     Args:
-        symbol (str): Trading pair symbol
-        side (str): Original position side ('buy' or 'sell')
-        reduction_qty (float): Position size to close
+        symbol (str): Тикер
+        side (str): Исходное направление ('BUY' или 'SELL')
+        reduction_qty (float): Объём закрытия
 
     Returns:
-        dict: Order result or None if failed
+        dict: Результат ордера или None при ошибке
     """
     symbol = extract_symbol(symbol)
     from core.exchange_init import exchange
     from utils_core import safe_call_retry
+    from utils_logging import log
 
     try:
-        # For partial close, use the opposite side of the original position
         close_side = "SELL" if side.upper() == "BUY" else "BUY"
         order_type = "MARKET"
 
-        # Execute the reduction order
+        log(f"[DEBUG] Executing partial close: {symbol}, side={close_side}, qty={reduction_qty}", level="DEBUG")
+
         order = safe_call_retry(exchange.create_order, symbol=symbol, type=order_type, side=close_side, amount=reduction_qty)
 
-        log(f"{symbol} 🔒 Partial position close: {reduction_qty} through {close_side} {order_type}", level="INFO")
+        log(f"[Position] {symbol} 🔒 Частично закрыто: {reduction_qty} через {close_side} {order_type}", level="INFO")
+        log(f"[DEBUG] Order result: {order}", level="DEBUG")
+
         return order
 
     except Exception as e:

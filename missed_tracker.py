@@ -3,18 +3,18 @@ import os
 from datetime import datetime, timedelta
 from threading import Lock
 
-from constants import CACHE_FILE
-from pair_selector import calculate_atr_volatility, fetch_symbol_data
+from core.strategy import fetch_data_multiframe  # обязательно импортируй, если ещё нет
 from utils_core import extract_symbol
 from utils_logging import log
 
+CACHE_FILE = "data/cached_missed.json"  # Было раньше в constants
 CACHE_LOCK = Lock()
 MAX_ENTRIES = 1000
 
 
 def add_missed_opportunity(symbol: str):
     symbol = extract_symbol(symbol)
-    df = fetch_symbol_data(symbol, timeframe="15m", limit=96)
+    df = fetch_data_multiframe(symbol)  # 🔄 заменили здесь
     if df is None or len(df) < 20:
         return
 
@@ -25,8 +25,8 @@ def add_missed_opportunity(symbol: str):
     if abs(potential_profit) < 5:
         return
 
-    atr_vol = calculate_atr_volatility(df)
-    avg_volume = df["volume"].mean()
+    atr_vol = df["atr"].iloc[-1]  # ✅ теперь напрямую из df["atr"]
+    avg_volume = df["volume"].iloc[-96:].mean() if len(df) >= 96 else df["volume"].mean()
     now = datetime.utcnow().isoformat()
 
     entry = {
@@ -38,14 +38,13 @@ def add_missed_opportunity(symbol: str):
     }
 
     with CACHE_LOCK:
+        cache = []
         if os.path.exists(CACHE_FILE):
             with open(CACHE_FILE, "r") as f:
                 cache = json.load(f)
-        else:
-            cache = []
 
         cache.append(entry)
-        cache = cache[-MAX_ENTRIES:]  # Ограничим размер
+        cache = cache[-MAX_ENTRIES:]
 
         with open(CACHE_FILE, "w") as f:
             json.dump(cache, f, indent=2)
@@ -59,20 +58,17 @@ def flush_best_missed_opportunities(top_n=5):
         with open(CACHE_FILE, "r") as f:
             cache = json.load(f)
 
-        # Отбор только свежих (за последние 30 мин)
         now = datetime.utcnow()
         threshold_time = now - timedelta(minutes=30)
 
-        recent = [entry for entry in cache if datetime.fromisoformat(entry["timestamp"]) > threshold_time]
-
+        recent = [e for e in cache if datetime.fromisoformat(e["timestamp"]) > threshold_time]
         if not recent:
             return
 
         top = sorted(recent, key=lambda x: abs(x["profit"]), reverse=True)[:top_n]
 
-        lines = [f"- {e['symbol']} ({e['profit']}% profit, Momentum: {e['momentum']}%, ATR vol: {e['atr_vol']}, Avg volume: {e['avg_volume']:,})" for e in top]
+        lines = [f"- {e['symbol']} ({e['profit']}% profit, ATR vol: {e['atr_vol']}, Avg volume: {e['avg_volume']:,})" for e in top]
         log("[Top Missed Opportunities — Last 30 min]\n" + "\n".join(lines), level="INFO")
 
-        # Очистим кэш после логирования
         with open(CACHE_FILE, "w") as f:
             json.dump([], f)

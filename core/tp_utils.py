@@ -4,115 +4,85 @@ import os
 
 import pandas as pd
 
-from common.config_loader import (
-    AUTO_TP_SL_ENABLED,
-    FLAT_ADJUSTMENT,
-    SL_PERCENT,
-    TP1_PERCENT,
-    TP1_SHARE,
-    TREND_ADJUSTMENT,
-)
 from utils_logging import log
 
 
-def calculate_tp_levels(entry_price: float, side: str, df=None, regime: str = None):
+def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_pct=None, tp2_pct=None, sl_pct=None):
     """
-    Финальный вариант расчёта TP/SL:
-      - Пытаемся взять ATR из df["atr"], если DataFrame валиден и не пуст.
-      - Если не получилось — fallback на TP1_PERCENT / SL_PERCENT.
-      - Корректируем TP/SL под режим (flat/trend).
-      - Возвращаем (tp1_price, tp2_price, sl_price, tp1_share, tp2_share).
+    Рассчитывает TP1, TP2, SL уровни и их доли.
+    Учитывает:
+      - ATR (если доступен),
+      - режим рынка (flat/trend),
+      - direction (BUY/SELL),
+      - фиксированные проценты или значения из df.
+
+    Возвращает:
+        tp1_price, tp2_price, sl_price, share_tp1, share_tp2
     """
-    if entry_price is None or entry_price <= 0:
-        log(f"[calculate_tp_levels] Некорректная цена входа {entry_price}", level="ERROR")
-        return None, None, None, TP1_SHARE, 0
+    import numpy as np
 
-    side_lower = side.lower()
-    if side_lower not in ("buy", "sell"):
-        log(f"[calculate_tp_levels] Некорректный side={side}", level="ERROR")
-        return None, None, None, TP1_SHARE, 0
+    from common.config_loader import (
+        SL_PERCENT,
+        TP1_PERCENT,
+        TP1_SHARE,
+        TP2_PERCENT,
+        TP2_SHARE,
+    )
 
-    # Базовые проценты по умолчанию
-    tp1_pct = TP1_PERCENT
-    sl_pct = SL_PERCENT
+    # === Fallback значения
+    tp1_pct = tp1_pct or TP1_PERCENT
+    tp2_pct = tp2_pct or TP2_PERCENT
+    sl_pct = sl_pct or SL_PERCENT
 
-    # Проверяем, что df — настоящий DataFrame с колонкой "atr"
-    valid_df = df is not None and isinstance(df, pd.DataFrame) and not df.empty and "atr" in df.columns
-    if valid_df:
-        try:
+    share_tp1 = TP1_SHARE
+    share_tp2 = TP2_SHARE
+
+    # === Попытка адаптации через ATR
+    try:
+        if df is not None and "atr" in df.columns and not df["atr"].isna().all():
             atr_value = df["atr"].iloc[-1]
-            if atr_value and atr_value > 0:
-                atr_pct = atr_value / entry_price
-                # Примерная логика: TP1= 1×ATR, SL=1.5×ATR
-                tp1_pct = max(atr_pct * 1.0, TP1_PERCENT)
-                sl_pct = max(atr_pct * 1.5, SL_PERCENT)
-                log(
-                    f"[calculate_tp_levels] ATR-based: ATR={atr_value:.6f}, " f"TP1={tp1_pct:.4f}, SL={sl_pct:.4f}",
-                    level="DEBUG",
-                )
+            if np.isnan(atr_value) or atr_value <= 0:
+                raise ValueError("Invalid ATR")
+
+            # Flat рынок → TP ниже, SL шире
+            if regime == "flat":
+                tp1_pct = atr_value * 1.0 / entry_price
+                sl_pct = atr_value * 1.5 / entry_price
+
+            # Trend рынок → TP шире, SL уже
+            elif regime == "trend":
+                tp1_pct = atr_value * 1.7 / entry_price
+                sl_pct = atr_value * 1.2 / entry_price
+
+            # Breakout или neutral → более агрессивные TP
             else:
-                log("[calculate_tp_levels] Невалидный ATR → fallback", level="WARNING")
-        except Exception as e:
-            log(f"[calculate_tp_levels] Ошибка обработки df ATR: {e}", level="ERROR")
-    else:
-        # Если df не подходит — fallback
-        log("[calculate_tp_levels] df нет или пуст, используем fallback", level="DEBUG")
+                tp1_pct = atr_value * 2.0 / entry_price
+                sl_pct = atr_value * 1.5 / entry_price
 
-    # Коррекция в зависимости от режима
-    if AUTO_TP_SL_ENABLED and regime:
-        if regime == "flat":
-            tp1_pct *= FLAT_ADJUSTMENT
-            sl_pct *= FLAT_ADJUSTMENT
-        elif regime == "trend":
-            sl_pct *= TREND_ADJUSTMENT
+            tp2_pct = tp1_pct * 2
+    except Exception as e:
+        log(f"[TP] ATR fallback used due to error: {e}", level="WARNING")
+        # Используем фиксированные значения
 
-    # Итоговые цены
-    if side_lower == "buy":
+    # === Направление: BUY / SELL
+    if direction == "BUY":
         tp1_price = entry_price * (1 + tp1_pct)
-        tp2_price = None  # без второго ТП
+        tp2_price = entry_price * (1 + tp2_pct)
         sl_price = entry_price * (1 - sl_pct)
-    else:
+    elif direction == "SELL":
         tp1_price = entry_price * (1 - tp1_pct)
-        tp2_price = None
+        tp2_price = entry_price * (1 - tp2_pct)
         sl_price = entry_price * (1 + sl_pct)
+    else:
+        log(f"[TP] Invalid direction: {direction}", level="ERROR")
+        return None, None, None, None, None
 
-    # Доли для ТП1/ТП2
-    qty_tp1 = TP1_SHARE
-    qty_tp2 = 0  # либо ещё что-то, если используете TP2
+    # === Проверка на валидность
+    if any(np.isnan(x) or x <= 0 for x in [tp1_price, tp2_price, sl_price]):
+        log(f"[TP] Invalid TP/SL values => tp1={tp1_price}, tp2={tp2_price}, sl={sl_price}", level="ERROR")
+        return None, None, None, None, None
 
-    return (
-        round(tp1_price, 4),
-        tp2_price,
-        round(sl_price, 4),
-        qty_tp1,
-        qty_tp2,
-    )
-
-
-def log_trade_result(symbol, side, entry_price, exit_price, quantity, pnl, duration, reason=None):
-    """
-    Proxy-обёртка для логирования результатов сделки (через tp_logger).
-    """
-    from tp_logger import log_trade_result as logger_log_trade_result
-
-    # Маппим параметры под tp_logger
-    return logger_log_trade_result(
-        symbol=symbol,
-        direction=side,
-        entry_price=entry_price,
-        exit_price=exit_price,
-        qty=quantity,
-        tp1_hit=False,
-        tp2_hit=False,
-        sl_hit=(reason == "sl" if reason else False),
-        pnl_percent=pnl,
-        duration_minutes=duration,
-        htf_confirmed=False,
-        atr=0.0,
-        adx=0.0,
-        bb_width=0.0,
-        result_type=reason or "manual",
-    )
+    return tp1_price, tp2_price, sl_price, share_tp1, share_tp2
 
 
 def adjust_microprofit_exit(current_pnl_percent, balance=None, duration_minutes=None, position_percentage=None):
@@ -153,42 +123,137 @@ def adjust_microprofit_exit(current_pnl_percent, balance=None, duration_minutes=
 
 def get_tp_performance_stats():
     """
-    Возвращает статистику винрейта по TP1/TP2 на основе tp_logger.csv.
+    Возвращает статистику TP1/TP2 по tp_logger.csv:
+    - общее число сделок,
+    - TP1 / TP2 хиты,
+    - winrate,
+    - TP2 winrate среди всех TP.
     """
-    try:
-        from tp_logger import TP_LOG_FILE
+    from tp_logger import TP_LOG_FILE
+    from utils_logging import log
 
+    stats = {}
+
+    try:
         if not os.path.exists(TP_LOG_FILE):
+            log(f"[TPUtils] TP log file not found: {TP_LOG_FILE}", level="WARNING")
             return {}
 
         df = pd.read_csv(TP_LOG_FILE)
 
-        stats = {}
-        for symbol in df["Symbol"].unique():
-            symbol_data = df[df["Symbol"] == symbol]
-            total_trades = len(symbol_data)
+        required_cols = {"Symbol", "Result"}
+        if not required_cols.issubset(df.columns):
+            log(f"[TPUtils] CSV missing columns: {required_cols - set(df.columns)}", level="ERROR")
+            return {}
 
-            tp_hits = symbol_data[symbol_data["Result"].isin(["TP1", "TP2"])]
-            win_count = len(tp_hits)
+        grouped = df.groupby("Symbol")
 
-            tp1_count = len(symbol_data[symbol_data["Result"] == "TP1"])
-            tp2_count = len(symbol_data[symbol_data["Result"] == "TP2"])
+        for symbol, group in grouped:
+            total = len(group)
+            if total == 0:
+                continue
 
-            winrate = win_count / total_trades if total_trades > 0 else 0
+            tp1_count = (group["Result"] == "TP1").sum()
+            tp2_count = (group["Result"] == "TP2").sum()
+            win_count = tp1_count + tp2_count
+
             tp2_opportunities = tp1_count + tp2_count
-            tp2_winrate = tp2_count / tp2_opportunities if tp2_opportunities > 0 else 0
+            tp2_winrate = tp2_count / tp2_opportunities if tp2_opportunities else 0
+            winrate = win_count / total
 
             stats[symbol] = {
-                "winrate": winrate,
+                "total_trades": total,
                 "tp1_count": tp1_count,
                 "tp2_count": tp2_count,
-                "tp2_winrate": tp2_winrate,
-                "total_trades": total_trades,
+                "winrate": round(winrate, 4),
+                "tp2_winrate": round(tp2_winrate, 4),
             }
+
         return stats
 
     except Exception as e:
-        from utils_logging import log
-
         log(f"[TPUtils] Error getting TP performance stats: {e}", level="ERROR")
         return {}
+
+
+def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit_usd):
+    """
+    Проверяет, даст ли TP1 достаточно чистой прибыли.
+    Возвращает (bool: хватает ли, float: ожидаемая чистая прибыль)
+    """
+    gross_profit = abs(tp1 - entry) * qty * share_tp1
+    commission = 2 * qty * entry * fee_rate  # вход + выход
+    net_profit = gross_profit - commission
+
+    from utils_logging import log
+
+    log(f"[ProfitCheck] expected={net_profit:.2f}$ vs required={min_profit_usd:.2f}$ → {'✅ OK' if net_profit >= min_profit_usd else '❌ reject'}", level="DEBUG")
+
+    return net_profit >= min_profit_usd, round(net_profit, 2)
+
+
+def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price, tp1_pct=0.01, sl_pct=0.01):
+    """
+    Устанавливает TP1, TP2 и SL ордера после входа:
+    - TP1 на 80% позиции
+    - TP2 на 20% позиции
+    - SL на 100% позиции (STOP_MARKET через create_order)
+    """
+    from core.exchange_init import exchange
+    from utils_logging import log
+
+    try:
+        open_orders = exchange.fetch_open_orders(api_symbol)
+        reduce_orders = [o for o in open_orders if o.get("reduceOnly")]
+        if reduce_orders:
+            log(f"[TP/SL] {api_symbol}: reduceOnly orders already exist ({len(reduce_orders)}) — skipping setup", level="WARNING")
+            return
+
+        tp1_price = entry_price * (1 + tp1_pct) if side.lower() == "buy" else entry_price * (1 - tp1_pct)
+        tp2_price = entry_price * (1 + 2 * tp1_pct) if side.lower() == "buy" else entry_price * (1 - 2 * tp1_pct)
+        sl_price = entry_price * (1 - sl_pct) if side.lower() == "buy" else entry_price * (1 + sl_pct)
+
+        tp1_price = round(tp1_price, 6)
+        tp2_price = round(tp2_price, 6)
+        sl_price = round(sl_price, 6)
+        side_close = "sell" if side.lower() == "buy" else "buy"
+
+        tp1_qty = round(qty * 0.8, 6)
+        tp2_qty = round(qty * 0.2, 6)
+
+        # TP1
+        exchange.create_limit_order(
+            api_symbol,
+            side_close,
+            tp1_qty,
+            tp1_price,
+            {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
+        )
+        log(f"[TP] {api_symbol}: TP1 placed at {tp1_price:.6f} for {tp1_qty}", level="INFO")
+
+        # TP2
+        exchange.create_limit_order(
+            api_symbol,
+            side_close,
+            tp2_qty,
+            tp2_price,
+            {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
+        )
+        log(f"[TP] {api_symbol}: TP2 placed at {tp2_price:.6f} for {tp2_qty}", level="INFO")
+
+        # SL
+        exchange.create_order(
+            symbol=api_symbol,
+            type="STOP_MARKET",
+            side=side_close,
+            amount=qty,
+            params={
+                "stopPrice": sl_price,
+                "reduceOnly": True,
+            },
+        )
+        log(f"[SL] {api_symbol}: SL placed at {sl_price:.6f} for {qty}", level="INFO")
+
+    except Exception as e:
+        log(f"[TP/SL] Error placing TP/TP2/SL for {api_symbol}: {e}", level="ERROR")
+        raise

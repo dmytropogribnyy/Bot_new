@@ -275,3 +275,27 @@ def get_total_trade_count():
     except Exception as e:
         log(f"[ERROR] Failed to count trades: {e}", level="WARNING")
         return 0
+
+
+def get_today_pnl_from_csv() -> float:
+    """
+    Считает суммарную прибыль/убыток за сегодня по tp_performance.csv.
+    Возвращает сумму в USDC.
+    """
+    if not os.path.exists(EXPORT_PATH):
+        return 0.0
+    try:
+        df = pd.read_csv(EXPORT_PATH)
+        if df.empty or "Date" not in df.columns or "Absolute Profit" not in df.columns:
+            return 0.0
+
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        today = pd.Timestamp.now().normalize()
+
+        df_today = df[df["Date"] >= today]
+        total_pnl = df_today["Absolute Profit"].sum()
+
+        return round(total_pnl, 2)
+    except Exception as e:
+        log(f"[TP Logger] Error reading today PnL: {e}", level="ERROR")
+        return 0.0

@@ -35,7 +35,7 @@ def create_post_only_limit_order(symbol, side, amount, price):
     symbol = extract_symbol(symbol)
     api_symbol = convert_symbol(symbol)
     try:
-        return safe_call_retry(exchange.create_order, api_symbol, "limit", side, amount, price, {"postOnly": True})
+        return safe_call_retry(exchange.create_order, api_symbol, "limit", side, amount, price, {"postOnly": True, "reduceOnly": True})
     except Exception as e:
         log(f"[Order] Failed to place post-only order for {symbol}: {e}", level="ERROR")
         return None

@@ -20,13 +20,41 @@ def log_missed_signal(symbol, breakdown, reason=""):
     """
     symbol = extract_symbol(symbol)
     timestamp = datetime.utcnow().isoformat()
-    log_entry = {"timestamp": timestamp, "symbol": symbol, "breakdown": breakdown, "reason": reason}
 
-    # Create directory if it doesn't exist
+    # Подсчёт силы сигнала
+    primary_sum = sum(
+        [
+            breakdown.get("MACD", 0),
+            breakdown.get("EMA_CROSS", 0),
+            breakdown.get("RSI", 0),
+        ]
+    )
+    secondary_sum = sum(
+        [
+            breakdown.get("Volume", 0),
+            breakdown.get("PriceAction", 0),
+            breakdown.get("HTF", 0),
+        ]
+    )
+
+    log_entry = {
+        "timestamp": timestamp,
+        "symbol": symbol,
+        "reason": reason,
+        "atr_pct": round(breakdown.get("atr_percent", 0), 5),
+        "volume": round(breakdown.get("volume", 0), 1),
+        "rsi": round(breakdown.get("rsi", 0), 2),
+        "risk_factor": round(breakdown.get("risk_factor", 0), 3),
+        "entry_notional": round(breakdown.get("entry_notional", 0), 2),
+        "passes_1plus1": breakdown.get("passes_1plus1", False),
+        "primary_sum": primary_sum,
+        "secondary_sum": secondary_sum,
+        "components": breakdown,
+    }
+
     os.makedirs("data", exist_ok=True)
-
-    # Append to missed signals log file
     filepath = MISSED_SIGNALS_LOG_FILE
+
     try:
         if os.path.exists(filepath):
             with open(filepath, "r") as f:
@@ -37,7 +65,6 @@ def log_missed_signal(symbol, breakdown, reason=""):
         else:
             data = []
 
-        # Keep only the last 100 entries
         data = data[-99:] + [log_entry]
 
         with open(filepath, "w") as f:

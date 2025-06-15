@@ -1,4 +1,5 @@
 import csv
+import decimal
 import json
 import os
 import time
@@ -8,6 +9,9 @@ from threading import Lock
 
 from constants import ENTRY_LOG_FILE, STATE_FILE
 from telegram.telegram_utils import send_telegram_message
+from utils_logging import log
+
+MARGIN_SAFETY_BUFFER = 0.92  # безопасность на случай нехватки маржи
 
 # Глобальные настройки кеша
 CACHE_TTL = 30
@@ -183,6 +187,19 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
 
             return result
 
+        except (decimal.InvalidOperation, decimal.ConversionSyntax) as dec_e:
+            # Перехватываем ошибки Decimal
+            log(f"{label} decimal error (attempt {attempt+1}/{tries}): {dec_e} ({type(dec_e)})", level="ERROR")
+
+            if attempt < tries - 1:
+                sleep_time = delay * (2**attempt)
+                log(f"{label} retrying in {sleep_time} s...", level="WARNING")
+                time.sleep(sleep_time)
+            else:
+                log(f"{label} exhausted retries after decimal error", level="ERROR")
+                send_telegram_message(f"⚠️ {label} failed after {tries} tries (Decimal error)", force=True)
+                return None
+
         except Exception as e:
             log(f"{label} failed (attempt {attempt + 1}/{tries}): {e}", level="ERROR")
 
@@ -193,7 +210,6 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
             else:
                 log(f"{label} exhausted retries", level="ERROR")
                 send_telegram_message(f"⚠️ {label} failed after {tries} retries", force=True)
-                # Возвращаем None, а не str(e)
                 return None
 
 
@@ -295,8 +311,6 @@ def initialize_runtime_adaptive_config():
         "rel_volume_threshold": 0.5,
         "SL_PERCENT": 0.015,
         "last_adaptation_timestamp": None,
-        # Можете убрать "strategy_aggressiveness": 1.0, если нигде не используете
-        "strategy_aggressiveness": 1.0,
     }
 
     # Проверим, не хватает ли каких-то ключей
@@ -306,9 +320,59 @@ def initialize_runtime_adaptive_config():
         log(f"Initialized missing runtime config values: {missing}", level="INFO")
 
 
-def get_min_net_profit(balance):
-    """Если не нужна логика минимальной прибыли, возвращаем 0."""
-    return 0.0
+def get_min_net_profit(balance=None):
+    """
+    Адаптивная шкала прибыли:
+    - Если последняя сделка убыточна → 0.10
+    - Если 0–1 TP1/TP2 подряд → 0.10
+    - Если 2–4 подряд → 0.20
+    - Если ≥5 подряд → 0.30
+    """
+    import os
+
+    import pandas as pd
+
+    from common.config_loader import TP_LOG_FILE
+    from tp_logger import get_last_trade
+
+    last = get_last_trade()
+    if not last:
+        return 0.10
+
+    last_result = str(last.get("Result", "")).upper()
+    abs_profit = float(last.get("Absolute Profit", 0))
+
+    # Если последний — SL или убыток → сброс
+    if last_result == "SL" or abs_profit < 0:
+        return 0.10
+
+    try:
+        if not os.path.exists(TP_LOG_FILE):
+            return 0.10
+
+        df = pd.read_csv(TP_LOG_FILE)
+        df = df[df["Result"].isin(["TP1", "TP2"])]
+        if df.empty:
+            return 0.10
+
+        # Считаем TP подряд с конца
+        streak = 0
+        for result in reversed(df["Result"].tolist()):
+            if result in ("TP1", "TP2"):
+                streak += 1
+            else:
+                break
+
+        if streak < 2:
+            return 0.10
+        elif streak < 5:
+            return 0.20
+        else:
+            return 0.30
+
+    except Exception as e:
+        log(f"[ProfitAdapt] Failed to compute streak: {e}", level="ERROR")
+        return 0.10
 
 
 def reset_state_flags():
@@ -357,29 +421,36 @@ def save_json_file(path, data, indent=2):
         return False
 
 
-def is_optimal_trading_hour():
-    """Простая проверка «не торговать глубокой ночью»."""
-    inactive_hours = [3, 4, 5, 6, 7]
-    current_hour = datetime.utcnow().hour
-    return current_hour not in inactive_hours
+def is_optimal_trading_hour(strict: bool = True):
+    """
+    Проверка торгового окна.
+    - strict=True: разрешено только 8:00–23:59 UTC
+    - strict=False: ночью (2:00–8:00) разрешаем только сильные сигналы
+    """
+    hour = datetime.utcnow().hour
+    if strict:
+        return 8 <= hour <= 23
+    else:
+        return 2 <= hour <= 7  # мягкое ночное окно
 
 
-def normalize_symbol(symbol: str) -> str:
+def normalize_symbol(symbol) -> str:
     """
-    Приводит пару к формату BASE/QUOTE:QUOTE без повторов.
-    Пример: "BTC-USDC" → "BTC/USDC:USDC"
+    Унифицирует формат символа:
+    - Если dict — извлекает .get("symbol")
+    - Приводит к формату BASE/QUOTE:QUOTE
+    - Пример: "btc-usdc" → "BTC/USDC:USDC"
+    - Безопасно обрабатывает странные входы
     """
-    if not symbol:
+    if isinstance(symbol, dict):
+        symbol = symbol.get("symbol", "")
+
+    if not isinstance(symbol, str) or not symbol:
         return ""
 
-    # Отсекаем повторные двоеточия, если уже есть ":USDC"
-    # split(':')[0] убирает всё, что идёт после первого двоеточия
     symbol = symbol.upper().split(":")[0]
-
-    # Меняем - и : на /
     symbol = symbol.replace("-", "/").replace(":", "/")
 
-    # Если нет '/', вернём как есть
     if "/" not in symbol:
         return symbol
 
@@ -437,6 +508,42 @@ def get_market_volatility_index() -> float:
 def extract_symbol(s):
     return normalize_symbol(s.get("symbol", "") if isinstance(s, dict) else s)
     # and then use  like symbol = extract_symbol(symbol)
+
+
+def get_total_position_value():
+    """
+    Считает общую текущую стоимость всех открытых позиций (в USDT/USDC).
+
+    Returns:
+        float: Общая стоимость позиций.
+    """
+    from core.exchange_init import exchange
+    from utils_core import safe_call_retry
+    from utils_logging import log
+
+    try:
+        positions = safe_call_retry(exchange.fetch_positions)
+        total_value = 0.0
+        log(f"[DEBUG] get_total_position_value: {len(positions)} positions", level="DEBUG")
+
+        for pos in positions:
+            amt = float(pos.get("positionAmt", 0))
+            entry = float(pos.get("entryPrice", 0))
+            symbol = pos.get("symbol", "UNKNOWN")
+
+            if abs(amt) < 1e-6 or entry <= 0:
+                continue  # пропускаем фантомные или нулевые позиции
+
+            value = abs(amt * entry)
+            total_value += value
+            log(f"[DEBUG] → {symbol}: amt={amt}, entry={entry}, value={value:.2f}", level="DEBUG")
+
+        log(f"[DEBUG] Total position value = {total_value:.2f}", level="DEBUG")
+        return total_value
+
+    except Exception as e:
+        log(f"[get_total_position_value] ❌ Ошибка при расчёте: {e}", level="ERROR")
+        return 0.0
 
 
 if __name__ == "__main__":

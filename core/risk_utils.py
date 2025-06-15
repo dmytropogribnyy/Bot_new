@@ -1,11 +1,13 @@
 # risk_utils.py
-from datetime import datetime
 
-from common.config_loader import SYMBOLS_ACTIVE
-from core.binance_api import fetch_open_orders
+from datetime import datetime
+from pathlib import Path
+
 from core.exchange_init import exchange
-from telegram.telegram_utils import send_telegram_message
+from utils_core import load_json_file, save_json_file
 from utils_logging import log
+
+RUNTIME_CONFIG_FILE = Path("data/runtime_config.json")
 
 """
 Risk management utilities for BinanceBot
@@ -81,14 +83,37 @@ def get_adaptive_risk_percent(balance, atr_percent=None, volume_usdc=None, win_s
 
 def get_max_positions(balance):
     """
-    Return maximum allowed simultaneous positions based on account size
+    Возвращает лимит одновременных позиций:
+    - если config указывает max_concurrent_positions → это максимум
+    - но реальный лимит также ограничен разумным порогом по балансу
     """
+    from utils_core import get_runtime_config
+    from utils_logging import log
+
+    try:
+        config = get_runtime_config()
+        max_configured = config.get("max_concurrent_positions", 12)
+    except Exception as e:
+        log(f"[Risk] Failed to load runtime_config: {e}", level="WARNING")
+        max_configured = 12
+
+    # 💡 Баланс-адаптивный лимит:
     if balance < 120:
-        return 2  # Micro tier
+        limit = 2
+    elif balance < 200:
+        limit = 3
     elif balance < 300:
-        return 3  # Small tier
+        limit = 5
+    elif balance < 400:
+        limit = 6
     else:
-        return 4  # Standard tier
+        limit = 8  # default cap
+
+    # Не превышаем лимит из config (если он ниже)
+    final_limit = min(limit, max_configured)
+
+    log(f"[Risk] Max positions: {final_limit} (balance={balance:.2f}, config={max_configured})", level="DEBUG")
+    return final_limit
 
 
 def get_max_risk():
@@ -110,26 +135,42 @@ def get_max_risk():
         return 0.03
 
 
-def check_capital_utilization(balance, new_notional, threshold=0.8):
+def check_capital_utilization(symbol, qty, entry_price, threshold=0.8):
+    """
+    Проверяет, не превышает ли суммарная капитализация открытых ордеров `threshold` от баланса.
+    Учитывает активные позиции из trade_manager + текущую заявку.
+    """
+    from core.trade_engine import trade_manager
+    from utils_core import get_cached_balance
+    from utils_logging import log
+
+    balance = get_cached_balance()
     if balance <= 0:
-        return True
+        log(f"[Risk] Balance is zero or invalid: {balance}", level="ERROR")
+        return False
 
-    total_open_notional = 0
+    total_commitment = 0.0
+    try:
+        for sym in trade_manager._trades.values():
+            sym_qty = sym.get("qty", 0)
+            sym_price = sym.get("entry", 0)
+            total_commitment += float(sym_qty) * float(sym_price)
+    except Exception as e:
+        log(f"[Risk] Error calculating capital utilization: {e}", level="ERROR")
+        return False
 
-    for symbol in SYMBOLS_ACTIVE:
-        try:
-            orders = fetch_open_orders(symbol)
-            for order in orders:
-                price = float(order.get("price", 0))
-                amount = float(order.get("amount", 0))
-                total_open_notional += price * amount
-        except Exception:
-            continue
+    current_notional = qty * entry_price
+    total_commitment += current_notional
 
-    total_after_trade = total_open_notional + new_notional
-    utilization = total_after_trade / balance
+    utilization = total_commitment / balance
 
-    return utilization <= threshold
+    log(f"[Risk] Capital utilization after adding {symbol}: {utilization:.2%} of balance ({total_commitment:.2f} / {balance:.2f})", level="DEBUG")
+
+    if utilization > threshold:
+        log(f"[Risk] Capital utilization exceeds threshold: {utilization:.2%} > {threshold:.0%}", level="WARNING")
+        return False
+
+    return True
 
 
 def set_max_risk(risk):
@@ -184,49 +225,37 @@ def get_initial_balance():
             return 100
 
 
-def check_drawdown_protection(balance):
+def check_drawdown_protection(current_balance):
     """
-    Implements simple drawdown-based risk reduction or pause.
+    Проверяет уровень просадки от начального баланса.
     """
-    initial_balance = get_initial_balance()
-    if initial_balance == 0:
-        log("Cannot calculate drawdown: initial balance is 0", level="WARNING")
-        return {"status": "normal"}
+    try:
+        initial_balance = get_initial_balance()
+        if initial_balance <= 0:
+            log("[Drawdown] Initial balance is zero — skipping drawdown check.", level="WARNING")
+            return {"status": "ok"}
 
-    drawdown_percent = ((initial_balance - balance) / initial_balance) * 100
-    log(f"Current drawdown: {drawdown_percent:.2f}% (Balance: {balance:.2f}, Initial: {initial_balance:.2f})", level="DEBUG")
+        drawdown_percent = 100 * (initial_balance - current_balance) / initial_balance
+        log(f"[Drawdown] Current drawdown: {drawdown_percent:.2f}%", level="DEBUG")
 
-    if drawdown_percent >= 15:
-        from common.config_loader import set_bot_status
+        if drawdown_percent >= 15.0:
+            log("[Drawdown] Critical drawdown reached (≥15%) — pausing trading.", level="WARNING")
+            return {"status": "paused"}
 
-        set_bot_status("paused")
+        elif drawdown_percent >= 8.0:
+            cfg = load_json_file(RUNTIME_CONFIG_FILE)
+            current_risk = cfg.get("max_risk", 0.015)
+            reduced_risk = round(current_risk * 0.5, 5)
+            cfg["max_risk"] = reduced_risk
+            save_json_file(RUNTIME_CONFIG_FILE, cfg)
+            log(f"[Drawdown] Moderate drawdown (≥8%) — reduced risk from {current_risk:.5f} to {reduced_risk:.5f}", level="WARNING")
+            return {"status": "reduced_risk"}
 
-        message = f"⚠️ CRITICAL: {drawdown_percent:.1f}% drawdown. Bot paused."
-        log(message, level="ERROR")
-        send_telegram_message(message, force=True)
-        return {
-            "status": "paused",
-            "drawdown": drawdown_percent,
-            "initial_balance": initial_balance,
-            "current_balance": balance,
-        }
-    elif drawdown_percent >= 8:
-        current_max_risk = get_max_risk()
-        new_max_risk = current_max_risk * 0.75
-        set_max_risk(new_max_risk)
+        return {"status": "ok"}
 
-        message = f"⚠️ WARNING: {drawdown_percent:.1f}% drawdown. Risk reduced to {new_max_risk*100:.1f}%."
-        log(message, level="WARNING")
-        send_telegram_message(message, force=True)
-        return {
-            "status": "reduced_risk",
-            "drawdown": drawdown_percent,
-            "new_risk": new_max_risk,
-            "initial_balance": initial_balance,
-            "current_balance": balance,
-        }
-
-    return {"status": "normal", "drawdown": drawdown_percent}
+    except Exception as e:
+        log(f"[Drawdown] Error checking drawdown: {e}", level="ERROR")
+        return {"status": "ok"}
 
 
 def calculate_position_value_limit(balance):

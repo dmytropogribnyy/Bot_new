@@ -1,35 +1,24 @@
 # constants.py – Centralized paths to data/config files
 
 # === JSON / CSV Files ===
-SYMBOLS_FILE = "data/dynamic_symbols.json"
-PERFORMANCE_FILE = "data/pair_performance.json"
-PAIR_STATS_FILE = "data/pair_stats.json"
-SIGNAL_FAILURES_FILE = "data/signal_failures.json"
-INACTIVE_CANDIDATES_FILE = "data/inactive_candidates.json"
 RUNTIME_CONFIG_FILE = "data/runtime_config.json"
+SYMBOLS_FILE = "data/dynamic_symbols.json"
 BOT_STATE_FILE = "data/bot_state.json"
-FILTER_ADAPTATION_FILE = "data/filter_adaptation.json"
-SYMBOL_ACTIVITY_FILE = "data/symbol_signal_activity.json"
 MISSED_OPPORTUNITIES_FILE = "data/missed_opportunities.json"
-AGGRESSIVENESS_FILE = "data/aggressiveness.json"
 UPDATE_FILE = "data/last_update.txt"
 TP_PERFORMANCE_FILE = "data/tp_performance.csv"
 FAILURE_LOG_FILE = "data/signal_failures.json"
+SIGNAL_FAILURES_FILE = "data/signal_failures.json"
+INACTIVE_CANDIDATES_FILE = "data/inactive_candidates.json"
 FAIL_STATS_FILE = "data/fail_stats.json"
 ENTRY_LOG_PATH = "data/entry_log.csv"
 STATE_FILE = "data/bot_state.json"
-BACKUP_PATH = "data/thresholds_backup.json"
-STATUS_PATH = "data/pair_status.json"
 TP_CSV = "data/tp_performance.csv"
-CACHE_FILE = "data/missed_cache.json"
 IP_STATUS_FILE = "data/last_ip.txt"
 
 
 TP_LOG_FILE = "data/tp_performance.csv"
 ENTRY_LOG_FILE = "data/entry_log.csv"
-SCORE_HISTORY_FILE = "data/score_history.csv"
-SCORE_HISTORY_FILE = "data/score_history.csv"
-OUTPUT_IMAGE_PATH = "data/score_heatmap.png"
 
 # === Signal Optimization Files ===
 COMPONENT_TRACKER_LOG_FILE = "data/component_tracker_log.json"

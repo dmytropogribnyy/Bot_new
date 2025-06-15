@@ -21,9 +21,9 @@ from constants import SIGNAL_FAILURES_FILE, SYMBOLS_FILE
 from core.binance_api import convert_symbol
 from core.exchange_init import exchange
 from core.fail_stats_tracker import FAIL_STATS_FILE, get_symbol_risk_factor
+from core.strategy import fetch_data_multiframe  # убедись, что импорт есть
 from telegram.telegram_utils import send_telegram_message
 from utils_core import (
-    calculate_atr_volatility,
     extract_symbol,
     get_cached_balance,
     get_market_volatility_index,
@@ -54,7 +54,7 @@ def auto_update_valid_pairs_if_needed():
     if last_updated_path.exists():
         with last_updated_path.open("r") as f:
             last_time = int(f.read().strip())
-            if now - last_time < 6 * 3600:
+            if now - last_time < 3600:
                 return
 
     print("🕒 Valid USDC symbols outdated — running test_api.py")
@@ -171,14 +171,45 @@ def get_pair_limits():
 
 
 def calculate_correlation(price_data):
+    """
+    Расчёт корреляционной матрицы для списка пар.
+    Нормализует массивы по длине, игнорирует повреждённые, избегает ошибок.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from utils_logging import log
+
     if not price_data:
+        log("[CorrMatrix] Empty price_data input", level="WARNING")
         return None
-    df_combined = pd.DataFrame(price_data)
+
+    # 🔒 Проверка длины массивов
+    lengths = [len(v) for v in price_data.values() if isinstance(v, (list, np.ndarray)) and len(v) >= 2]
+    if not lengths:
+        log("[CorrMatrix] No valid price data arrays found", level="WARNING")
+        return None
+
+    min_len = min(lengths)
+    if len(set(lengths)) > 1:
+        log(f"[CorrMatrix] Normalizing arrays to min_len={min_len}", level="WARNING")
+
+    # 🧹 Обрезаем все массивы до одинаковой длины
+    normalized_data = {}
+    for k, v in price_data.items():
+        if isinstance(v, (list, np.ndarray)) and len(v) >= min_len:
+            normalized_data[k] = v[-min_len:]
+
+    if len(normalized_data) < 2:
+        log("[CorrMatrix] Too few valid arrays after normalization", level="WARNING")
+        return None
+
     try:
+        df_combined = pd.DataFrame(normalized_data)
         corr_matrix = df_combined.corr(method="pearson")
         return corr_matrix
     except Exception as e:
-        log(f"Error calculating correlation matrix: {e}", level="ERROR")
+        log(f"[CorrMatrix] Error calculating correlation matrix: {e}", level="ERROR")
         return None
 
 
@@ -208,14 +239,14 @@ def select_active_symbols():
     for sym in all_symbols:
         if sym in fixed:
             continue
-        df_15m = fetch_symbol_data(sym, timeframe="15m", limit=100)
-        if df_15m is None or len(df_15m) < 20:
+        df = fetch_data_multiframe(sym)
+        if df is None or len(df) < 20:
             continue
-        last_price = df_15m["close"].iloc[-1]
-        atr_val = calculate_atr_volatility(df_15m)
-        volume_usdc = df_15m["volume"].mean() * last_price
-
+        last_price = df["close"].iloc[-1]
+        atr_val = df["atr"].iloc[-1]
+        volume_usdc = df["volume"].mean() * last_price
         r_factor, _ = get_symbol_risk_factor(sym)
+
         sym_data[sym] = {
             "atr": atr_val,
             "volume": volume_usdc,
@@ -227,10 +258,7 @@ def select_active_symbols():
     tiers = get_filter_tiers()
     filtered_data = {}
     for tier in tiers:
-        filtered_data = {}
-        for s, info in sym_data.items():
-            if info["atr"] >= tier["atr"] and info["volume"] >= tier["volume"]:
-                filtered_data[s] = info
+        filtered_data = {s: info for s, info in sym_data.items() if info["atr"] >= tier["atr"] and info["volume"] >= tier["volume"]}
         if len(filtered_data) >= min_dyn:
             log(f"[FilterTier] {len(filtered_data)} symbols passed ATR≥{tier['atr']} / VOL≥{tier['volume']}", level="INFO")
             break
@@ -238,7 +266,6 @@ def select_active_symbols():
             log(f"[FilterTier] Only {len(filtered_data)} passed => next tier...", level="INFO")
 
     if not filtered_data:
-        # Если ни одна не проходит, используем только fixed
         log("⚠️ After all filter tiers, 0 pairs found. Using only fixed pairs...", level="WARNING")
         send_telegram_message("🚨 0 pairs passed filter tiers!", force=True)
         final_symbols_list = [{"symbol": sym, "type": "fixed"} for sym in fixed]
@@ -248,7 +275,7 @@ def select_active_symbols():
     # Сбор price_data для корреляции
     price_data = {}
     for s in filtered_data.keys():
-        df_ = fetch_symbol_data(s, timeframe="15m", limit=80)
+        df_ = fetch_data_multiframe(s)
         if df_ is not None and len(df_) >= 2:
             price_data[s] = df_["close"].values
 
@@ -257,22 +284,17 @@ def select_active_symbols():
     # Составляем dynamic_list
     dynamic_list = []
     if balance < 300:
-        # Для маленьких счётов
         entries = []
         for s, info in filtered_data.items():
             base_score = info["volume"] * info["risk_factor"]
             if info["last_price"] < 5:
                 base_score *= 1.2
-
-            # При желании можно сохранить reason/base_score, но пока нет
             entries.append((s, base_score))
 
         entries.sort(key=lambda x: x[1], reverse=True)
-
         final_list = []
         added = set()
 
-        # Приоритетные пары (для малых счетов)
         for p in priority_pairs:
             if p in filtered_data:
                 final_list.append(p)
@@ -283,13 +305,7 @@ def select_active_symbols():
                 break
             if s not in added:
                 if corr_matrix is not None:
-                    skip = False
-                    for a_ in added:
-                        if s in corr_matrix.index and a_ in corr_matrix.columns:
-                            if abs(corr_matrix.loc[s, a_]) > 0.9:
-                                skip = True
-                                break
-                    if skip:
+                    if any(abs(corr_matrix.loc[s, a_]) > 0.9 for a_ in added if s in corr_matrix and a_ in corr_matrix):
                         continue
                 final_list.append(s)
                 added.add(s)
@@ -297,44 +313,25 @@ def select_active_symbols():
         dynamic_list = final_list
 
     else:
-        # Для больших счетов — сортируем просто volume*risk_factor + корреляция
-        pairs_with_scores = []
-        for s, info in filtered_data.items():
-            sc = info["volume"] * info["risk_factor"]
-            pairs_with_scores.append((s, sc))
-
+        pairs_with_scores = [(s, info["volume"] * info["risk_factor"]) for s, info in filtered_data.items()]
         pairs_with_scores.sort(key=lambda x: x[1], reverse=True)
-
         uncorrelated = []
         added = set()
+
         for sym, sc in pairs_with_scores:
             if len(uncorrelated) >= max_dyn:
                 break
-            if corr_matrix is not None and len(added) > 0:
-                skip = False
-                for a_ in added:
-                    if sym in corr_matrix.index and a_ in corr_matrix.columns:
-                        if abs(corr_matrix.loc[sym, a_]) > 0.9:
-                            skip = True
-                            break
-                if skip:
-                    continue
+            if corr_matrix is not None and any(abs(corr_matrix.loc[sym, a_]) > 0.9 for a_ in added if sym in corr_matrix and a_ in corr_matrix):
+                continue
             uncorrelated.append(sym)
             added.add(sym)
 
         dyn_count = max(min_dyn, min(len(uncorrelated), max_dyn))
         dynamic_list = uncorrelated[:dyn_count]
 
-    # Собираем окончательный список
-    final_symbols_list = []
+    # Финальный список символов
+    final_symbols_list = [{"symbol": fsym, "type": "fixed"} for fsym in fixed]
 
-    # 1) Fixed
-    for fsym in fixed:
-        # Хранить доп. поля? (atr, volume, etc.)
-        # Пока не нужно, так как fixed не фильтруется
-        final_symbols_list.append({"symbol": fsym, "type": "fixed"})
-
-    # 2) Dynamic
     for dsym in dynamic_list:
         info = filtered_data[dsym]
         final_symbols_list.append(
@@ -344,65 +341,101 @@ def select_active_symbols():
                 "atr": round(info["atr"], 6),
                 "volume_usdc": round(info["volume"], 2),
                 "risk_factor": round(info["risk_factor"], 3),
-                # при желании — last_price, base_score, reason и т.п.
             }
         )
 
-    # Сохраняем всё
     save_symbols_file(final_symbols_list)
 
-    # Telegram summary
-    fixed_count = len(fixed)
-    dyn_count = len(dynamic_list)
+    # 🔔 Telegram уведомление + отладка
     msg = (
         f"🔄 Symbol rotation:\n"
         f"Balance: {balance:.1f} USDC\n"
         f"Filtered: {len(filtered_data)}\n"
-        f"Fixed: {fixed_count} | Dynamic: {dyn_count}\n"
+        f"Fixed: {len(fixed)} | Dynamic: {len(dynamic_list)}\n"
         f"Active total: {len(final_symbols_list)}"
     )
     send_telegram_message(msg, force=True)
+
+    log(f"[Selector] Selected {len(final_symbols_list)} total symbols ({len(fixed)} fixed, {len(dynamic_list)} dynamic)", level="INFO")
+    log(f"[Selector] Top dynamic symbols: {', '.join(dynamic_list[:5])}", level="DEBUG")
 
     return final_symbols_list
 
 
 def save_symbols_file(symbols_list):
-    """Сохраняем список словарей (symbols) в JSON с file lock."""
+    """Сохраняет список словарей (symbols) в JSON с file lock."""
+    import json
+    import os
+
+    from utils_logging import log
+
     try:
+        if not symbols_list:
+            log("⚠️ Attempted to save empty symbols list!", level="WARNING")
+
         os.makedirs(os.path.dirname(SYMBOLS_FILE), exist_ok=True)
         with symbols_file_lock, open(SYMBOLS_FILE, "w", encoding="utf-8") as f:
-            json.dump(symbols_list, f, indent=2)
-        log(f"Saved {len(symbols_list)} active symbols -> {SYMBOLS_FILE}", level="INFO")
+            json.dump(symbols_list, f, indent=2, ensure_ascii=False)
+        log(f"[Save] {len(symbols_list)} symbols saved to → {SYMBOLS_FILE}", level="INFO")
+
+    except (TypeError, ValueError) as json_error:
+        log(f"[Save] ❌ Error serializing symbols: {json_error}", level="ERROR")
     except Exception as e:
-        log(f"Error saving active symbols: {e}", level="ERROR")
+        log(f"[Save] ❌ Error saving active symbols: {e}", level="ERROR")
 
 
 def start_symbol_rotation(stop_event):
+    from datetime import datetime
+
     while not stop_event.is_set():
         try:
+            log(f"[Rotation] 🔄 Starting rotation at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", level="DEBUG")
+
             update_interval = get_update_interval()
             syms = select_active_symbols()
 
-            # Логируем, какие пары выбраны (безопасно)
+            # Логируем, какие пары выбраны
             symbol_names = [extract_symbol(s) for s in syms]
-            log(f"🔁 Rotation: {len(syms)} symbols → {', '.join(symbol_names)}", level="INFO")
-            log(f"Next rotation in {update_interval/60:.1f} minutes", level="DEBUG")
+            log(f"[Rotation] ✅ Selected {len(syms)} symbols: {', '.join(symbol_names)}", level="INFO")
+            log(f"[Rotation] ⏱ Next update in {update_interval / 60:.1f} minutes", level="DEBUG")
 
+            # 💾 Пишем в файл последнюю ротацию (можно использовать UI/отладку)
+            try:
+                with open("data/last_symbol_rotation.json", "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "count": len(symbol_names),
+                            "symbols": symbol_names,
+                            "next_check_in_minutes": round(update_interval / 60, 1),
+                        },
+                        f,
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+            except Exception as e:
+                log(f"[Rotation] Failed to write last_symbol_rotation.json: {e}", level="WARNING")
+
+            # ⏲ Ожидаем до следующей ротации
             sleep_interval = 10
             for _ in range(int(update_interval / sleep_interval)):
                 if stop_event.is_set():
-                    break
+                    log("[Rotation] ❌ Stop signal received. Exiting rotation loop.", level="INFO")
+                    send_telegram_message("🔁 Symbol rotation loop stopped", force=True)
+                    return
                 time.sleep(sleep_interval)
+
         except Exception as e:
-            log(f"Symbol rotation error: {e}", level="ERROR")
-            send_telegram_message(f"⚠️ Symbol rotation failed: {e}", force=True)
+            log(f"[Rotation] ❌ Symbol rotation error: {e}", level="ERROR")
+            send_telegram_message(f"⚠️ Symbol rotation failed:\n{e}", force=True)
             time.sleep(60)
 
 
 def get_update_interval():
     balance = get_cached_balance()
-    base_interval = BASE_UPDATE_INTERVAL
+    base_interval = BASE_UPDATE_INTERVAL if BASE_UPDATE_INTERVAL else 900  # fallback: 15 min
 
+    # 🔢 Адаптация по балансу
     if balance < 120:
         account_factor = 0.75
     elif balance < 200:
@@ -410,7 +443,10 @@ def get_update_interval():
     else:
         account_factor = 1.0
 
+    # ⏰ Адаптация по времени суток
     hour_factor = 0.75 if is_optimal_trading_hour() else 1.0
+
+    # 📊 Адаптация по рыночной волатильности
     market_volatility = get_market_volatility_index()
     if market_volatility > 1.5:
         volatility_factor = 0.7
@@ -419,10 +455,78 @@ def get_update_interval():
     else:
         volatility_factor = 1.0
 
-    final_interval = max(BASE_UPDATE_INTERVAL, int(base_interval * account_factor * hour_factor * volatility_factor))
+    final_interval = max(base_interval, int(base_interval * account_factor * hour_factor * volatility_factor))
+
+    # 📋 Лог всех расчётов
+    from utils_logging import log
+
+    log(
+        f"[UpdateInterval] balance={balance:.2f}, account_factor={account_factor}, "
+        f"hour_factor={hour_factor}, vol={market_volatility:.2f}, vol_factor={volatility_factor}, "
+        f"→ interval={final_interval / 60:.1f} min",
+        level="DEBUG",
+    )
+
     return final_interval
 
 
+CACHE_FILE = "data/missed_opportunities.json"
+CACHE_LOCK = Lock()
+MAX_ENTRIES = 200
+
+
 def track_missed_opportunities():
-    """Заглушка для анализа пропущенных 'ракет'."""
-    pass
+    """Анализирует символы, которые сильно выросли за 24ч, но не были отобраны."""
+    from datetime import datetime
+
+    from pair_selector import fetch_all_symbols  # или список конкретных символов
+    from utils_logging import log
+
+    symbols = fetch_all_symbols()
+
+    for symbol in symbols:
+        try:
+            symbol = extract_symbol(symbol)
+            df = fetch_data_multiframe(symbol)
+            if df is None or len(df) < 20:
+                continue
+
+            price_24h_ago = df["close"].iloc[0]
+            price_now = df["close"].iloc[-1]
+            potential_profit = ((price_now - price_24h_ago) / price_24h_ago) * 100
+
+            if abs(potential_profit) < 5:
+                log(f"[MissedTracker] {symbol} ignored: gain={potential_profit:.2f}%", level="DEBUG")
+                continue  # не ракета
+
+            atr_vol = df["atr"].iloc[-1]
+            avg_volume = df["volume"].iloc[-96:].mean() if len(df) >= 96 else df["volume"].mean()
+            now = datetime.utcnow().isoformat()
+
+            entry = {
+                "symbol": symbol,
+                "timestamp": now,
+                "profit": round(potential_profit, 2),
+                "atr_vol": round(atr_vol, 4),
+                "avg_volume": round(avg_volume),
+            }
+
+            with CACHE_LOCK:
+                cache = []
+                if os.path.exists(CACHE_FILE):
+                    with open(CACHE_FILE, "r") as f:
+                        try:
+                            cache = json.load(f)
+                        except json.JSONDecodeError:
+                            log(f"[MissedTracker] Failed to parse {CACHE_FILE}", level="WARNING")
+
+                cache.append(entry)
+                cache = cache[-MAX_ENTRIES:]
+
+                with open(CACHE_FILE, "w") as f:
+                    json.dump(cache, f, indent=2)
+
+            log(f"[MissedTracker] 🚀 Missed opportunity: {symbol} +{entry['profit']}%", level="INFO")
+
+        except Exception as e:
+            log(f"[MissedTracker] ❌ Error processing {symbol}: {e}", level="ERROR")

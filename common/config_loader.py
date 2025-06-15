@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 from threading import Lock
 
-import pytz
 from dotenv import load_dotenv
 
+from utils_core import get_runtime_config, normalize_symbol
 from utils_logging import log
 
 try:
@@ -50,7 +50,7 @@ CONFIG_FILE = get_config("CONFIG_FILE", "C:/Bots/BinanceBot/common/config_loader
 EXPORT_PATH = get_config("EXPORT_PATH", "C:/Bots/BinanceBot/data/tp_performance.csv")
 TP_LOG_FILE = get_config("TP_LOG_FILE", "C:/Bots/BinanceBot/data/tp_performance.csv")
 LOG_FILE_PATH = get_config("LOG_FILE_PATH", "C:/Bots/BinanceBot/logs/main.log")
-LOG_LEVEL = get_config("LOG_LEVEL", "INFO")
+LOG_LEVEL = get_config("LOG_LEVEL", "DEBUG")
 
 ENABLE_FULL_DEBUG_MONITORING = get_config("ENABLE_FULL_DEBUG_MONITORING", "False") == "True"
 
@@ -81,6 +81,10 @@ DEFAULT_PRIORITY_SMALL_BALANCE_PAIRS = [
     "SOL/USDC",
     "MATIC/USDC",
     "DOT/USDC",
+    "SUI/USDC",
+    "LTC/USDC",
+    "AVAX/USDC",
+    "OP/USDC",
 ]
 
 
@@ -108,7 +112,11 @@ def get_priority_small_balance_pairs():
 
 
 SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMBOLS_ACTIVE") else USDC_SYMBOLS
-FIXED_PAIRS = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
+
+
+raw_fixed_pairs = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
+FIXED_PAIRS = [normalize_symbol(pair) for pair in raw_fixed_pairs if pair]
+
 MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 15))
 MIN_DYNAMIC_PAIRS = int(get_config("MIN_DYNAMIC_PAIRS", 6))
 
@@ -124,8 +132,6 @@ PAIR_COOLING_PERIOD_HOURS = int(get_config("PAIR_COOLING_PERIOD_HOURS", 24))
 PAIR_ROTATION_MIN_INTERVAL = int(get_config("PAIR_ROTATION_MIN_INTERVAL", 600))
 
 # ========== Risk Management ==========
-RISK_PERCENT = None  # will be set dynamically
-MAX_POSITIONS = int(get_config("MAX_POSITIONS", 5))  # Deprecated
 MAX_OPEN_ORDERS = int(get_config("MAX_OPEN_ORDERS", 5))
 MAX_MARGIN_PERCENT = float(get_config("MAX_MARGIN_PERCENT", 0.2))
 MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
@@ -142,12 +148,16 @@ TP1_SHARE = float(get_config("TP1_SHARE", 0.8))
 TP2_SHARE = float(get_config("TP2_SHARE", 0.2))
 
 # ========== Auto-Profit Settings ==========
-AUTO_CLOSE_PROFIT_THRESHOLD = 5.0
-BONUS_PROFIT_THRESHOLD = 7.0
+cfg = get_runtime_config()
+AUTO_CLOSE_PROFIT_THRESHOLD = cfg.get("auto_profit_threshold", 3.0)
+BONUS_PROFIT_THRESHOLD = cfg.get("bonus_profit_threshold", 5.0)
+AUTO_PROFIT_ENABLED = cfg.get("auto_profit_enabled", True)
+
 
 # ========== Fee Rates ==========
-TAKER_FEE_RATE = float(get_config("TAKER_FEE_RATE", 0.0005))
-MAKER_FEE_RATE = float(get_config("MAKER_FEE_RATE", 0.0002))
+TAKER_FEE_RATE = float(get_config("TAKER_FEE_RATE", 0.0004))
+MAKER_FEE_RATE = float(get_config("MAKER_FEE_RATE", 0.0))
+
 
 # ========== Auto TP/SL Adjustments ==========
 AUTO_TP_SL_ENABLED = get_config("AUTO_TP_SL_ENABLED", "True") == "True"
@@ -177,15 +187,19 @@ TP_ML_SWITCH_THRESHOLD = float(get_config("TP_ML_SWITCH_THRESHOLD", 0.05))
 MARGIN_SAFETY_BUFFER = float(get_config("MARGIN_SAFETY_BUFFER", 0.92))
 
 # ========== Timezone Settings ==========
-TIMEZONE = pytz.timezone(get_config("TIMEZONE", "Europe/Bratislava"))
+# ========== Trading Hours Settings (UTC-based Monitoring) ==========
 
-# ========== Trading Hours Settings ==========
-TRADING_HOURS_FILTER = get_config("TRADING_HOURS_FILTER", "False") == "True"
-HIGH_ACTIVITY_HOURS = [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
-EUROPEAN_MARKET_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16]
-ASIAN_MARKET_HOURS = [0, 1, 2]
-EVENING_HOURS = [17, 18, 19, 20, 21, 22]
-WEEKEND_TRADING = get_config("WEEKEND_TRADING", "False") == "True"
+
+def is_monitoring_hours_utc():
+    """
+    Возвращает True, если текущий час UTC входит в monitoring_hours_utc из runtime_config.json.
+    Это режим пассивного наблюдения ночью: сделки возможны только при сильных сигналах.
+    """
+    from datetime import datetime
+
+    hours = get_runtime_config().get("monitoring_hours_utc", [])
+    return datetime.utcnow().hour in hours
+
 
 # ========== Short-term Trading Optimizations ==========
 SHORT_TERM_MODE = get_config("SHORT_TERM_MODE", "True") == "True"
@@ -231,14 +245,3 @@ trade_stats = {
     "withdrawals": 0,
     "api_errors": 0,
 }
-
-
-def initialize_risk_percent():
-    """
-    Legacy fallback: sets RISK_PERCENT to a fixed 0.03
-    (not used in the new architecture).
-    """
-    global RISK_PERCENT
-
-    RISK_PERCENT = 0.03
-    log(f"[LegacyInit] RISK_PERCENT set to {RISK_PERCENT*100:.1f}%", level="DEBUG")

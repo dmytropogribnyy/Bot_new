@@ -8,9 +8,10 @@ import numpy as np
 import pandas as pd
 
 from constants import INACTIVE_CANDIDATES_FILE, SYMBOLS_FILE
-from pair_selector import fetch_all_symbols, fetch_symbol_data
+from core.strategy import fetch_data_multiframe  # ✅ заменили импорт
+from pair_selector import fetch_all_symbols
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_runtime_config, load_json_file
+from utils_core import get_runtime_config, load_json_file, normalize_symbol
 from utils_logging import log
 
 
@@ -19,23 +20,12 @@ def continuous_scan():
     Сканируем «неактивные» символы и пытаемся найти кандидатов,
     фильтруя их по объёму (volume_usdc) и ATR(%), с постепенным «размягчением» порогов.
     """
-
     runtime_config = get_runtime_config()
-
-    # При желании можно отменять скан в DRY_RUN
-    # if runtime_config.get("DRY_RUN"):
-    #     log("[continuous_scan] DRY_RUN mode => skipping scan", level="INFO")
-    #     return
 
     base_volume = runtime_config.get("volume_threshold_usdc", 300)
     base_atr = runtime_config.get("atr_threshold_percent", 0.006)
     min_candidates = runtime_config.get("scanner_min_candidates", 5)
 
-    # Пример динамического подхода: min_candidates = max(int(len(candidates) * 0.05), 5)
-    # Но оставим константное использование min_candidates
-    # all_symbols ... -> после вычислим
-
-    # Этапы релаксации фильтров
     relaxation_stages = [
         {"name": "Standard", "volume_factor": 1.0, "atr_factor": 1.0},
         {"name": "Moderate", "volume_factor": 0.7, "atr_factor": 0.9},
@@ -43,11 +33,7 @@ def continuous_scan():
         {"name": "Minimum", "volume_factor": 0.3, "atr_factor": 0.6},
     ]
 
-    from utils_core import normalize_symbol
-
-    # Загружаем и нормализуем все доступные символы с биржи
     all_symbols = set(normalize_symbol(s) for s in fetch_all_symbols())
-    # Загружаем и нормализуем активные символы из файла
     loaded = load_json_file(SYMBOLS_FILE) or []
     active_symbols = set(normalize_symbol(item["symbol"]) for item in loaded if isinstance(item, dict) and "symbol" in item)
 
@@ -63,16 +49,14 @@ def continuous_scan():
         min_atr = base_atr * stage["atr_factor"]
         stage_results = []
 
-        log_msg = f"[Scan] {stage['name']} thresholds => " f"Volume ≥ {min_volume:.1f}, ATR% ≥ {min_atr:.4f}"
+        log_msg = f"[Scan] {stage['name']} thresholds => Volume ≥ {min_volume:.1f}, ATR% ≥ {min_atr:.4f}"
         log(log_msg, level="DEBUG")
 
         for symbol in sorted(candidates):
-            df = fetch_symbol_data(symbol, timeframe="15m", limit=100)
+            df = fetch_data_multiframe(symbol)  # ✅ заменили здесь
             if df is None or len(df) < 20:
-                # Можно логировать или просто пропускать
                 continue
 
-            # Убедимся, что 'atr' действительно в DataFrame
             if "atr" not in df.columns:
                 log(f"[Scan] {symbol} => No 'atr' column in df, skipping", level="DEBUG")
                 continue
@@ -83,21 +67,18 @@ def continuous_scan():
 
             atr_val = df["atr"].iloc[-1]
             if pd.isna(atr_val) or not np.isfinite(atr_val):
-                # Глючные данные
                 continue
 
             volume = df["volume"].mean()
             volume_usdc = volume * last_price
             atr_percent = atr_val / last_price
 
-            # Проверяем пороги
             if volume_usdc >= min_volume and atr_percent >= min_atr:
-                # Доп поля
                 volatility_score = volume_usdc * atr_percent
 
                 info = {
                     "symbol": symbol,
-                    "type": "inactive",  # Помечаем, что это список "inactive"
+                    "type": "inactive",
                     "volume_stage": round(min_volume, 2),
                     "atr_stage": round(min_atr, 5),
                     "avg_volume": round(volume, 2),
@@ -113,34 +94,32 @@ def continuous_scan():
             else:
                 log(f"[Scan] Skipped {symbol} => vol={volume_usdc:.1f}, atr%={atr_percent:.4f}", level="DEBUG")
 
-        # Добавляем результаты
         scan_results.extend(stage_results)
 
-        # Если уже набрали нужное кол-во кандидатов, завершаем
         if len(scan_results) >= min_candidates:
             final_stage = stage
             break
 
-    # Можно сортировать по volume_usdc или volatility_score
     scan_results.sort(key=lambda x: x["volatility_score"], reverse=True)
 
-    # Проверяем, не 0 ли
     if not scan_results:
-        log("⚠️ No candidates found at any relaxation stage.", level="WARNING")
-        send_telegram_message("⚠️ continuous_scan: No symbols passed filters.", force=True)
+        log(
+            f"⚠️ No candidates found, even after applying relaxed thresholds down to: "
+            f"Volume ≥ {base_volume * relaxation_stages[-1]['volume_factor']:.1f}, "
+            f"ATR% ≥ {base_atr * relaxation_stages[-1]['atr_factor']:.4f}",
+            level="WARNING",
+        )
+        send_telegram_message("⚠️ continuous_scan: No symbols passed relaxed volume/ATR thresholds.", force=True)
 
-    # Сохраняем в JSON
     os.makedirs(os.path.dirname(INACTIVE_CANDIDATES_FILE), exist_ok=True)
     with open(INACTIVE_CANDIDATES_FILE, "w", encoding="utf-8") as f:
         json.dump(scan_results, f, indent=2)
 
-    log((f"✅ Scan complete: Found {len(scan_results)} candidates " f"using {final_stage['name']} thresholds"), level="INFO")
+    log(f"✅ Scan complete: Found {len(scan_results)} candidates using {final_stage['name']} thresholds", level="INFO")
 
 
 def schedule_continuous_scanner():
-    """
-    Пример планировщика для continuous_scan().
-    """
+    """Пример планировщика для continuous_scan()."""
     try:
         from schedule import every
 
