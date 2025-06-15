@@ -226,10 +226,11 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, {}, reason="data_fetch_error")
         return None, failure_reasons
 
-    breakdown = get_signal_breakdown(df)
-    if not breakdown:
-        failure_reasons.append("no_breakdown")
-        log_missed_signal(symbol, {}, reason="no_breakdown")
+    # ✅ ПРАВИЛЬНО: получаем и направление, и breakdown
+    direction, breakdown = get_signal_breakdown(df)
+    if not direction or not breakdown:
+        failure_reasons.append("no_direction")
+        log_missed_signal(symbol, {}, reason="no_direction")
         return None, failure_reasons
 
     if not passes_1plus1(breakdown):
@@ -247,17 +248,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         breakdown["open_interest"] = 0.0
 
     try:
-        macd_val = df["macd_5m"].iloc[-1]
-        macd_sig = df["macd_signal_5m"].iloc[-1]
-        if pd.isna(macd_val) or pd.isna(macd_sig):
-            raise ValueError("MACD is NaN")
-        direction = "BUY" if macd_val > macd_sig else "SELL"
-    except Exception:
-        failure_reasons.append("macd_error")
-        log_missed_signal(symbol, breakdown, reason="macd_error")
-        return None, failure_reasons
-
-    try:
         entry_price = df["close"].iloc[-1]
         if pd.isna(entry_price) or entry_price <= 0:
             raise ValueError("entry_price invalid")
@@ -269,13 +259,13 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
     atr = atr_series.iloc[-1] if len(atr_series) else 0.0
     sl_distance = atr * 1.5
-    stop_price = entry_price - sl_distance if direction == "BUY" else entry_price + sl_distance
+    stop_price = entry_price - sl_distance if direction == "buy" else entry_price + sl_distance
 
     balance = get_cached_balance()
 
     log(f"[DEBUG] Capital pre-check: balance={balance:.2f}", level="DEBUG")
 
-    # 🔐 Check capital & position limits
+    # 🔐 Проверка капитала и лимитов
     can_enter, reason = check_entry_allowed(balance)
     if not can_enter:
         failure_reasons.append(reason)
@@ -302,8 +292,8 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
 
         min_profit_required = get_runtime_config().get("min_profit_threshold", 0.06)
-
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
+
         log(f"[ProfitCalc] {symbol} → NetProfit=${net_profit:.2f} (required=${min_profit_required:.2f})", level="DEBUG")
 
         if not enough_profit:
@@ -327,7 +317,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
             return None, failure_reasons
         last_trade_times[symbol] = datetime.utcnow()
 
-    # 🔍 Monitoring Hours Filter
     is_reentry = breakdown.get("is_reentry", False)
     if is_monitoring_hours_utc():
         score = breakdown.get("score", 0)
@@ -354,7 +343,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     except Exception as e:
         log(f"[WARN] Failed to log_entry for {symbol}: {e}", level="WARNING")
 
-    if direction not in ("BUY", "SELL") or not qty or qty <= 0:
+    if direction not in ("buy", "sell") or not qty or qty <= 0:
         failure_reasons.append("invalid_signal_structure")
         log_missed_signal(symbol, breakdown, reason="invalid_signal_structure")
         return None, failure_reasons

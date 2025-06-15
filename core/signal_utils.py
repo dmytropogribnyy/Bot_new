@@ -38,16 +38,10 @@ def detect_volume_spike(df, lookback=5, threshold=1.5):
 
 
 def get_signal_breakdown(df):
-    """
-    Собираем бинарные сигналы (1/0) по MACD, EMA, RSI, Volume, PriceAction,
-    и при наличии htf_trend. Добавляем флаг strong_signal для ночного входа.
-    """
     if len(df) < 2:
-        return {}
+        return None, {}
 
     latest = df.iloc[-1]
-
-    # === Конфигурация из runtime_config ===
     cfg = get_runtime_config()
     rsi_threshold = cfg.get("rsi_threshold", 50)
 
@@ -74,7 +68,6 @@ def get_signal_breakdown(df):
     if "htf_trend" in df.columns:
         htf_signal = 1 if bool(latest.get("htf_trend", False)) else 0
 
-    # Сбор финального breakdown
     breakdown = {
         "MACD": macd_signal,
         "EMA_CROSS": ema_cross_flag,
@@ -82,12 +75,17 @@ def get_signal_breakdown(df):
         "Volume": vol_signal,
         "PriceAction": pa_signal,
         "HTF": htf_signal,
+        "strong_signal": ema_cross_flag and rsi_signal and vol_signal,
     }
 
-    # Добавляем strong_signal для ночных входов
-    breakdown["strong_signal"] = ema_cross_flag and rsi_signal and vol_signal
+    # === Определение направления
+    direction = None
+    if macd_val > macd_sig and ema_cross_flag:
+        direction = "buy"
+    elif macd_val < macd_sig and not ema_cross_flag:
+        direction = "sell"
 
-    return breakdown
+    return direction, breakdown
 
 
 def passes_1plus1(breakdown):
