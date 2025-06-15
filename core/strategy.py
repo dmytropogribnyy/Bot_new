@@ -14,7 +14,7 @@ from core.signal_utils import (
     detect_ema_crossover,
     detect_volume_spike,
 )
-from core.trade_engine import trade_manager
+from core.trade_engine import calculate_risk_amount, trade_manager
 from utils_core import (
     get_runtime_config,
     normalize_symbol,
@@ -189,9 +189,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     from core.entry_logger import log_entry
     from core.missed_signal_logger import log_missed_signal
     from core.position_manager import check_entry_allowed
-    from core.risk_utils import get_adaptive_risk_percent
     from core.runtime_state import is_symbol_paused, is_trading_globally_paused, pause_all_trading
-    from core.runtime_stats import is_hourly_limit_reached
     from core.signal_utils import get_signal_breakdown, passes_1plus1
     from core.strategy import fetch_data_multiframe, symbol_type_map
     from core.tp_utils import calculate_tp_levels, check_min_profit
@@ -217,9 +215,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         return None, failure_reasons
     if is_symbol_paused(symbol):
         failure_reasons.append("symbol_paused")
-        return None, failure_reasons
-    if is_hourly_limit_reached(max_trades=6):
-        failure_reasons.append("hourly_limit_reached")
         return None, failure_reasons
 
     log(f"[Entry] Checking {symbol} for entry...", level="DEBUG")
@@ -288,9 +283,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         return None, failure_reasons
 
     atr_pct = atr / entry_price if entry_price > 0 else 0
-    risk_percent = get_adaptive_risk_percent(balance, atr_percent=atr_pct)
-    qty = calculate_position_size(entry_price, stop_price, balance * risk_percent, symbol=symbol)
+    volume = breakdown.get("volume", 0)
 
+    risk_amount = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_pct, volume_usdc=volume)
+    qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol=symbol, balance=balance)
     if not qty or qty <= 0:
         fallback_qty = MIN_NOTIONAL_OPEN / entry_price
         log(f"[Fallback] {symbol} qty fallback: {fallback_qty:.4f}", level="DEBUG")
@@ -383,8 +379,9 @@ def calculate_tp_targets():
 
             tp_price = data.get("tp1_price") or entry_price * 1.05
             if tp_price > 0:
-                results.append({"symbol": symbol, "tp_price": tp_price})
-                log(f"[TP] {symbol} => {tp_price}", level="DEBUG")
+                result = {"symbol": symbol, "tp_price": round(tp_price, 4), "entry": round(entry_price, 4), "pair_type": data.get("pair_type", "unknown")}
+                results.append(result)
+                log(f"[TP-Target] {symbol} → TP1: {tp_price:.4f}", level="DEBUG")
 
         return results
 

@@ -35,7 +35,6 @@ RUNTIME_CONFIG_FILE = Path("data/runtime_config.json")
 
 def ensure_data_directory():
     """Убедиться, что директория data/ существует и доступна."""
-    from utils_logging import log
 
     data_dir = "data/"
     if not os.path.exists(data_dir):
@@ -61,7 +60,6 @@ def ensure_data_directory():
 def get_cached_balance():
     """Получает кэшированный баланс (totalMarginBalance)."""
     from core.exchange_init import exchange
-    from utils_logging import log
 
     with cache_lock:
         now = time.time()
@@ -82,7 +80,6 @@ def get_cached_balance():
 def get_cached_positions():
     """Получает кэшированные позиции (exchange.fetch_positions)."""
     from core.exchange_init import exchange
-    from utils_logging import log
 
     with cache_lock:
         now = time.time()
@@ -101,7 +98,6 @@ def get_cached_positions():
 
 def initialize_cache():
     """Инициализация кэша и проверка директории data/."""
-    from utils_logging import log
 
     if not ensure_data_directory():
         send_telegram_message("⚠️ Проблема с доступом к директории data/. Проверьте права доступа.", force=True)
@@ -113,7 +109,6 @@ def initialize_cache():
 
 def load_state():
     """Загружает состояние бота (stopping, shutdown и пр.) из STATE_FILE."""
-    from utils_logging import log
 
     with state_lock:
         try:
@@ -141,7 +136,6 @@ def load_state():
 
 def save_state(state, retries=3, delay=1):
     """Сохраняет текущее состояние бота в STATE_FILE с попытками ретрая."""
-    from utils_logging import log
 
     attempt = 0
     while attempt < retries:
@@ -174,7 +168,6 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
     import time
 
     from telegram.telegram_utils import send_telegram_message
-    from utils_logging import log
 
     for attempt in range(tries):
         try:
@@ -215,7 +208,6 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
 
 def get_runtime_config() -> dict:
     """Загружает runtime_config.json, возвращает dict или пустой dict при ошибке."""
-    from utils_logging import log
 
     if RUNTIME_CONFIG_FILE.exists():
         try:
@@ -228,7 +220,6 @@ def get_runtime_config() -> dict:
 
 def update_runtime_config(new_values: dict):
     """Обновляет runtime_config.json и логирует изменения."""
-    from utils_logging import log
 
     config = get_runtime_config()
     config.update(new_values)
@@ -266,7 +257,6 @@ def log_rejected_entry(symbol, reasons, breakdown):
     """
     Логирует отказ от входа в сделку. (Без упоминания score).
     """
-    from utils_logging import log
 
     symbol = extract_symbol(symbol)
     row = {
@@ -289,7 +279,6 @@ def initialize_runtime_adaptive_config():
     """
     Устанавливает базовые значения в runtime_config при старте (без HTF, score и т.д.).
     """
-    from utils_logging import log
 
     balance = get_cached_balance() or 100
 
@@ -327,6 +316,7 @@ def get_min_net_profit(balance=None):
     - Если 0–1 TP1/TP2 подряд → 0.10
     - Если 2–4 подряд → 0.20
     - Если ≥5 подряд → 0.30
+    - Если явно задано в runtime_config["min_profit_threshold"] — используется оно
     """
     import os
 
@@ -334,7 +324,18 @@ def get_min_net_profit(balance=None):
 
     from common.config_loader import TP_LOG_FILE
     from tp_logger import get_last_trade
+    from utils_core import get_runtime_config
+    from utils_logging import log
 
+    # ✅ Сначала проверяем runtime override (если установлен явно)
+    try:
+        cfg = get_runtime_config()
+        if "min_profit_threshold" in cfg:
+            return float(cfg["min_profit_threshold"])
+    except Exception as e:
+        log(f"[ProfitAdapt] Failed to read runtime_config override: {e}", level="WARNING")
+
+    # 🧠 Далее стандартная адаптация по TP streak
     last = get_last_trade()
     if not last:
         return 0.10
@@ -342,9 +343,8 @@ def get_min_net_profit(balance=None):
     last_result = str(last.get("Result", "")).upper()
     abs_profit = float(last.get("Absolute Profit", 0))
 
-    # Если последний — SL или убыток → сброс
     if last_result == "SL" or abs_profit < 0:
-        return 0.10
+        return 0.10  # сброс
 
     try:
         if not os.path.exists(TP_LOG_FILE):
@@ -355,7 +355,7 @@ def get_min_net_profit(balance=None):
         if df.empty:
             return 0.10
 
-        # Считаем TP подряд с конца
+        # Подсчёт TP подряд с конца
         streak = 0
         for result in reversed(df["Result"].tolist()):
             if result in ("TP1", "TP2"):
@@ -371,13 +371,12 @@ def get_min_net_profit(balance=None):
             return 0.30
 
     except Exception as e:
-        log(f"[ProfitAdapt] Failed to compute streak: {e}", level="ERROR")
+        log(f"[ProfitAdapt] Failed to compute TP streak: {e}", level="ERROR")
         return 0.10
 
 
 def reset_state_flags():
     """Сбрасывает stopping и shutdown в state-файле."""
-    from utils_logging import log
 
     st = load_state()
     st["stopping"] = False
@@ -389,7 +388,6 @@ def reset_state_flags():
 # Утилиты для JSON-файлов (общие)
 def load_json_file(path, default=None):
     """Загрузка JSON с обработкой ошибок."""
-    from utils_logging import log
 
     try:
         if os.path.exists(path):
@@ -405,7 +403,6 @@ def load_json_file(path, default=None):
 
 def save_json_file(path, data, indent=2):
     """Сохранение JSON с обработкой ошибок."""
-    from utils_logging import log
 
     try:
         directory = os.path.dirname(path)
@@ -463,7 +460,6 @@ def calculate_atr_volatility(df, period: int = 14) -> float:
     Вычисляет ATR (Average True Range) по DataFrame с колонками ['high', 'low', 'close'].
     Возвращает последнее значение (float).
     """
-    from utils_logging import log
 
     try:
         import ta
@@ -480,7 +476,6 @@ def get_market_volatility_index() -> float:
     Возвращает относительную волатильность BTC: ATR / текущая цена
     (примерный диапазон: 0.5–2.0).
     """
-    from utils_logging import log
 
     try:
         import pandas as pd
@@ -519,7 +514,6 @@ def get_total_position_value():
     """
     from core.exchange_init import exchange
     from utils_core import safe_call_retry
-    from utils_logging import log
 
     try:
         positions = safe_call_retry(exchange.fetch_positions)

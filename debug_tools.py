@@ -8,7 +8,7 @@ import pandas as pd
 from core.binance_api import fetch_ohlcv
 from core.fail_stats_tracker import get_symbol_risk_factor
 from core.signal_utils import add_indicators, get_signal_breakdown, passes_1plus1
-from core.trade_engine import calculate_position_size
+from core.trade_engine import calculate_position_size, calculate_risk_amount
 from utils_core import extract_symbol, get_cached_balance
 from utils_logging import log
 
@@ -51,7 +51,10 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         entry_price = latest.get("close", 0)
         stop_price = entry_price * 0.99
         balance = get_cached_balance()
-        qty = calculate_position_size(entry_price, stop_price, balance * 0.01, symbol=symbol)
+        risk_amount = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
+
+        qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
+
         notional = round(qty * entry_price, 2) if qty else 0.0
 
         result = {

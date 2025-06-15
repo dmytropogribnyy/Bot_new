@@ -222,38 +222,47 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price, t
         tp2_qty = round(qty * 0.2, 6)
 
         # TP1
-        exchange.create_limit_order(
-            api_symbol,
-            side_close,
-            tp1_qty,
-            tp1_price,
-            {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
-        )
-        log(f"[TP] {api_symbol}: TP1 placed at {tp1_price:.6f} for {tp1_qty}", level="INFO")
+        try:
+            exchange.create_limit_order(
+                api_symbol,
+                side_close,
+                tp1_qty,
+                tp1_price,
+                {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
+            )
+            log(f"[TP] {api_symbol}: TP1 placed at {tp1_price:.6f} for {tp1_qty}", level="INFO")
+        except Exception as e:
+            log(f"[TP] Failed to place TP1 for {api_symbol}: {e}", level="ERROR")
 
         # TP2
-        exchange.create_limit_order(
-            api_symbol,
-            side_close,
-            tp2_qty,
-            tp2_price,
-            {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
-        )
-        log(f"[TP] {api_symbol}: TP2 placed at {tp2_price:.6f} for {tp2_qty}", level="INFO")
+        try:
+            exchange.create_limit_order(
+                api_symbol,
+                side_close,
+                tp2_qty,
+                tp2_price,
+                {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
+            )
+            log(f"[TP] {api_symbol}: TP2 placed at {tp2_price:.6f} for {tp2_qty}", level="INFO")
+        except Exception as e:
+            log(f"[TP] Failed to place TP2 for {api_symbol}: {e}", level="ERROR")
 
         # SL
-        exchange.create_order(
-            symbol=api_symbol,
-            type="STOP_MARKET",
-            side=side_close,
-            amount=qty,
-            params={
-                "stopPrice": sl_price,
-                "reduceOnly": True,
-            },
-        )
-        log(f"[SL] {api_symbol}: SL placed at {sl_price:.6f} for {qty}", level="INFO")
+        try:
+            exchange.create_order(
+                symbol=api_symbol,
+                type="STOP_MARKET",
+                side=side_close,
+                amount=qty,
+                params={
+                    "stopPrice": sl_price,
+                    "reduceOnly": True,
+                },
+            )
+            log(f"[SL] {api_symbol}: SL placed at {sl_price:.6f} for {qty}", level="INFO")
+        except Exception as e:
+            log(f"[SL] Failed to place SL for {api_symbol}: {e}", level="ERROR")
 
     except Exception as e:
-        log(f"[TP/SL] Error placing TP/TP2/SL for {api_symbol}: {e}", level="ERROR")
+        log(f"[TP/SL] General error placing TP/TP2/SL for {api_symbol}: {e}", level="ERROR")
         raise

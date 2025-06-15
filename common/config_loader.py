@@ -10,7 +10,7 @@ from threading import Lock
 
 from dotenv import load_dotenv
 
-from utils_core import get_runtime_config, normalize_symbol
+from utils_core import get_runtime_config
 from utils_logging import log
 
 try:
@@ -115,7 +115,8 @@ SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMB
 
 
 raw_fixed_pairs = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
-FIXED_PAIRS = [normalize_symbol(pair) for pair in raw_fixed_pairs if pair]
+FIXED_PAIRS = [f"{pair[:-4]}/USDC:USDC" if pair.endswith("USDC") and "/" not in pair else pair for pair in raw_fixed_pairs]
+
 
 MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 15))
 MIN_DYNAMIC_PAIRS = int(get_config("MIN_DYNAMIC_PAIRS", 6))

@@ -135,10 +135,11 @@ def get_max_risk():
         return 0.03
 
 
-def check_capital_utilization(symbol, qty, entry_price, threshold=0.8):
+def check_capital_utilization(symbol, qty, entry_price, threshold=0.8, epsilon=0.005):
     """
     Проверяет, не превышает ли суммарная капитализация открытых ордеров `threshold` от баланса.
-    Учитывает активные позиции из trade_manager + текущую заявку.
+    Учитывает активные позиции + текущую заявку.
+    Допускает незначительное превышение на уровне `epsilon` (по умолчанию 0.5%).
     """
     from core.trade_engine import trade_manager
     from utils_core import get_cached_balance
@@ -166,7 +167,7 @@ def check_capital_utilization(symbol, qty, entry_price, threshold=0.8):
 
     log(f"[Risk] Capital utilization after adding {symbol}: {utilization:.2%} of balance ({total_commitment:.2f} / {balance:.2f})", level="DEBUG")
 
-    if utilization > threshold:
+    if utilization > threshold + epsilon:
         log(f"[Risk] Capital utilization exceeds threshold: {utilization:.2%} > {threshold:.0%}", level="WARNING")
         return False
 

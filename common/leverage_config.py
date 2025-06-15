@@ -14,6 +14,11 @@ def set_leverage_for_symbols():
     log("Leverage set for all symbols", level="INFO")
 
 
+def get_leverage_for_symbol(symbol: str) -> int:
+    symbol_key = symbol.replace("/", "").replace(":", "").upper()
+    return LEVERAGE_MAP.get(symbol_key, 5)
+
+
 LEVERAGE_MAP = {
     "BTCUSDT": 5,
     "ETHUSDT": 5,

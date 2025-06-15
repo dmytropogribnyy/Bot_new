@@ -3,27 +3,24 @@
 
 def process_symbol(symbol, balance, last_trade_times, lock):
     """
-    Обрабатывает один торговый символ:
+    Обрабатывает торговый символ:
     - проверяет лимиты и маржу
     - вызывает should_enter_trade(...)
-    - рассчитывает TP/SL, qty
-    - проверяет минимальную прибыль
-    Возвращает словарь с параметрами сделки или None.
+    - рассчитывает TP/SL, проверяет min_profit и min_notional
+    - возвращает параметры сделки или None
     """
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
     from core.binance_api import convert_symbol
     from core.exchange_init import exchange
-    from core.order_utils import calculate_order_quantity
     from core.position_manager import get_max_positions
-    from core.risk_utils import get_adaptive_risk_percent
     from core.strategy import should_enter_trade
     from core.tp_utils import calculate_tp_levels, check_min_profit
     from core.trade_engine import get_market_regime, get_position_size, open_positions_lock
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import MARGIN_SAFETY_BUFFER, extract_symbol, get_min_net_profit
+    from utils_core import MARGIN_SAFETY_BUFFER, get_min_net_profit, normalize_symbol
     from utils_logging import log
 
-    symbol = extract_symbol(symbol)
+    symbol = normalize_symbol(symbol)
 
     try:
         if any(v is None for v in (symbol, balance, last_trade_times, lock)):
@@ -72,16 +69,6 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(f"⚠️ Skipping {symbol} — invalid TP/SL", level="ERROR")
             return None
 
-        risk_percent = get_adaptive_risk_percent(balance)
-        try:
-            qty = calculate_order_quantity(entry, sl_price, balance, risk_percent)
-            if not qty or qty <= 0:
-                log(f"⚠️ Skipping {symbol} — invalid quantity {qty}", level="ERROR")
-                return None
-        except Exception as e:
-            log(f"⚠️ Quantity calc error for {symbol}: {e}", level="ERROR")
-            return None
-
         try:
             api_symbol = convert_symbol(symbol)
             ex_min_amount = exchange.load_markets()[api_symbol]["limits"]["amount"]["min"]
@@ -96,10 +83,10 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             if new_qty * entry <= margin_with_buffer:
                 log(f"ℹ️ Adjusting qty to meet min_notional → {new_qty:.4f}", level="INFO")
                 qty = new_qty
-                notional = qty * entry
             else:
                 log(f"⚠️ Skipping {symbol} — insufficient margin after notional adjust", level="WARNING")
                 return None
+            notional = qty * entry
 
         try:
             enough_profit, net_profit_tp1 = check_min_profit(entry, tp1, qty, share_tp1, direction, TAKER_FEE_RATE, get_min_net_profit(balance))
@@ -113,7 +100,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(f"⚠️ Profit check error for {symbol}: {e}", level="ERROR")
             return None
 
-        log(f"{symbol} => {direction}, qty={qty:.3f}, notional={notional:.2f}, risk={risk_percent*100:.1f}%, expProfit={net_profit_tp1:.2f}", level="INFO")
+        log(f"{symbol} => {direction}, qty={qty:.3f}, notional={notional:.2f}, expProfit={net_profit_tp1:.2f}", level="INFO")
 
         return {
             "symbol": symbol,

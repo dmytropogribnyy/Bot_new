@@ -192,15 +192,16 @@ def calculate_risk_amount(balance, risk_percent=None, symbol=None, atr_percent=N
     return balance * risk_percent
 
 
-def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None):
+def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None, balance=None, max_margin_percent=80):
     """
-    Calculate position size with graduated risk adjustment.
+    Calculate position size with graduated risk adjustment, bounded by max margin and leverage.
     """
     if entry_price <= 0 or stop_price <= 0:
         return 0
 
     risk_factor = 1.0
     if symbol:
+        from common.leverage_config import get_leverage_for_symbol  # 💡 для учёта плеча
         from core.fail_stats_tracker import get_symbol_risk_factor
 
         rf, _ = get_symbol_risk_factor(symbol)
@@ -213,8 +214,19 @@ def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None):
     if price_delta == 0:
         return 0
 
-    position_size = adjusted_risk / price_delta
-    return position_size
+    raw_position_size = adjusted_risk / price_delta
+
+    # === Ограничение по капиталу с учётом плеча
+    if balance is not None and max_margin_percent > 0:
+        leverage = get_leverage_for_symbol(symbol) if symbol else 5
+        max_notional = (balance * leverage) * (max_margin_percent / 100)
+        max_qty = max_notional / entry_price
+
+        if raw_position_size > max_qty:
+            log(f"[Risk] ⚠️ Limiting position size for {symbol}: {raw_position_size:.4f} → {max_qty:.4f} due to capital constraint (leverage={leverage}x)", level="WARNING")
+            return max_qty
+
+    return raw_position_size
 
 
 def get_position_size(symbol):
@@ -339,14 +351,14 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
     - Вызывает market order, ставит TP1/TP2/SL.
     - Логирует в Telegram и в систему.
     """
-    from common.config_loader import DRY_RUN, MAX_MARGIN_PERCENT, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, USE_TESTNET, get_priority_small_balance_pairs
-    from common.leverage_config import LEVERAGE_MAP
+    from common.config_loader import DRY_RUN, MAX_MARGIN_PERCENT, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, get_priority_small_balance_pairs
+    from common.leverage_config import get_leverage_for_symbol
     from core.binance_api import convert_symbol, create_safe_market_order
     from core.component_tracker import log_component_data
     from core.entry_logger import log_entry
     from core.fail_stats_tracker import get_symbol_risk_factor
     from core.position_manager import check_entry_allowed
-    from core.risk_utils import check_capital_utilization
+    from core.runtime_stats import update_trade_count
     from core.signal_utils import passes_1plus1
     from core.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
     from core.trade_engine import dry_run_positions_count, get_market_regime, get_position_size, open_positions_count, open_positions_lock, save_active_trades, trade_manager
@@ -386,7 +398,7 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
 
     balance = get_cached_balance()
 
-    # ✅ Новая централизованная проверка лимитов
+    # ✅ Централизованная проверка лимитов
     can_enter, reason = check_entry_allowed(balance)
     if not can_enter:
         log(f"[Limit] Entry denied for {symbol}: {reason}", level="INFO")
@@ -411,10 +423,6 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
         if breakdown:
             log_component_data(symbol, breakdown, is_successful=True)
 
-        leverage_key = symbol.split(":")[0].replace("/", "") if USE_TESTNET else symbol.replace("/", "")
-        leverage = LEVERAGE_MAP.get(leverage_key, 1)
-        adjusted_qty = qty * leverage
-
         rf, _ = get_symbol_risk_factor(symbol)
         min_rf = get_runtime_config().get("min_risk_factor", 0.9)
         if rf < min_rf:
@@ -422,35 +430,36 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             send_telegram_message(f"⚠️ Skipping {symbol}: risk factor too low ({rf:.2f} < {min_rf})", force=True)
             return
 
-        notional = adjusted_qty * entry_price
-        while notional < MIN_NOTIONAL_OPEN:
-            adjusted_qty *= 1.1
-            notional = adjusted_qty * entry_price
-        if notional < MIN_NOTIONAL_OPEN:
-            log(f"{symbol} ⚠️ Notional too small: {notional:.2f} < {MIN_NOTIONAL_OPEN}", level="WARNING")
-            send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
-            return
+        leverage = get_leverage_for_symbol(symbol)
+        notional = qty * entry_price
+        capital_utilization = notional / (balance * leverage)
 
-        if not check_capital_utilization(symbol, adjusted_qty, entry_price):
-            log(f"[Enter Trade] Skipping {symbol} due to capital utilization risk", level="WARNING")
+        log(f"[Risk] Capital utilization for {symbol}: {capital_utilization:.2%} of balance (leverage={leverage}x)", level="DEBUG")
+        if capital_utilization > 0.80:
+            log(f"[Risk] Capital utilization exceeds threshold: {capital_utilization:.2%} > 80%", level="WARNING")
             send_telegram_message(f"🧱 {symbol} skipped due to capital utilization", force=True)
             return
 
-        max_margin = balance * MAX_MARGIN_PERCENT
+        # Дополнительная проверка margin
         required_margin = notional / leverage
+        max_margin = balance * MAX_MARGIN_PERCENT
         if required_margin > max_margin * 0.92:
-            adjusted_qty = (max_margin * leverage * 0.92) / entry_price
-            notional = adjusted_qty * entry_price
+            qty = (max_margin * leverage * 0.92) / entry_price
+            notional = qty * entry_price
+            log(f"[Risk] Adjusted qty to respect max_margin: new_qty={qty:.4f}", level="WARNING")
 
         precision = exchange.markets[api_symbol]["precision"]["amount"]
         min_qty = exchange.markets[api_symbol]["limits"]["amount"]["min"]
-        adjusted_qty = round(adjusted_qty, precision)
-        if adjusted_qty < min_qty:
-            adjusted_qty = max(min_qty, adjusted_qty)
-        elif adjusted_qty == 0:
-            adjusted_qty = 10**-precision
+        qty = round(qty, precision)
+        if qty < min_qty:
+            qty = max(min_qty, qty)
+        elif qty == 0:
+            qty = 10**-precision
 
-        qty = adjusted_qty
+        if qty * entry_price < MIN_NOTIONAL_OPEN:
+            log(f"{symbol} ⚠️ Notional too small: {qty * entry_price:.2f} < {MIN_NOTIONAL_OPEN}", level="WARNING")
+            send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
+            return
 
         open_orders = exchange.fetch_open_orders(api_symbol)
         if len(open_orders) >= MAX_OPEN_ORDERS:
@@ -458,16 +467,18 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             return
 
         log(f"[Enter Trade] Creating order for {symbol}: qty={qty:.4f}, DRY_RUN={DRY_RUN}", level="INFO")
-        log(f"[DEBUG] Order params for {symbol}: balance={balance:.2f}, leverage={leverage}, " f"notional={notional:.2f}, adjusted_qty={qty}", level="DEBUG")
+        log(f"[DEBUG] Order params: balance={balance:.2f}, leverage={leverage}x, notional={notional:.2f}", level="DEBUG")
 
         result = create_safe_market_order(api_symbol, side.lower(), qty)
         log(f"[Enter Trade] Order result: {result}", level="INFO")
 
         if not result["success"]:
-            error_msg = result["error"]
-            log(f"[Enter Trade] Market order failed for {symbol}: {error_msg}", level="ERROR")
-            send_telegram_message(f"❌ Failed to open trade {symbol}: {error_msg}", force=True)
+            log(f"[Enter Trade] Market order failed for {symbol}: {result['error']}", level="ERROR")
+            send_telegram_message(f"❌ Failed to open trade {symbol}: {result['error']}", force=True)
             return
+
+        # ✅ Успешная сделка — засчитываем в лимит
+        update_trade_count()
 
         regime = get_market_regime(symbol)
         tp1, tp2, sl_price, _, _ = calculate_tp_levels(entry_price, side, regime=regime)
@@ -631,9 +642,15 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     atr = float(trade.get("atr", 0.0))
     pair_type = trade.get("pair_type", "unknown")
 
+    if qty <= 0:
+        log(f"[Record] ⚠️ Zero qty for {symbol}, skipping record", level="ERROR")
+        return
+
     absolute_profit = (exit_price - entry_price) * qty if side.lower() == "buy" else (entry_price - exit_price) * qty
     net_absolute_profit = absolute_profit - commission
     net_pnl_percent = ((net_absolute_profit / abs(entry_price * qty)) * 100) if qty > 0 and entry_price > 0 else 0.0
+
+    log(f"[PnL] {symbol} → entry={entry_price}, exit={exit_price}, qty={qty}, gross={absolute_profit:.2f}, net={net_absolute_profit:.2f}, commission={commission}", level="DEBUG")
 
     # 🔍 Лог компонентов
     is_successful = (exit_reason == "tp") and (net_absolute_profit > 0)
@@ -691,7 +708,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         f"📤 *Trade Closed* [{final_result_type.upper()} / {exit_reason.upper()}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-        f"• PnL: {round(pnl, 2)}% | ${round(net_absolute_profit, 2)} USDC\n"
+        f"• PnL: {round(pnl, 2)}% | Gross: ${round(absolute_profit, 2)} | Net: ${round(net_absolute_profit, 2)}\n"
         f"• Held: {duration} min"
     )
     send_telegram_message(msg, force=True)
@@ -1045,7 +1062,7 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
             # SL-priority logic
             if SL_PRIORITY and not trade.get("sl_hit") and trade.get("sl_price"):
                 sl_price = trade["sl_price"]
-                if (side_lower == "buy" and current_price > sl_price) or (side_lower == "sell" and current_price < sl_price):
+                if (side_lower == "buy" and current_price < sl_price) or (side_lower == "sell" and current_price > sl_price):
                     log(f"[SL-Priority] {symbol}: Waiting for SL trigger → price={current_price:.4f}, SL={sl_price:.4f}", level="DEBUG")
                     time.sleep(1)
                     continue
@@ -1073,7 +1090,7 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
 
             # Break-even SL
             if not break_even_set and (profit_percent >= 1.5 or trade.get("tp1_hit")):
-                new_sl_price = entry_price * 1.001 if side_lower == "buy" else entry_price * 0.999
+                new_sl_price = round(entry_price * 1.001, 6) if side_lower == "buy" else round(entry_price * 0.999, 6)
                 try:
                     open_orders = exchange.fetch_open_orders(symbol)
                     sl_orders = [o for o in open_orders if o["type"].upper() == "STOP_MARKET"]
@@ -1143,6 +1160,7 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                         current_position,
                         {"reduceOnly": True},
                     )
+                    last_fetched_price = current_price
                     trade_manager.update_trade(symbol, "soft_exit_hit", True)
                     log(f"[SoftExit] {symbol} closed manually at +${profit_usd:.2f} after {elapsed/60:.1f} min", level="INFO")
                     send_telegram_message(f"💸 Soft exit: {symbol} closed manually at +${profit_usd:.2f}")
@@ -1167,6 +1185,7 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                                     current_position,
                                     {"reduceOnly": True},
                                 )
+                                last_fetched_price = current_price
                                 trade_manager.update_trade(symbol, "soft_exit_hit", True)
                                 log(f"[PostHold] {symbol} recovered to breakeven → closed", level="INFO")
                                 send_telegram_message(f"🕓 Post-hold recovery: {symbol} closed at breakeven")
