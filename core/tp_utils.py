@@ -193,27 +193,44 @@ def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit
             min_profit_usd = 0.08
         else:
             min_profit_usd = 0.10
-
         log(f"[ProfitCheck] Adaptive threshold → balance={balance:.2f} → min_profit={min_profit_usd:.2f}$", level="DEBUG")
+
+    # 🔒 Минимально допустимый фильтр
+    min_profit_usd = max(min_profit_usd, 0.05)
 
     gross_profit = abs(tp1 - entry) * qty * share_tp1
     commission = 2 * qty * entry * fee_rate  # вход + выход
     net_profit = gross_profit - commission
 
-    log(f"[ProfitCheck] expected={net_profit:.2f}$ vs required={min_profit_usd:.2f}$ → {'✅ OK' if net_profit >= min_profit_usd else '❌ reject'}", level="DEBUG")
+    is_valid = net_profit >= min_profit_usd
+    verdict = "✅ OK" if is_valid else "❌ reject"
 
-    return net_profit >= min_profit_usd, round(net_profit, 2)
+    log(f"[ProfitCheck] expected={net_profit:.2f}$ vs required={min_profit_usd:.2f}$ → {verdict}", level="DEBUG")
+
+    return is_valid, round(net_profit, 2)
 
 
-def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price, tp1_pct=0.01, sl_pct=0.01):
+def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price):
     """
-    Устанавливает TP1, TP2 и SL ордера после входа:
-    - TP1 на 80% позиции
-    - TP2 на 20% позиции
-    - SL на 100% позиции (STOP_MARKET через create_order)
+    Устанавливает TP и SL ордера после входа:
+    - TP уровни берутся из step_tp_levels и step_tp_sizes
+    - SL = STOP_MARKET с SL_PERCENT
     """
     from core.exchange_init import exchange
+    from utils_core import get_runtime_config
     from utils_logging import log
+
+    config = get_runtime_config()
+
+    step_tp_levels = config.get("step_tp_levels", [0.06, 0.10, 0.18])
+    step_tp_sizes = config.get("step_tp_sizes", [0.3, 0.3, 0.3])
+    sl_pct = config.get("SL_PERCENT", 0.012)
+
+    if not step_tp_levels or not step_tp_sizes or len(step_tp_levels) != len(step_tp_sizes):
+        log(f"[TP/SL] Invalid TP config: levels={step_tp_levels}, sizes={step_tp_sizes}", level="ERROR")
+        return
+
+    side_close = "sell" if side.lower() == "buy" else "buy"
 
     try:
         open_orders = exchange.fetch_open_orders(api_symbol)
@@ -222,45 +239,31 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price, t
             log(f"[TP/SL] {api_symbol}: reduceOnly orders already exist ({len(reduce_orders)}) — skipping setup", level="WARNING")
             return
 
-        tp1_price = entry_price * (1 + tp1_pct) if side.lower() == "buy" else entry_price * (1 - tp1_pct)
-        tp2_price = entry_price * (1 + 2 * tp1_pct) if side.lower() == "buy" else entry_price * (1 - 2 * tp1_pct)
+        # === TP ордера
+        for i, (tp_pct, tp_share) in enumerate(zip(step_tp_levels, step_tp_sizes)):
+            if tp_share <= 0:
+                continue
+            tp_price = entry_price * (1 + tp_pct) if side.lower() == "buy" else entry_price * (1 - tp_pct)
+            tp_price = round(tp_price, 6)
+            tp_qty = round(qty * tp_share, 6)
+            if tp_qty <= 0:
+                continue
+            try:
+                exchange.create_limit_order(
+                    api_symbol,
+                    side_close,
+                    tp_qty,
+                    tp_price,
+                    {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
+                )
+                log(f"[TP] {api_symbol}: TP{i+1} placed at {tp_price:.6f} for {tp_qty}", level="INFO")
+            except Exception as e:
+                log(f"[TP] Failed to place TP{i+1} for {api_symbol}: {e}", level="ERROR")
+
+        # === SL
         sl_price = entry_price * (1 - sl_pct) if side.lower() == "buy" else entry_price * (1 + sl_pct)
-
-        tp1_price = round(tp1_price, 6)
-        tp2_price = round(tp2_price, 6)
         sl_price = round(sl_price, 6)
-        side_close = "sell" if side.lower() == "buy" else "buy"
 
-        tp1_qty = round(qty * 0.8, 6)
-        tp2_qty = round(qty * 0.2, 6)
-
-        # TP1
-        try:
-            exchange.create_limit_order(
-                api_symbol,
-                side_close,
-                tp1_qty,
-                tp1_price,
-                {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
-            )
-            log(f"[TP] {api_symbol}: TP1 placed at {tp1_price:.6f} for {tp1_qty}", level="INFO")
-        except Exception as e:
-            log(f"[TP] Failed to place TP1 for {api_symbol}: {e}", level="ERROR")
-
-        # TP2
-        try:
-            exchange.create_limit_order(
-                api_symbol,
-                side_close,
-                tp2_qty,
-                tp2_price,
-                {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
-            )
-            log(f"[TP] {api_symbol}: TP2 placed at {tp2_price:.6f} for {tp2_qty}", level="INFO")
-        except Exception as e:
-            log(f"[TP] Failed to place TP2 for {api_symbol}: {e}", level="ERROR")
-
-        # SL
         try:
             exchange.create_order(
                 symbol=api_symbol,
@@ -277,5 +280,4 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price, t
             log(f"[SL] Failed to place SL for {api_symbol}: {e}", level="ERROR")
 
     except Exception as e:
-        log(f"[TP/SL] General error placing TP/TP2/SL for {api_symbol}: {e}", level="ERROR")
-        raise
+        log(f"[TP/SL] General error placing TP/SL for {api_symbol}: {e}", level="ERROR")

@@ -14,7 +14,7 @@ from core.signal_utils import (
     detect_ema_crossover,
     detect_volume_spike,
 )
-from core.trade_engine import calculate_risk_amount, trade_manager
+from core.trade_engine import trade_manager
 from utils_core import (
     get_runtime_config,
     normalize_symbol,
@@ -193,7 +193,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     from core.signal_utils import get_signal_breakdown, passes_1plus1
     from core.strategy import fetch_data_multiframe, symbol_type_map
     from core.tp_utils import calculate_tp_levels, check_min_profit
-    from core.trade_engine import calculate_position_size
+    from core.trade_engine import calculate_position_size, calculate_risk_amount
     from open_interest_tracker import fetch_open_interest
     from tp_logger import get_today_pnl_from_csv
     from utils_core import get_cached_balance, get_runtime_config, normalize_symbol
@@ -226,7 +226,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, {}, reason="data_fetch_error")
         return None, failure_reasons
 
-    # ✅ ПРАВИЛЬНО: получаем и направление, и breakdown
     direction, breakdown = get_signal_breakdown(df)
     if not direction or not breakdown:
         failure_reasons.append("no_direction")
@@ -258,24 +257,23 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
     atr = atr_series.iloc[-1] if len(atr_series) else 0.0
-    sl_distance = atr * 1.5
-    stop_price = entry_price - sl_distance if direction == "buy" else entry_price + sl_distance
+    atr_pct = atr / entry_price if entry_price > 0 else 0
 
     balance = get_cached_balance()
-
     log(f"[DEBUG] Capital pre-check: balance={balance:.2f}", level="DEBUG")
 
-    # 🔐 Проверка капитала и лимитов
     can_enter, reason = check_entry_allowed(balance)
     if not can_enter:
         failure_reasons.append(reason)
         log_missed_signal(symbol, breakdown, reason=reason)
         return None, failure_reasons
 
-    atr_pct = atr / entry_price if entry_price > 0 else 0
     volume = breakdown.get("volume", 0)
 
-    risk_amount = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_pct, volume_usdc=volume)
+    # ✅ Новый: рассчитываем риск и adaptive SL
+    risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_pct, volume_usdc=volume)
+    stop_price = entry_price * (1 - effective_sl) if direction == "buy" else entry_price * (1 + effective_sl)
+
     qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol=symbol, balance=balance)
     if not qty or qty <= 0:
         fallback_qty = MIN_NOTIONAL_OPEN / entry_price

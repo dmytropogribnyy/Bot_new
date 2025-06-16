@@ -20,7 +20,6 @@ from common.config_loader import (
 )
 from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
-from core.risk_utils import get_adaptive_risk_percent
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, initialize_cache, load_state, normalize_symbol, safe_call_retry
 from utils_logging import log
@@ -172,25 +171,45 @@ def safe_close_trade(binance_client, symbol, trade_data, reason="manual"):
         log(f"❌ Error during safe close for {symbol}: {str(e)}", level="ERROR")
 
 
-def calculate_risk_amount(balance, risk_percent=None, symbol=None, atr_percent=None, volume_usdc=None):
+def calculate_risk_amount(balance, symbol=None, atr_percent=None, volume_usdc=None):
     """
-    Упрощённый расчёт risk amount без score.
+    Расчёт risk_amount с учётом:
+    - base_risk_pct из runtime_config
+    - risk_multiplier
+    - risk_factor (для symbol)
+    - adaptive effective_sl = max(SL_PERCENT, atr_percent * 1.5)
+
+    Возвращает:
+        risk_amount (в USDC), effective_sl (в %)
     """
-    from common.config_loader import trade_stats
+    from core.fail_stats_tracker import get_symbol_risk_factor
+    from utils_core import get_runtime_config
+    from utils_logging import log
 
-    # Win streak
-    win_streak = trade_stats.get("streak_win", 0)
+    cfg = get_runtime_config()
 
-    if risk_percent is None:
-        risk_percent = get_adaptive_risk_percent(
-            balance,
-            atr_percent=atr_percent,
-            volume_usdc=volume_usdc,
-            win_streak=win_streak,
-        )
+    base_risk_pct = cfg.get("base_risk_pct", 0.0075)  # по умолчанию 0.75%
+    risk_multiplier = cfg.get("risk_multiplier", 1.0)
+    sl_percent = cfg.get("SL_PERCENT", 0.01)
 
-    log(f"Using risk percentage: {risk_percent*100:.2f}% for balance: {balance:.2f} USDC", level="DEBUG")
-    return balance * risk_percent
+    # === Эффективный стоп-лосс: учитывает ATR
+    effective_sl = sl_percent
+    if atr_percent:
+        effective_sl = max(sl_percent, atr_percent * 1.5)
+
+    # === Учитываем риск-фактор (если symbol указан)
+    risk_factor = 1.0
+    if symbol:
+        rf, _ = get_symbol_risk_factor(symbol)
+        risk_factor = rf
+        log(f"[Risk] Risk factor for {symbol}: {risk_factor:.2f}", level="DEBUG")
+
+    # === Расчёт итогового риска
+    risk_amount = balance * base_risk_pct * risk_multiplier * risk_factor
+
+    log(f"[Risk] balance={balance:.2f}, base_pct={base_risk_pct:.4f}, multiplier={risk_multiplier}, factor={risk_factor:.2f} → risk=${risk_amount:.2f}, SL={effective_sl:.4f}", level="DEBUG")
+
+    return risk_amount, effective_sl
 
 
 def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None, balance=None):
@@ -359,12 +378,11 @@ def save_active_trades():
             log(f"[ERROR] Failed to save active_trades.json: {e}", level="ERROR")
 
 
-def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="unknown"):
+def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unknown"):
     """
     Финальная версия метода входа в сделку:
-    - Проверяет лимиты, часы, маржу, капитал.
-    - Вызывает market order, ставит TP1/TP2/SL.
-    - Логирует в Telegram и в систему.
+    - Рассчитывает qty на основе calculate_risk_amount и effective SL
+    - Ставит TP/SL по конфигу (step_tp_levels/sizes)
     """
     from common.config_loader import DRY_RUN, MAX_MARGIN_PERCENT, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, get_priority_small_balance_pairs
     from common.leverage_config import get_leverage_for_symbol
@@ -375,15 +393,15 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
     from core.position_manager import check_entry_allowed
     from core.runtime_stats import update_trade_count
     from core.signal_utils import passes_1plus1
-    from core.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
-    from core.trade_engine import dry_run_positions_count, get_market_regime, get_position_size, open_positions_count, open_positions_lock, save_active_trades, trade_manager
+    from core.tp_utils import place_take_profit_and_stop_loss_orders
+    from core.trade_engine import dry_run_positions_count, get_position_size, open_positions_count, open_positions_lock, save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import extract_symbol, get_cached_balance, get_runtime_config, is_optimal_trading_hour, load_state, safe_call_retry
+    from utils_core import calculate_risk_amount, extract_symbol, get_cached_balance, get_runtime_config, is_optimal_trading_hour, load_state, safe_call_retry
     from utils_logging import log, now
 
     symbol = extract_symbol(symbol)
     api_symbol = convert_symbol(symbol)
-    opened_position = False  # ⬅️ флаг для контроля открытия
+    opened_position = False
 
     try:
         exchange.load_markets()
@@ -414,7 +432,6 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             return
 
     balance = get_cached_balance()
-
     can_enter, reason = check_entry_allowed(balance)
     if not can_enter:
         log(f"[Limit] Entry denied for {symbol}: {reason}", level="INFO")
@@ -444,23 +461,31 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             send_telegram_message(f"⚠️ Skipping {symbol}: risk factor too low ({rf:.2f} < {min_rf})", force=True)
             return
 
+        # === Calculate risk and qty
+        atr_percent = ticker.get("atr_percent", None)
+        risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent)
+        if effective_sl <= 0:
+            log(f"[Risk] Invalid effective SL for {symbol}", level="ERROR")
+            return
+
+        qty = risk_amount / (entry_price * effective_sl)
         leverage = get_leverage_for_symbol(symbol)
         notional = qty * entry_price
         capital_utilization = notional / (balance * leverage)
-
-        log(f"[Risk] Capital utilization for {symbol}: {capital_utilization:.2%} of balance (leverage={leverage}x)", level="DEBUG")
+        log(f"[Risk] Capital utilization: {capital_utilization:.2%}", level="DEBUG")
         if capital_utilization > 0.80:
-            log(f"[Risk] Capital utilization exceeds threshold: {capital_utilization:.2%} > 80%", level="WARNING")
-            send_telegram_message(f"🧱 {symbol} skipped due to capital utilization", force=True)
+            log(f"[Risk] Skipping {symbol}: capital utilization too high", level="WARNING")
+            send_telegram_message(f"🧱 Skipping {symbol}: capital utilization too high", force=True)
             return
 
-        required_margin = notional / leverage
+        # === Adjust qty for margin
         max_margin = balance * MAX_MARGIN_PERCENT
+        required_margin = notional / leverage
         if required_margin > max_margin * 0.92:
             qty = (max_margin * leverage * 0.92) / entry_price
-            notional = qty * entry_price
             log(f"[Risk] Adjusted qty to respect max_margin: new_qty={qty:.4f}", level="WARNING")
 
+        # === Final qty rounding and validation
         precision = exchange.markets[api_symbol]["precision"]["amount"]
         min_qty = exchange.markets[api_symbol]["limits"]["amount"]["min"]
         qty = round(qty, precision)
@@ -468,27 +493,23 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             qty = min_qty
 
         if qty * entry_price < MIN_NOTIONAL_OPEN:
-            log(f"{symbol} ⚠️ Notional too small: {qty * entry_price:.2f} < {MIN_NOTIONAL_OPEN}", level="WARNING")
+            log(f"[Notional] {symbol} too small: {qty * entry_price:.2f}", level="WARNING")
             send_telegram_message(f"⚠️ Skipping {symbol}: notional too small", force=True)
             return
 
-        open_orders = exchange.fetch_open_orders(api_symbol)
-        if len(open_orders) >= MAX_OPEN_ORDERS:
-            log(f"[TP/SL] Skipping {symbol} — max open orders reached", level="DEBUG")
+        if len(exchange.fetch_open_orders(api_symbol)) >= MAX_OPEN_ORDERS:
+            log(f"[Orders] Too many open orders for {symbol}", level="WARNING")
             return
 
-        log(f"[Enter Trade] Creating order for {symbol}: qty={qty:.4f}, DRY_RUN={DRY_RUN}", level="INFO")
-        log(f"[DEBUG] Order params: balance={balance:.2f}, leverage={leverage}x, notional={notional:.2f}", level="DEBUG")
-
+        log(f"[Enter Trade] Creating market order for {symbol}: qty={qty:.4f}", level="INFO")
         result = create_safe_market_order(api_symbol, side.lower(), qty)
-        log(f"[Enter Trade] Order result: {result}", level="INFO")
 
         if not result["success"]:
-            log(f"[Enter Trade] Market order failed for {symbol}: {result['error']}", level="ERROR")
+            log(f"[Enter Trade] Market order failed: {result['error']}", level="ERROR")
             send_telegram_message(f"❌ Failed to open trade {symbol}: {result['error']}", force=True)
             return
 
-        # ✅ Открытие состоялось
+        # ✅ Успешный вход
         opened_position = True
         with open_positions_lock:
             if DRY_RUN:
@@ -497,9 +518,6 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
                 open_positions_count += 1
 
         update_trade_count()
-
-        regime = get_market_regime(symbol)
-        tp1, tp2, sl_price, _, _ = calculate_tp_levels(entry_price, side, regime=regime)
 
         trade_data = {
             "symbol": symbol,
@@ -513,13 +531,10 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
             "start_time": start_time,
             "commission": 0.0,
             "net_profit_tp1": 0.0,
-            "market_regime": regime,
+            "market_regime": "unknown",
             "quantity": qty,
             "breakdown": breakdown or {},
             "pair_type": pair_type,
-            "tp1_price": tp1,
-            "tp2_price": tp2,
-            "sl_price": sl_price,
         }
 
         trade_manager.add_trade(symbol, trade_data)
@@ -529,14 +544,14 @@ def enter_trade(symbol, side, qty, is_reentry=False, breakdown=None, pair_type="
         try:
             place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price)
         except Exception as e:
-            log(f"[TP/SL] Error placing TP/SL for {symbol}: {e}", level="ERROR")
+            log(f"[TP/SL] Error placing TP/SL: {e}", level="ERROR")
             send_telegram_message(f"⚠️ TP/SL placement failed for {symbol}: {e}", force=True)
 
-        log(f"[Enter Trade] Opened position for {symbol}: qty={qty}, entry={entry_price:.4f}", level="INFO")
+        log(f"[Enter Trade] ✅ ENTERED {symbol} qty={qty:.4f} @ {entry_price:.4f}", level="INFO")
         send_telegram_message(f"🚀 ENTER {symbol} {side.upper()} qty={qty:.4f} @ {entry_price:.4f}", force=True)
 
     except Exception as e:
-        log(f"[Enter Trade] Unexpected error for {symbol}: {str(e)}", level="ERROR")
+        log(f"[Enter Trade] Unexpected error: {str(e)}", level="ERROR")
         send_telegram_message(f"❌ Unexpected error in trade {symbol}: {str(e)}", force=True)
 
     finally:

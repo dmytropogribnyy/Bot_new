@@ -27,53 +27,14 @@ def get_open_positions_count():
         return get_max_positions()
 
 
-def can_open_new_position(balance):
-    """
-    Проверяет, можно ли открыть новую позицию с учётом лимитов:
-    - лимит на число одновременных позиций
-    - лимит на задействованный капитал (≤85%)
-
-    Args:
-        balance (float): Текущий баланс аккаунта в USDC
-
-    Returns:
-        bool: True, если можно открыть позицию; False — если лимит превышен
-    """
-    from core.risk_utils import get_max_positions
-    from utils_core import get_total_position_value
-    from utils_logging import log
-
-    current_positions = get_open_positions_count()
-    max_positions = get_max_positions(balance)
-
-    # Проверка лимита по количеству позиций
-    if current_positions >= max_positions:
-        log(f"[PositionLimit] ❌ {current_positions}/{max_positions} позиции уже заняты", level="INFO")
-        return False
-
-    # Проверка капитального использования
-    position_value = get_total_position_value()
-    cap_usage = position_value / balance if balance > 0 else 1
-
-    # 🔍 Детализация капитального использования
-    log(f"[DEBUG] Capital check → position_value={position_value:.2f}, balance={balance:.2f}, usage={cap_usage:.2%}", level="DEBUG")
-
-    if cap_usage > 0.85:
-        log(f"[CapitalLimit] ❌ Использовано {cap_usage:.2%} капитала (>85%)", level="INFO")
-        return False
-
-    log(f"[PositionCheck] ✅ {current_positions}/{max_positions} позиций. Capital used: {cap_usage:.2%}", level="DEBUG")
-    return True
-
-
 def check_entry_allowed(balance):
     """
     Проверяет, можно ли открыть новую позицию.
     Возвращает (True, None) если да,
-             или (False, причина) если нет.
+             или (False, причина:str) если нет.
     """
     from core.risk_utils import get_max_positions
-    from utils_core import get_total_position_value
+    from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
 
     current_positions = get_open_positions_count()
@@ -84,13 +45,16 @@ def check_entry_allowed(balance):
         return False, "position_limit_reached"
 
     position_value = get_total_position_value()
-    cap_usage = position_value / balance if balance > 0 else 1
+    cap_usage = position_value / balance if balance > 0 else 1.0
 
-    # 🔍 Логируем детализацию капитала
-    log(f"[DEBUG] Capital check → position_value={position_value:.2f}, balance={balance:.2f}, usage={cap_usage:.2%}", level="DEBUG")
+    # 💡 Получаем лимит из конфигурации
+    config = get_runtime_config()
+    max_cap_usage = config.get("max_margin_percent", 0.75)
 
-    if cap_usage > 0.85:
-        log(f"[EntryCheck] ❌ Capital usage too high: {cap_usage:.2%}", level="INFO")
+    log(f"[EntryCheck] Capital check → used={cap_usage:.2%}, limit={max_cap_usage:.2%}", level="DEBUG")
+
+    if cap_usage > max_cap_usage:
+        log(f"[EntryCheck] ❌ Capital usage too high: {cap_usage:.2%} > {max_cap_usage:.2%}", level="INFO")
         return False, "capital_utilization_limit"
 
     log(f"[EntryCheck] ✅ Allowed to enter. Positions: {current_positions}/{max_positions}, Capital used: {cap_usage:.2%}", level="DEBUG")
