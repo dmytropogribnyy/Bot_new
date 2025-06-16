@@ -2,10 +2,10 @@ import os
 
 import pandas as pd
 
-from common.config_loader import CONFIG_FILE, EXPORT_PATH, TP1_PERCENT, TP2_PERCENT
+from common.config_loader import CONFIG_FILE, EXPORT_PATH
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance
-from utils_logging import backup_config
+from utils_logging import backup_config, log
 
 CONFIG_PATH = CONFIG_FILE
 
@@ -13,23 +13,24 @@ CONFIG_PATH = CONFIG_FILE
 def evaluate_best_config(days=7):
     """
     Анализирует сделки за 'days' дней и при необходимости
-    меняет TP1_PERCENT / TP2_PERCENT в config.py.
+    обновляет step_tp_levels в runtime_config.json.
     """
+    from common.config_loader import RUNTIME_CONFIG_PATH
+    from tp_optimizer import _update_config_tp
+    from utils_core import load_json_file
+
     if not os.path.exists(EXPORT_PATH):
         send_telegram_message("❌ No trade history found for optimization.", force=True)
         return
 
     try:
         df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
-        # Отбираем сделки за последние days дней
-        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=days)
-        df = df[df["Date"] >= cutoff]
+        df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=days)]
 
         if df.empty:
             send_telegram_message("ℹ️ No recent trades for TP analysis.", force=True)
             return
 
-        # Смотрим баланс — определяем, сколько сделок нужно
         balance = get_cached_balance()
         tp_min_trades = 10 if balance < 300 else 20
         update_threshold = 0.1 if balance < 300 else 0.2
@@ -39,11 +40,12 @@ def evaluate_best_config(days=7):
             send_telegram_message(f"ℹ️ Not enough trades for TP optimization (need {tp_min_trades}, have {total})", force=True)
             return
 
-        tp1_hits = df[df["TP1 Hit"] == "YES"]
-        tp2_hits = df[df["TP2 Hit"] == "YES"]
-        sl_hits = df[df["SL Hit"] == "YES"]
+        # ✅ Boolean hits
+        tp1_hits = df[df["TP1 Hit"]]
+        tp2_hits = df[df["TP2 Hit"]]
+        sl_hits = df[df["SL Hit"]]
 
-        avg_pnl = df["PnL (%)"].mean()
+        avg_pnl = df["Net PnL (%)"].mean()
         tp1_winrate = round(len(tp1_hits) / total * 100, 1)
         tp2_winrate = round(len(tp2_hits) / total * 100, 1)
         sl_rate = round(len(sl_hits) / total * 100, 1)
@@ -55,10 +57,16 @@ def evaluate_best_config(days=7):
             f"• TP1 hit: {len(tp1_hits)} ({tp1_winrate}%)\n"
             f"• TP2 hit: {len(tp2_hits)} ({tp2_winrate}%)\n"
             f"• SL hit: {len(sl_hits)} ({sl_rate}%)\n"
-            f"• Avg PnL: {avg_pnl:.2f}%"
+            f"• Avg Net PnL: {avg_pnl:.2f}%"
         )
         send_telegram_message(escape_markdown_v2(msg), force=True)
 
+        # 📥 Получаем текущие TP уровни из runtime_config.json
+        config = load_json_file(RUNTIME_CONFIG_PATH)
+        current_tp1 = config.get("step_tp_levels", [0.07])[0]
+        current_tp2 = config.get("step_tp_levels", [0.07, 0.12])[1]
+
+        # 📈 Новые TP уровни на основе winrate
         new_tp1 = 0.007 + (tp1_winrate - 60) * 0.0002
         new_tp2 = 0.014 + (tp2_winrate - 40) * 0.0003
 
@@ -69,37 +77,41 @@ def evaluate_best_config(days=7):
             new_tp1 = max(0.004, min(new_tp1, 0.02))
             new_tp2 = max(0.007, min(new_tp2, 0.035))
 
-        diff_tp1 = abs(new_tp1 - TP1_PERCENT) / max(TP1_PERCENT, 0.00001)
-        diff_tp2 = abs(new_tp2 - TP2_PERCENT) / max(TP2_PERCENT, 0.00001)
+        diff_tp1 = abs(new_tp1 - current_tp1) / max(current_tp1, 0.0001)
+        diff_tp2 = abs(new_tp2 - current_tp2) / max(current_tp2, 0.0001)
 
         if diff_tp1 > update_threshold or diff_tp2 > update_threshold:
             backup_config()
             _update_config_tp(new_tp1, new_tp2)
 
             note = (
-                f"✅ TP1/TP2 auto-updated:\n" f"TP1: {round(new_tp1 * 100, 2)}%\n" f"TP2: {round(new_tp2 * 100, 2)}%\n" f"(Threshold: {update_threshold * 100}% for balance ~${int(balance)})"
+                f"✅ *TP levels auto-updated*\n"
+                f"• Old: TP1 = {current_tp1:.4f}, TP2 = {current_tp2:.4f}\n"
+                f"• New: TP1 = {new_tp1:.4f}, TP2 = {new_tp2:.4f}\n"
+                f"• Threshold: {int(update_threshold * 100)}%\n"
+                f"• Balance: ${balance:.2f}"
             )
             send_telegram_message(escape_markdown_v2(note), force=True)
+        else:
+            send_telegram_message("ℹ️ TP levels stable — no update needed.", force=True)
 
     except Exception as e:
         send_telegram_message(f"❌ TP Optimizer Error: {e}", force=True)
 
 
 def _update_config_tp(tp1, tp2):
-    """
-    Заменяет TP1_PERCENT и TP2_PERCENT в config.py на новые значения.
-    """
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        lines = f.readlines()
+    from common.config_loader import RUNTIME_CONFIG_PATH
+    from utils_core import load_json_file, save_json_file
 
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        for line in lines:
-            if line.strip().startswith("TP1_PERCENT"):
-                f.write(f"TP1_PERCENT = {round(tp1, 4)}\n")
-            elif line.strip().startswith("TP2_PERCENT"):
-                f.write(f"TP2_PERCENT = {round(tp2, 4)}\n")
-            else:
-                f.write(line)
+    config = load_json_file(RUNTIME_CONFIG_PATH)
+
+    # Преобразуем в step_tp_levels на базе новых tp1 и tp2
+    config["step_tp_levels"] = [round(tp1, 4), round(tp2, 4), round(tp2 * 1.8, 4)]
+    config["step_tp_sizes"] = [0.3, 0.3, 0.3]  # не трогаем
+
+    save_json_file(RUNTIME_CONFIG_PATH, config)
+
+    log(f"[TP Optimizer] Updated TP levels → step_tp_levels={config['step_tp_levels']}", level="INFO")
 
 
 def run_tp_optimizer():

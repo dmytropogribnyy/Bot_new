@@ -3,7 +3,6 @@
 import json
 import threading
 import time
-import traceback
 from threading import Lock
 
 import pandas as pd
@@ -301,7 +300,6 @@ def get_market_regime(symbol):
     Возвращает: "breakout", "trend", "flat", или "neutral"
     """
     import numpy as np
-    import pandas as pd
 
     from utils_logging import log
 
@@ -611,24 +609,38 @@ def run_soft_exit(symbol, side, entry_price, tp1_percent, qty, check_interval=5)
 def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     """
     Финальная фиксация сделки:
-    - Вычисляет PnL, комиссию, чистую прибыль,
-    - Логирует в tp_performance.csv,
-    - Обновляет статистику компонентов и SL-стрик,
-    - Уведомляет в Telegram,
-    - Удаляет позицию из активных.
+    - Вычисляет PnL, комиссию, чистую прибыль
+    - Логирует в tp_performance.csv
+    - Обновляет статистику компонентов и SL-стрик
+    - Уведомляет в Telegram
+    - Удаляет позицию из активных
     """
+    import math
+    import time
+    import traceback
+
+    import pandas as pd
+
     from core.component_tracker import log_component_data
+    from core.exchange_init import exchange
     from core.runtime_state import (
         get_loss_streak,
         increment_loss_streak,
         pause_symbol,
         reset_loss_streak,
     )
+    from core.trade_engine import DRY_RUN, dry_run_positions_count, logged_trades, logged_trades_lock, open_positions_count, open_positions_lock, trade_manager
+    from telegram.telegram_utils import send_telegram_message
     from tp_logger import log_trade_result as low_level_csv_writer
-    from utils_core import get_min_net_profit, normalize_symbol, update_runtime_config
+    from utils_core import (
+        get_min_net_profit,
+        normalize_symbol,
+        save_active_trades,
+        update_runtime_config,
+    )
+    from utils_logging import log
 
     symbol = normalize_symbol(symbol)
-    global open_positions_count, dry_run_positions_count
 
     caller_stack = traceback.format_stack()[-2]
     log(f"[DEBUG] record_trade_result for {symbol}, {result_type}, caller: {caller_stack}", level="DEBUG")
@@ -656,7 +668,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         return
     trade["closed_logged"] = True
 
-    # Определение причин выхода
+    # Причина выхода
     if trade.get("soft_exit_hit"):
         exit_reason = "soft_exit"
     elif trade.get("tp1_hit") or trade.get("tp2_hit"):
@@ -698,13 +710,18 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     net_absolute_profit = absolute_profit - commission
     net_pnl_percent = ((net_absolute_profit / abs(entry_price * qty)) * 100) if qty > 0 and entry_price > 0 else 0.0
 
+    if math.isnan(net_absolute_profit):
+        net_absolute_profit = 0.0
+    if math.isnan(net_pnl_percent):
+        net_pnl_percent = 0.0
+
     log(f"[PnL] {symbol} → entry={entry_price}, exit={exit_price}, qty={qty}, gross={absolute_profit:.2f}, net={net_absolute_profit:.2f}, commission={commission}", level="DEBUG")
 
-    # 🔍 Лог компонентов
+    # Компоненты
     is_successful = (exit_reason == "tp") and (net_absolute_profit > 0)
     log_component_data(symbol, breakdown, is_successful=is_successful)
 
-    # 📈 CSV лог
+    # Лог в CSV
     low_level_csv_writer(
         symbol=symbol,
         direction=side.upper(),
@@ -727,7 +744,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         exit_time=exit_time,
     )
 
-    # ✅ min_profit_threshold
+    # min_profit_threshold адаптация
     if is_successful:
         prev = get_min_net_profit()
         if prev < 0.30:
@@ -738,7 +755,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         update_runtime_config({"min_profit_threshold": 0.10})
         log("[ProfitAdapt] Reset min_profit_threshold to 0.10 after SL", level="WARNING")
 
-    # 🛡 SL streak
+    # SL streak
     if result_type == "sl":
         increment_loss_streak(symbol)
         streak = get_loss_streak(symbol)
@@ -749,13 +766,13 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     else:
         reset_loss_streak(symbol)
 
-    # ⚠ Flat уведомление
+    # Уведомления
     if exit_reason == "flat":
         send_telegram_message(f"⚠️ *Flat Close*: {symbol} @ {exit_price:.4f} — too close to entry", force=True)
 
-    # 📢 Telegram итог
+    icon = "🟢" if final_result_type in ["tp", "trailing_tp"] else "🔴" if final_result_type == "sl" else "⚪"
     msg = (
-        f"📤 *Trade Closed* [{final_result_type.upper()} / {exit_reason.upper()}]\n"
+        f"{icon} *Trade Closed* [{final_result_type.upper()} / {exit_reason.upper()}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
         f"• PnL: {round(pnl, 2)}% | Gross: ${round(absolute_profit, 2)} | Net: ${round(net_absolute_profit, 2)}\n"
@@ -763,7 +780,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     )
     send_telegram_message(msg, force=True)
 
-    # 🧹 Завершение
+    # Очистка
     try:
         exchange.cancel_all_orders(symbol)
         log(f"[Cleanup] Cancelled all remaining orders for {symbol}", level="INFO")

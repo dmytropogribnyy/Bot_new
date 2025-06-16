@@ -75,12 +75,7 @@ def log_trade_result(
 ):
     """
     Низкоуровневая запись сделки в tp_performance.csv.
-    Нет аргумента htf_confirmed — убрали, чтобы не было ошибки.
-
-    Пишет расширенные поля:
-      Date, Symbol, Side, Entry Price, Exit Price, Qty,
-      TP1 Hit, TP2 Hit, SL Hit, PnL (%), Result, Held (min),
-      Commission, Net PnL (%), Absolute Profit, Type, ATR, Exit Reason
+    Пишет расширенные поля и обновляет статистику дня.
     """
     symbol = extract_symbol(symbol)
 
@@ -88,14 +83,28 @@ def log_trade_result(
         return
 
     try:
+        import math
+
         from stats import now_with_timezone
 
         timestamp = now_with_timezone()
         date_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-
         final_result = result_type.upper() if result_type else "MANUAL"
 
-        # Формируем строку данных
+        # Уникальный ключ для исключения дубликатов
+        trade_key = f"{symbol}_{entry_price}_{exit_price}_{qty}"
+        with logged_trades_lock:
+            if trade_key in logged_trades:
+                log(f"[TP Logger] Duplicate trade, skipping: {trade_key}", level="DEBUG")
+                return
+            logged_trades.add(trade_key)
+
+        # Чистим NaN (на всякий случай)
+        if math.isnan(net_pnl):
+            net_pnl = 0.0
+        if math.isnan(absolute_profit):
+            absolute_profit = 0.0
+
         row = [
             date_str,
             symbol,
@@ -153,6 +162,16 @@ def log_trade_result(
             f"Type={pair_type}, Reason={exit_reason or 'None'}",
             level="INFO",
         )
+
+        # 📊 Обновляем дневную статистику
+        with daily_stats_lock:
+            daily_trade_stats["count"] += 1
+            daily_trade_stats["commission_total"] += commission
+            daily_trade_stats["profit_total"] += absolute_profit
+            if net_pnl > 0:
+                daily_trade_stats["win"] += 1
+            else:
+                daily_trade_stats["loss"] += 1
 
     except Exception as e:
         log(f"[TP Logger] Error writing trade for {symbol}: {e}", level="ERROR")
