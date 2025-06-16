@@ -13,28 +13,34 @@ MAX_ENTRIES = 1000
 
 
 def add_missed_opportunity(symbol: str):
+    from utils_core import get_runtime_config
+
     symbol = extract_symbol(symbol)
-    df = fetch_data_multiframe(symbol)  # 🔄 заменили здесь
+    df = fetch_data_multiframe(symbol)
     if df is None or len(df) < 20:
         return
 
+    config = get_runtime_config()
+    min_profit_threshold = config.get("min_profit_threshold", 0.06)
+
     price_24h_ago = df["close"].iloc[0]
     price_now = df["close"].iloc[-1]
-    potential_profit = ((price_now - price_24h_ago) / price_24h_ago) * 100
+    potential_profit = (price_now - price_24h_ago) / price_24h_ago
 
-    if abs(potential_profit) < 5:
+    if abs(potential_profit) < min_profit_threshold:
         return
 
-    atr_vol = df["atr"].iloc[-1]  # ✅ теперь напрямую из df["atr"]
+    atr_vol = df["atr"].iloc[-1] if "atr" in df else 0
     avg_volume = df["volume"].iloc[-96:].mean() if len(df) >= 96 else df["volume"].mean()
     now = datetime.utcnow().isoformat()
 
     entry = {
         "symbol": symbol,
         "timestamp": now,
-        "profit": round(potential_profit, 2),
+        "profit": round(potential_profit * 100, 2),  # в %
         "atr_vol": round(atr_vol, 4),
         "avg_volume": round(avg_volume),
+        "price_now": round(price_now, 5),
     }
 
     with CACHE_LOCK:

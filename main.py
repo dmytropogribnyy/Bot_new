@@ -201,6 +201,10 @@ def start_report_loops():
 
 
 def check_block_health():
+    from core.failure_logger import log_failure
+    from tp_logger import TP_LOG_FILE
+    from utils_core import load_json_file
+
     try:
         all_symbols = fetch_all_symbols()
         if not all_symbols:
@@ -211,15 +215,43 @@ def check_block_health():
         ratio = len(high_risk) / len(all_symbols)
         log(f"[HealthCheck] High risk: {len(high_risk)}/{len(all_symbols)} ({ratio:.1%})", level="INFO")
 
+        # 🔄 Логируем их как провальные — для накопления статистики
+        for sym in high_risk:
+            log_failure(sym, ["high_risk_auto"])
+
         if ratio > 0.3:
             apply_failure_decay(accelerated=True)
             log("Accelerated decay triggered", level="WARNING")
+
+            # 🟠 При >50% — Telegram alert + PnL
             if ratio > 0.5:
                 examples = high_risk[:5]
-                send_telegram_message(
-                    f"🚨 High risk level: {len(high_risk)}/{len(all_symbols)} ({ratio:.1%})\n" f"Applying accelerated recovery\n" f"Examples: {', '.join(examples)}",
-                    force=True,
-                )
+
+                # 📊 Считаем последние 20 сделок и средний PnL
+                try:
+                    df = load_json_file(TP_LOG_FILE, fallback=[])
+                    if isinstance(df, list):
+                        import pandas as pd
+
+                        df = pd.DataFrame(df)
+                    if not df.empty:
+                        df_recent = df.tail(20)
+                        pnl_avg = round(df_recent["PnL (%)"].mean(), 2)
+                        trades_count = len(df_recent)
+                    else:
+                        pnl_avg = None
+                        trades_count = 0
+                except Exception as e:
+                    pnl_avg = None
+                    trades_count = 0
+                    log(f"[HealthCheck] Error reading TP log: {e}", level="WARNING")
+
+                msg = f"🚨 High risk level: {len(high_risk)}/{len(all_symbols)} ({ratio:.1%})\n" f"Accelerated recovery triggered\n" f"Examples: {', '.join(examples)}"
+                if pnl_avg is not None:
+                    msg += f"\n📉 Avg PnL (last {trades_count}): {pnl_avg:.2f}%"
+
+                send_telegram_message(msg, force=True)
+
     except Exception as e:
         log(f"[HealthCheck] Error: {e}", level="ERROR")
 

@@ -16,13 +16,10 @@ OUTPUT_FILE = "data/debug_monitoring_summary.json"
 SYMBOLS_FILE = "data/valid_usdc_symbols.json"
 TUNING_LOG_FILE = "data/filter_tuning_log.json"
 
-MIN_ATR_PCT = 0.003
-MIN_VOLUME = 1000
-MIN_RSI = 30
-MAX_RSI = 70
-
 
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
+    from utils_core import get_runtime_config
+
     try:
         raw = fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         if not raw or len(raw) < 2:
@@ -32,16 +29,23 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         df = add_indicators(df)
         latest = df.iloc[-1]
 
+        # Загружаем значения из runtime_config
+        config = get_runtime_config()
+        min_atr_pct = config.get("atr_threshold_percent", 0.001)
+        min_volume = config.get("volume_threshold_usdc", 500)
+        min_rsi = config.get("min_rsi", 25)
+        max_rsi = config.get("max_rsi", 75)
+
         atr_percent = latest.get("atr_percent", 0)
         volume = latest.get("volume", 0)
         rsi = latest.get("rsi", 50)
 
         reasons = []
-        if atr_percent < MIN_ATR_PCT:
+        if atr_percent < min_atr_pct:
             reasons.append("low_atr")
-        if volume < MIN_VOLUME:
+        if volume < min_volume:
             reasons.append("low_volume")
-        if not (MIN_RSI <= rsi <= MAX_RSI):
+        if not (min_rsi <= rsi <= max_rsi):
             reasons.append("rsi_out_of_range")
 
         breakdown = get_signal_breakdown(df)
@@ -54,7 +58,6 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         risk_amount = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
 
         qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
-
         notional = round(qty * entry_price, 2) if qty else 0.0
 
         result = {
