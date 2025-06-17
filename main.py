@@ -19,7 +19,6 @@ from common.config_loader import (
     USE_TESTNET,
     set_bot_status,
 )
-from core.exchange_init import exchange
 from core.fail_stats_tracker import (
     apply_failure_decay,
     get_symbol_risk_factor,
@@ -110,7 +109,7 @@ def get_trading_signal(symbol):
     symbol = normalize_symbol(symbol)
 
     try:
-        buy_signal, buy_failures = should_enter_trade(symbol, exchange, last_trade_times, last_trade_times_lock)
+        buy_signal, buy_failures = should_enter_trade(symbol, last_trade_times, last_trade_times_lock)
 
         if buy_signal is None:
             log(f"[Signal] ❌ No signal for {symbol} | Reasons: {buy_failures}", level="DEBUG")
@@ -259,9 +258,9 @@ def check_block_health():
 def start_trading_loop():
     from core.binance_api import get_open_positions
     from core.engine_controller import run_trading_cycle
+    from core.exchange_init import exchange
 
     # === Force loading market info (for minNotional etc.)
-    from core.exchange_init import exchange
     from utils_core import get_runtime_config
 
     exchange.load_markets()

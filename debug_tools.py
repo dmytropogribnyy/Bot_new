@@ -3,10 +3,6 @@ import os
 from collections import Counter
 from datetime import datetime
 
-import pandas as pd
-
-from core.binance_api import fetch_ohlcv
-from core.signal_utils import add_indicators
 from utils_core import extract_symbol
 from utils_logging import log
 
@@ -16,8 +12,11 @@ TUNING_LOG_FILE = "data/filter_tuning_log.json"
 
 
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
+    import pandas as pd
+
+    from core.binance_api import fetch_ohlcv
     from core.fail_stats_tracker import get_symbol_risk_factor
-    from core.signal_utils import get_signal_breakdown, passes_1plus1
+    from core.signal_utils import add_indicators, get_signal_breakdown, passes_1plus1
     from core.trade_engine import calculate_position_size, calculate_risk_amount
     from utils_core import get_cached_balance, get_runtime_config
     from utils_logging import log
@@ -30,21 +29,10 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df = add_indicators(df)
 
-        # Защита от невалидных DataFrame
         if df is None or not isinstance(df, pd.DataFrame) or df.empty or "close" not in df.columns:
             raise ValueError(f"[scan_symbol] Invalid df after add_indicators → type={type(df)}, columns={getattr(df, 'columns', [])}")
 
-        log(f"[DEBUG] df type = {type(df)}", level="DEBUG")
-        log(f"[DEBUG] df.columns = {df.columns}", level="DEBUG")
-        log(f"[DEBUG] df.head(1) = {df.head(1).to_dict(orient='records')}", level="DEBUG")
-
-        # Безопасное извлечение последней строки
-        row = df.tail(1)
-        if not isinstance(row, pd.DataFrame) or row.empty:
-            raise ValueError("[scan_symbol] df.tail(1) invalid")
-
-        latest = pd.Series(row.values[0], index=row.columns)
-        log(f"[DEBUG] latest = {latest.to_dict()}", level="DEBUG")
+        latest = df.iloc[-1]
 
         config = get_runtime_config()
         min_atr_pct = config.get("atr_threshold_percent", 0.001)
@@ -64,11 +52,8 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         if not (min_rsi <= rsi <= max_rsi):
             reasons.append("rsi_out_of_range")
 
-        log("[DEBUG] STEP: after filters", level="DEBUG")
-
-        breakdown = get_signal_breakdown(df)
-        log("[DEBUG] STEP: after get_signal_breakdown", level="DEBUG")
-
+        # ✅ корректная распаковка сигнала
+        _, breakdown = get_signal_breakdown(df)
         passes_combo = passes_1plus1(breakdown) if breakdown else False
         r_factor, _ = get_symbol_risk_factor(symbol)
 
@@ -77,17 +62,12 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         balance = get_cached_balance()
 
         risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
+        qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
 
-        try:
-            qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
-            if isinstance(qty, tuple):
-                log(f"[CRITICAL] qty returned as tuple → {qty} → using first element", level="ERROR")
-                qty = qty[0]
-        except Exception as e:
-            log(f"[CRITICAL] calculate_position_size failed for {symbol}: {e}", level="ERROR")
-            return {"status": "error", "error": str(e)}
+        if not isinstance(qty, (float, int)) or qty <= 0:
+            raise ValueError(f"Invalid qty: {qty}")
 
-        notional = round(qty * entry_price, 2) if qty else 0.0
+        notional = round(qty * entry_price, 2)
 
         result = {
             "symbol": symbol,
@@ -99,6 +79,7 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
             "entry_notional": notional,
             "filtered": bool(reasons),
             "reasons": reasons,
+            "status": "ok",
         }
 
         log(f"[debug_monitor] Scanned {symbol} result: {result}", level="DEBUG")
@@ -130,11 +111,18 @@ def run_monitor():
 
         print(f"[{i}/{total}] Scanning {symbol} ...", end=" ")
         result = scan_symbol(symbol)
+
+        # === Защита от некорректных форматов ===
+        if not isinstance(result, dict):
+            log(f"[debug_monitor] ❌ Invalid result format for {symbol}: {type(result)} → {result}", level="ERROR")
+            result = {"status": "error", "error": "Invalid return from scan_symbol"}
+
         summary[symbol] = result
 
-        if result.get("status") == "no_data":
+        status = result.get("status")
+        if status == "no_data":
             print("⚠️ no data")
-        elif result.get("status") == "error":
+        elif status == "error":
             print("❌ error")
         elif result.get("filtered"):
             reasons = result.get("reasons", [])

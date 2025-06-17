@@ -29,7 +29,8 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
         TP2_SHARE,
     )
 
-    # === Fallback значения
+    direction = direction.upper()  # ✅ normalize once here
+
     tp1_pct = tp1_pct or TP1_PERCENT
     tp2_pct = tp2_pct or TP2_PERCENT
     sl_pct = sl_pct or SL_PERCENT
@@ -37,24 +38,18 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
     share_tp1 = TP1_SHARE
     share_tp2 = TP2_SHARE
 
-    # === Попытка адаптации через ATR
     try:
         if df is not None and "atr" in df.columns and not df["atr"].isna().all():
             atr_value = df["atr"].iloc[-1]
             if np.isnan(atr_value) or atr_value <= 0:
                 raise ValueError("Invalid ATR")
 
-            # Flat рынок → TP ниже, SL шире
             if regime == "flat":
                 tp1_pct = atr_value * 1.0 / entry_price
                 sl_pct = atr_value * 1.5 / entry_price
-
-            # Trend рынок → TP шире, SL уже
             elif regime == "trend":
                 tp1_pct = atr_value * 1.7 / entry_price
                 sl_pct = atr_value * 1.2 / entry_price
-
-            # Breakout или neutral → более агрессивные TP
             else:
                 tp1_pct = atr_value * 2.0 / entry_price
                 sl_pct = atr_value * 1.5 / entry_price
@@ -62,9 +57,7 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
             tp2_pct = tp1_pct * 2
     except Exception as e:
         log(f"[TP] ATR fallback used due to error: {e}", level="WARNING")
-        # Используем фиксированные значения
 
-    # === Направление: BUY / SELL
     if direction == "BUY":
         tp1_price = entry_price * (1 + tp1_pct)
         tp2_price = entry_price * (1 + tp2_pct)
@@ -77,7 +70,6 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
         log(f"[TP] Invalid direction: {direction}", level="ERROR")
         return None, None, None, None, None
 
-    # === Проверка на валидность
     if any(np.isnan(x) or x <= 0 for x in [tp1_price, tp2_price, sl_price]):
         log(f"[TP] Invalid TP/SL values => tp1={tp1_price}, tp2={tp2_price}, sl={sl_price}", level="ERROR")
         return None, None, None, None, None
@@ -215,8 +207,10 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price):
     Устанавливает TP и SL ордера после входа:
     - TP уровни берутся из step_tp_levels и step_tp_sizes
     - SL = STOP_MARKET с SL_PERCENT
+    Сохраняет уровни SL и TP в trade_manager для последующего контроля.
     """
     from core.exchange_init import exchange
+    from core.trade_engine import trade_manager
     from utils_core import get_runtime_config
     from utils_logging import log
 
@@ -226,24 +220,24 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price):
     step_tp_sizes = config.get("step_tp_sizes", [0.3, 0.3, 0.3])
     sl_pct = config.get("SL_PERCENT", 0.012)
 
-    if not step_tp_levels or not step_tp_sizes or len(step_tp_levels) != len(step_tp_sizes):
-        log(f"[TP/SL] Invalid TP config: levels={step_tp_levels}, sizes={step_tp_sizes}", level="ERROR")
-        return
-
-    side_close = "sell" if side.lower() == "buy" else "buy"
+    side = side.lower()  # ✅ нормализуем один раз
+    side_close = "sell" if side == "buy" else "buy"
 
     try:
         open_orders = exchange.fetch_open_orders(api_symbol)
         reduce_orders = [o for o in open_orders if o.get("reduceOnly")]
         if reduce_orders:
             log(f"[TP/SL] {api_symbol}: reduceOnly orders already exist ({len(reduce_orders)}) — skipping setup", level="WARNING")
-            return
+            return False
 
-        # === TP ордера
+        tp_prices_set = []
+        total_tp_qty = 0
+
+        # === TP ордера ===
         for i, (tp_pct, tp_share) in enumerate(zip(step_tp_levels, step_tp_sizes)):
             if tp_share <= 0:
                 continue
-            tp_price = entry_price * (1 + tp_pct) if side.lower() == "buy" else entry_price * (1 - tp_pct)
+            tp_price = entry_price * (1 + tp_pct) if side == "buy" else entry_price * (1 - tp_pct)
             tp_price = round(tp_price, 6)
             tp_qty = round(qty * tp_share, 6)
             if tp_qty <= 0:
@@ -254,14 +248,23 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price):
                     side_close,
                     tp_qty,
                     tp_price,
-                    {"reduceOnly": True, "postOnly": True, "timeInForce": "GTC"},
+                    {
+                        "reduceOnly": True,
+                        "postOnly": True,
+                        "timeInForce": "GTC",
+                    },
                 )
                 log(f"[TP] {api_symbol}: TP{i+1} placed at {tp_price:.6f} for {tp_qty}", level="INFO")
+                tp_prices_set.append(tp_price)
+                total_tp_qty += tp_qty
             except Exception as e:
                 log(f"[TP] Failed to place TP{i+1} for {api_symbol}: {e}", level="ERROR")
 
-        # === SL
-        sl_price = entry_price * (1 - sl_pct) if side.lower() == "buy" else entry_price * (1 + sl_pct)
+        if total_tp_qty == 0:
+            log(f"[TP/SL] ⚠️ No TP orders were placed for {api_symbol}", level="WARNING")
+
+        # === SL ордер ===
+        sl_price = entry_price * (1 - sl_pct) if side == "buy" else entry_price * (1 + sl_pct)
         sl_price = round(sl_price, 6)
 
         try:
@@ -278,6 +281,14 @@ def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price):
             log(f"[SL] {api_symbol}: SL placed at {sl_price:.6f} for {qty}", level="INFO")
         except Exception as e:
             log(f"[SL] Failed to place SL for {api_symbol}: {e}", level="ERROR")
+            return False
+
+        # === Сохраняем TP/SL уровни в trade_manager ===
+        trade_manager.update_trade(api_symbol, "sl_price", sl_price)
+        trade_manager.update_trade(api_symbol, "tp_prices", tp_prices_set)
+
+        return True
 
     except Exception as e:
         log(f"[TP/SL] General error placing TP/SL for {api_symbol}: {e}", level="ERROR")
+        return False

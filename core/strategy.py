@@ -227,6 +227,11 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         return None, failure_reasons
 
     direction, breakdown = get_signal_breakdown(df)
+
+    # 💬 DEBUG LOG
+    log(f"[SignalCheck] Breakdown for {symbol}: {breakdown}", level="DEBUG")
+    log(f"[SignalCheck] Direction={direction}", level="DEBUG")
+
     if not direction or not breakdown:
         failure_reasons.append("no_direction")
         log_missed_signal(symbol, {}, reason="no_direction")
@@ -341,14 +346,19 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     except Exception as e:
         log(f"[WARN] Failed to log_entry for {symbol}: {e}", level="WARNING")
 
-    if direction not in ("buy", "sell") or not qty or qty <= 0:
-        failure_reasons.append("invalid_signal_structure")
-        log_missed_signal(symbol, breakdown, reason="invalid_signal_structure")
+    # ✅ Проверка структуры выхода
+    try:
+        assert direction in ("buy", "sell")
+        assert isinstance(qty, (float, int)) and qty > 0
+        assert isinstance(breakdown, dict)
+    except Exception as e:
+        failure_reasons.append("invalid_return_structure")
+        log(f"[SignalCheck] ❌ {symbol} → return structure invalid: {e}", level="ERROR")
+        log_missed_signal(symbol, breakdown, reason="invalid_return_structure")
         return None, failure_reasons
 
-    if failure_reasons:
-        log(f"[SignalCheck] ❌ Rejected {symbol} | reasons: {failure_reasons}", level="DEBUG")
-
+    # ✅ Явный лог успешного прохода
+    log(f"[SignalCheck] ✅ Passed {symbol} | direction={direction} qty={qty:.4f}", level="INFO")
     return (direction, qty, is_reentry, breakdown), []
 
 

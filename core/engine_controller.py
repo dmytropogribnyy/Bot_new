@@ -89,7 +89,7 @@ def run_trading_cycle(symbols, stop_event):
 
         if stop_event and stop_event.is_set():
             log(f"[Trading Cycle] Stop signal set — skipping {symbol}.", level="DEBUG")
-            continue  # 🔄 вместо break
+            continue
 
         positions = get_cached_positions()
         current_active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
@@ -118,7 +118,7 @@ def run_trading_cycle(symbols, stop_event):
 
             if is_hourly_limit_reached():
                 log(f"[engine_controller] Max hourly trade limit — skip {symbol}", level="INFO")
-                continue  # 🔄 вместо break
+                continue
 
             # === Основная логика входа
             entry_attempts += 1
@@ -133,11 +133,12 @@ def run_trading_cycle(symbols, stop_event):
                 notify_dry_trade(trade_data)
                 log_entry(trade_data, status="SUCCESS")
 
+            # 🔧 Фикс: передаём все аргументы по именам
             enter_trade(
-                trade_data["symbol"],
-                trade_data["direction"],
-                trade_data["qty"],
+                symbol=trade_data["symbol"],
+                side=trade_data["direction"],
                 is_reentry=is_reentry,
+                breakdown=trade_data.get("breakdown"),
                 pair_type=trade_data.get("pair_type", "unknown"),
             )
 
@@ -150,6 +151,6 @@ def run_trading_cycle(symbols, stop_event):
             tb = traceback.format_exc(limit=1)
             notify_error(f"🔥 Error during {symbol}: {e}")
             log(f"[engine_controller] Error in trading cycle for {symbol}: {e}\n{tb}", level="ERROR")
-            continue  # 🔄 добавлено: чтобы не убивать цикл на ошибке
+            continue
 
     log(f"[Entry Stats] Attempted={entry_attempts}, Valid={entry_successes}, Symbols={len(symbols)}", level="INFO")

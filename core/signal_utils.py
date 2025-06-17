@@ -38,7 +38,15 @@ def detect_volume_spike(df, lookback=5, threshold=1.5):
 
 
 def get_signal_breakdown(df):
+    """
+    Анализирует последние данные и возвращает направление ("buy"/"sell") и структуру сигнала.
+    Добавлены DEBUG-логи + fallback-направление при сильных сигналах.
+    """
+    from utils_core import get_runtime_config
+    from utils_logging import log
+
     if len(df) < 2:
+        log("[SignalBreakdown] ❌ Not enough data for signal evaluation", level="WARNING")
         return None, {}
 
     latest = df.iloc[-1]
@@ -49,6 +57,7 @@ def get_signal_breakdown(df):
     macd_val = latest.get("macd_5m", 0)
     macd_sig = latest.get("macd_signal_5m", 0)
     macd_signal = 1 if macd_val > macd_sig else 0
+    macd_strength = abs(macd_val - macd_sig)
 
     # EMA Cross
     ema_cross_flag = 1 if latest.get("ema_cross", False) else 0
@@ -56,17 +65,16 @@ def get_signal_breakdown(df):
     # RSI
     rsi_val = latest.get("rsi_15m", 0)
     rsi_signal = 1 if rsi_val > rsi_threshold else 0
+    rsi_strength = abs(rsi_val - 50)
 
     # Volume Spike
     vol_signal = 1 if latest.get("volume_spike", False) else 0
 
-    # PriceAction
+    # Price Action
     pa_signal = 1 if latest.get("price_action", False) else 0
 
     # HTF Trend
-    htf_signal = 0
-    if "htf_trend" in df.columns:
-        htf_signal = 1 if bool(latest.get("htf_trend", False)) else 0
+    htf_signal = 1 if latest.get("htf_trend", False) else 0
 
     breakdown = {
         "MACD": macd_signal,
@@ -76,63 +84,97 @@ def get_signal_breakdown(df):
         "PriceAction": pa_signal,
         "HTF": htf_signal,
         "strong_signal": ema_cross_flag and rsi_signal and vol_signal,
+        "macd_strength": round(macd_strength, 4),
+        "rsi_strength": round(rsi_strength, 2),
     }
 
-    # === Определение направления
+    # === Направление
     direction = None
+
+    # 1️⃣ Строгая логика
     if macd_val > macd_sig and ema_cross_flag:
         direction = "buy"
     elif macd_val < macd_sig and not ema_cross_flag:
         direction = "sell"
+    else:
+        # 2️⃣ Fallback: MACD override
+        macd_override = cfg.get("macd_strength_override", 2.5)
+        if macd_val > macd_sig and macd_strength >= macd_override:
+            direction = "buy"
+        elif macd_val < macd_sig and macd_strength >= macd_override:
+            direction = "sell"
+        else:
+            # 3️⃣ Fallback: RSI экстремум
+            if rsi_val > 60:
+                direction = "buy"
+            elif rsi_val < 40:
+                direction = "sell"
+
+    log(
+        f"[SignalBreakdown] dir={direction} | "
+        f"macd=({macd_val:.4f} vs {macd_sig:.4f}) | "
+        f"ema_cross={ema_cross_flag} | "
+        f"rsi={rsi_val:.2f} vs thresh={rsi_threshold} → rsi_sig={rsi_signal} | "
+        f"vol_spike={vol_signal} | PA={pa_signal} | HTF={htf_signal}",
+        level="DEBUG",
+    )
+    log(f"[SignalStrength] MACD Δ={macd_strength:.4f} | RSI Δ={rsi_strength:.2f}", level="DEBUG")
+    log(f"[SignalBreakdown] breakdown={breakdown}", level="DEBUG")
 
     return direction, breakdown
 
 
 def passes_1plus1(breakdown):
     """
-    Адаптивная проверка сигнала по модели 1+1:
-    - PRIMARY: MACD, EMA_CROSS, RSI
-    - SECONDARY: Volume, PriceAction, HTF
-
-    Условия (по runtime_config):
-    - soft_mode = True: (PRIMARY ≥ X and SECONDARY ≥ Y) or (PRIMARY ≥ 1)
-    - soft_mode = False: строго PRIMARY ≥ X and SECONDARY ≥ Y
-    - автоматическое усиление, если все компоненты 0
+    Адаптивная проверка сигнала по модели 1+1 + безопасный override по сильному компоненту.
     """
     config = get_runtime_config()
     soft_mode = config.get("enable_passes_1plus1_soft", True)
     min_primary = config.get("min_primary_score", 1)
-    min_secondary = config.get("min_secondary_score", 1)
+    min_secondary = config.get("min_secondary_score", 0)
 
-    # PRIMARY компоненты: индикаторы направления
+    enable_strong_override = config.get("enable_strong_signal_override", True)
+    macd_override = config.get("macd_strength_override", 2.5)
+    rsi_override = config.get("rsi_strength_override", 25)
+
     primary_components = {
-        "MACD": breakdown.get("MACD", 0),
-        "EMA_CROSS": breakdown.get("EMA_CROSS", 0),
-        "RSI": breakdown.get("RSI", 0),
+        "MACD": int(breakdown.get("MACD", 0) or 0),
+        "EMA_CROSS": int(breakdown.get("EMA_CROSS", 0) or 0),
+        "RSI": int(breakdown.get("RSI", 0) or 0),
     }
     primary_sum = sum(primary_components.values())
 
-    # SECONDARY компоненты: подтверждающие сигналы
     secondary_components = {
-        "Volume": breakdown.get("Volume", 0),
-        "PriceAction": breakdown.get("PriceAction", 0),
-        "HTF": breakdown.get("HTF", 0),
+        "Volume": int(breakdown.get("Volume", 0) or 0),
+        "PriceAction": int(breakdown.get("PriceAction", 0) or 0),
+        "HTF": int(breakdown.get("HTF", 0) or 0),
     }
     secondary_sum = sum(secondary_components.values())
 
-    # Дополнительная гибкость: если всё = 0, считаем сразу фейл
+    macd_strength = breakdown.get("macd_strength", 0)
+    rsi_strength = breakdown.get("rsi_strength", 0)
+
     if primary_sum == 0 and secondary_sum == 0:
         log("[1plus1] ❌ All components zero for signal → reject", level="DEBUG")
         return False
 
-    # Гибкая логика прохода
     if soft_mode:
         result = (primary_sum >= min_primary and secondary_sum >= min_secondary) or (primary_sum >= 1)
     else:
         result = primary_sum >= min_primary and secondary_sum >= min_secondary
 
+    # ✅ Override fallback — если обычная логика НЕ прошла
+    if not result and enable_strong_override:
+        if macd_strength >= macd_override or rsi_strength >= rsi_override:
+            log(f"[1plus1] 🚨 Strong signal override: macd_strength={macd_strength:.2f}, " f"rsi_strength={rsi_strength:.2f} → ✅ OVERRIDE PASS", level="DEBUG")
+            return True
+        else:
+            log(f"[1plus1] ⛔ Override check failed: macd={macd_strength:.2f}, rsi={rsi_strength:.2f} " f"(thresholds: {macd_override}/{rsi_override})", level="DEBUG")
+
     log(
-        f"[1plus1] ➕ PRIMARY: {primary_components} = {primary_sum} | " f"🔧 SECONDARY: {secondary_components} = {secondary_sum} | " f"✅ RESULT: {result}",
+        f"[1plus1] ➕ PRIMARY: {primary_components} = {primary_sum} | "
+        f"🔧 SECONDARY: {secondary_components} = {secondary_sum} | "
+        f"🧠 Mode={'SOFT' if soft_mode else 'STRICT'} | ✅ RESULT: {result}",
         level="DEBUG",
     )
 

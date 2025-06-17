@@ -50,8 +50,9 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             return None
 
         direction, qty, is_reentry, breakdown = result
-        if direction not in ("BUY", "SELL") or not qty:
-            log(f"❌ No valid signal for {symbol} (direction={direction}, qty={qty})", level="DEBUG")
+        direction = direction.upper()
+        if direction not in ("BUY", "SELL") or not isinstance(qty, (float, int)) or qty <= 0:
+            log(f"❌ Invalid signal for {symbol} (direction={direction}, qty={qty})", level="WARNING")
             return None
 
         df = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=2)

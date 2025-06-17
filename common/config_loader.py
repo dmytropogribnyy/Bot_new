@@ -38,9 +38,8 @@ RUNNING = True
 
 # ========== Telegram Settings ==========
 TELEGRAM_TOKEN = get_config("TELEGRAM_TOKEN", "")
-if TELEGRAM_TOKEN:
-    TELEGRAM_TOKEN = TELEGRAM_TOKEN.replace("\\x3a", ":")
 TELEGRAM_CHAT_ID = get_config("TELEGRAM_CHAT_ID")
+
 
 print(f"Loaded TELEGRAM_TOKEN: {TELEGRAM_TOKEN if TELEGRAM_TOKEN else 'Not set'}")
 print(f"Loaded TELEGRAM_CHAT_ID: {TELEGRAM_CHAT_ID if TELEGRAM_CHAT_ID else 'Not set'}")

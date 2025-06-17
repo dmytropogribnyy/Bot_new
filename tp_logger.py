@@ -4,8 +4,7 @@ from threading import Lock
 
 import pandas as pd
 
-from common.config_loader import DRY_RUN, EXPORT_PATH, TP_LOG_FILE
-from utils_core import extract_symbol
+from common.config_loader import EXPORT_PATH
 from utils_logging import log
 
 # ===========================
@@ -77,33 +76,40 @@ def log_trade_result(
     Низкоуровневая запись сделки в tp_performance.csv.
     Пишет расширенные поля и обновляет статистику дня.
     """
+    import csv
+    import math
+    import os
+
+    from core.trade_engine import DRY_RUN, logged_trades, logged_trades_lock
+    from stats import EXPORT_PATH, TP_LOG_FILE, daily_stats_lock, daily_trade_stats, now_with_timezone
+    from utils_core import extract_symbol
+    from utils_logging import log
+
     symbol = extract_symbol(symbol)
 
     if DRY_RUN:
-        return
+        return False
 
     try:
-        import math
-
-        from stats import now_with_timezone
-
         timestamp = now_with_timezone()
         date_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
         final_result = result_type.upper() if result_type else "MANUAL"
+        exit_reason = exit_reason or "unknown"
 
-        # Уникальный ключ для исключения дубликатов
         trade_key = f"{symbol}_{entry_price}_{exit_price}_{qty}"
         with logged_trades_lock:
             if trade_key in logged_trades:
                 log(f"[TP Logger] Duplicate trade, skipping: {trade_key}", level="DEBUG")
-                return
+                return False
             logged_trades.add(trade_key)
 
-        # Чистим NaN (на всякий случай)
+        # Чистим NaN
         if math.isnan(net_pnl):
             net_pnl = 0.0
         if math.isnan(absolute_profit):
             absolute_profit = 0.0
+
+        pnl_usd = round(absolute_profit, 2)
 
         row = [
             date_str,
@@ -120,10 +126,10 @@ def log_trade_result(
             duration_minutes,
             round(commission, 4),
             round(net_pnl, 2),
-            round(absolute_profit, 2),
+            pnl_usd,
             pair_type,
             round(atr, 5),
-            exit_reason or "",
+            exit_reason,
         ]
 
         header = [
@@ -157,9 +163,7 @@ def log_trade_result(
                 writer.writerow(row)
 
         log(
-            f"[REAL_RUN] {symbol} {final_result}: PnL={pnl_percent:.2f}%, "
-            f"Net={net_pnl:.2f}%, Abs={absolute_profit:.2f}, ATR={atr:.3f}, "
-            f"Type={pair_type}, Reason={exit_reason or 'None'}",
+            f"[REAL_RUN] {symbol} {final_result}: PnL={pnl_percent:.2f}%, " f"Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, ATR={atr:.3f}, " f"Type={pair_type}, Reason={exit_reason}",
             level="INFO",
         )
 
@@ -173,8 +177,11 @@ def log_trade_result(
             else:
                 daily_trade_stats["loss"] += 1
 
+        return True
+
     except Exception as e:
         log(f"[TP Logger] Error writing trade for {symbol}: {e}", level="ERROR")
+        return False
 
 
 def get_last_trade():

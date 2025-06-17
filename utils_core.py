@@ -212,7 +212,12 @@ def get_runtime_config() -> dict:
     if RUNTIME_CONFIG_FILE.exists():
         try:
             with open(RUNTIME_CONFIG_FILE, "r") as f:
-                return json.load(f)
+                config = json.load(f)
+
+            if not isinstance(config, dict):
+                raise TypeError(f"runtime_config is not a dict → {type(config)}")
+
+            return config
         except Exception as e:
             log(f"⚠️ Failed to load runtime_config.json: {e}", level="ERROR")
     return {}
