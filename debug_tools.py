@@ -6,10 +6,8 @@ from datetime import datetime
 import pandas as pd
 
 from core.binance_api import fetch_ohlcv
-from core.fail_stats_tracker import get_symbol_risk_factor
-from core.signal_utils import add_indicators, get_signal_breakdown, passes_1plus1
-from core.trade_engine import calculate_position_size, calculate_risk_amount
-from utils_core import extract_symbol, get_cached_balance
+from core.signal_utils import add_indicators
+from utils_core import extract_symbol
 from utils_logging import log
 
 OUTPUT_FILE = "data/debug_monitoring_summary.json"
@@ -18,7 +16,11 @@ TUNING_LOG_FILE = "data/filter_tuning_log.json"
 
 
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
-    from utils_core import get_runtime_config
+    from core.fail_stats_tracker import get_symbol_risk_factor
+    from core.signal_utils import get_signal_breakdown, passes_1plus1
+    from core.trade_engine import calculate_position_size, calculate_risk_amount
+    from utils_core import get_cached_balance, get_runtime_config
+    from utils_logging import log
 
     try:
         raw = fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -27,9 +29,23 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
 
         df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df = add_indicators(df)
-        latest = df.iloc[-1]
 
-        # Загружаем значения из runtime_config
+        # Защита от невалидных DataFrame
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty or "close" not in df.columns:
+            raise ValueError(f"[scan_symbol] Invalid df after add_indicators → type={type(df)}, columns={getattr(df, 'columns', [])}")
+
+        log(f"[DEBUG] df type = {type(df)}", level="DEBUG")
+        log(f"[DEBUG] df.columns = {df.columns}", level="DEBUG")
+        log(f"[DEBUG] df.head(1) = {df.head(1).to_dict(orient='records')}", level="DEBUG")
+
+        # Безопасное извлечение последней строки
+        row = df.tail(1)
+        if not isinstance(row, pd.DataFrame) or row.empty:
+            raise ValueError("[scan_symbol] df.tail(1) invalid")
+
+        latest = pd.Series(row.values[0], index=row.columns)
+        log(f"[DEBUG] latest = {latest.to_dict()}", level="DEBUG")
+
         config = get_runtime_config()
         min_atr_pct = config.get("atr_threshold_percent", 0.001)
         min_volume = config.get("volume_threshold_usdc", 500)
@@ -48,16 +64,29 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         if not (min_rsi <= rsi <= max_rsi):
             reasons.append("rsi_out_of_range")
 
+        log("[DEBUG] STEP: after filters", level="DEBUG")
+
         breakdown = get_signal_breakdown(df)
+        log("[DEBUG] STEP: after get_signal_breakdown", level="DEBUG")
+
         passes_combo = passes_1plus1(breakdown) if breakdown else False
         r_factor, _ = get_symbol_risk_factor(symbol)
 
         entry_price = latest.get("close", 0)
         stop_price = entry_price * 0.99
         balance = get_cached_balance()
-        risk_amount = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
 
-        qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
+        risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
+
+        try:
+            qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
+            if isinstance(qty, tuple):
+                log(f"[CRITICAL] qty returned as tuple → {qty} → using first element", level="ERROR")
+                qty = qty[0]
+        except Exception as e:
+            log(f"[CRITICAL] calculate_position_size failed for {symbol}: {e}", level="ERROR")
+            return {"status": "error", "error": str(e)}
+
         notional = round(qty * entry_price, 2) if qty else 0.0
 
         result = {

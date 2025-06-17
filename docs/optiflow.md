@@ -107,4 +107,97 @@ max_trades_per_hour = 6
 
 ✅ Когда всё отлажено — масштабируй спокойно до 6–9 процессов.
 
-Хочешь — могу подготовить `runtime_config_optiscalpA.json` и шаблон папки под 3 бота.
+## Хочешь — могу подготовить `runtime_config_optiscalpA.json` и шаблон папки под 3 бота.
+
+---
+
+## 🔜 Следующий шаг — Параллельный запуск через ENV
+
+-   Добавить поддержку `--config` и `--data-dir` в `main.py`
+-   Создать следующие конфиги:
+    -   `runtime_config_optiscalpA.json`
+    -   `runtime_config_optiscalpB.json`
+    -   `runtime_config_optiscalpC.json`
+-   Создать скрипт `bot_launcher.sh` или использовать `pm2` / `tmux`
+-   Убедиться, что каждая сессия имеет свой `data/`, `log/`, `config/`
+
+📦 Пример запуска:
+
+```bash
+python main.py --config=configs/optiscalpA.json --data-dir=data/scalp_A/
+python main.py --config=configs/optiscalpB.json --data-dir=data/scalp_B/
+```
+
+Details:
+🔁 Ближайшие шаги (по документации и прогрессу):
+
+1. Подготовить runtime_config_optiscalpA.json
+   json
+   Copy
+   Edit
+   {
+   "max_concurrent_positions": 2,
+   "base_risk_pct": 0.008,
+   "risk_multiplier": 1.0,
+   "SL_PERCENT": 0.006,
+   "step_tp_levels": [0.003, 0.006],
+   "step_tp_sizes": [0.4, 0.6],
+   "max_hourly_trade_limit": 6,
+   "cooldown_minutes": 2,
+   "min_profit_threshold": 0.03,
+   "monitoring_hours_utc": [0, 1, 2, 3, 4, 5]
+   }
+2. Добавить аргументы в main.py:
+   python
+   Copy
+   Edit
+   import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", help="Path to runtime_config.json")
+parser.add_argument("--data-dir", help="Path to data directory")
+args = parser.parse_args()
+
+if args.config:
+os.environ["RUNTIME_CONFIG_PATH"] = args.config
+if args.data_dir:
+os.environ["DATA_DIR"] = args.data_dir
+🔧 Это даст тебе гибкость запускать 3–9 ботов так:
+
+bash
+Copy
+Edit
+python main.py --config=configs/scalp_a.json --data-dir=data/scalp_a/
+python main.py --config=configs/scalp_b.json --data-dir=data/scalp_b/ 3. Создать скрипт запуска bot_launcher.sh (если на Linux/pm2):
+bash
+Copy
+Edit
+#!/bin/bash
+python3 main.py --config=configs/optiscalpA.json --data-dir=data/optiscalpA &
+python3 main.py --config=configs/optiscalpB.json --data-dir=data/optiscalpB &
+python3 main.py --config=configs/optiscalpC.json --data-dir=data/optiscalpC &
+📦 Готов подготовить:
+runtime_config_optiscalpA.json
+
+runtime_config_optiscalpB.json
+
+runtime_config_optiscalpC.json
+
+bot_launcher.sh шаблон
+
+Хочешь — создаю сразу и показываю готовые конфиги для запуска параллельных ботов?
+
+You said:
+куда добавить это todo в один из 3 qafqkjf &
+
+ChatGPT said:
+Чтобы грамотно встроить актуальный мультибот TODO (OptiScalp A/B/C + launcher) в текущие документы, вот наилучший вариант:
+
+✅ Добавить в файл: optiflow.md
+📁 Это главный системный план (OptiFlow System — Финальный Детальный План), именно он уже содержит:
+
+✅ этапы OptiScalp A/B/C
+
+✅ цели по доходу
+
+✅ runtime-защиту, Telegram, и т.п.

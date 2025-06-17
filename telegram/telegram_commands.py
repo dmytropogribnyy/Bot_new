@@ -3,6 +3,7 @@ Telegram command handlers for BinanceBot
 All commands use @register_command(...), each with a category.
 """
 
+import json
 import os
 import time
 from threading import Lock, Thread
@@ -656,6 +657,160 @@ def cmd_runtime(message, state=None, stop_event=None):
         msg += "*⛔ Global Pause:* `inactive`\n"
 
     send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
+
+
+@register_command("/growth", category="Статистика")
+@handle_errors
+def cmd_growth(message, state=None, stop_event=None):
+    """
+    📈 Рост капитала: старт → сейчас, ROI, цель
+    """
+    import os
+    from datetime import datetime
+
+    from telegram.telegram_utils import send_telegram_message
+    from utils_core import get_cached_balance
+
+    # Фиксированный путь к файлу сессии
+    session_file = "data/session_growth.json"
+
+    # Текущий баланс
+    balance_now = get_cached_balance()
+
+    # Загружаем/создаём стартовый
+    if os.path.exists(session_file):
+        with open(session_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        balance_start = data.get("start_balance", balance_now)
+        start_time = datetime.fromisoformat(data.get("start_time", datetime.utcnow().isoformat()))
+    else:
+        balance_start = balance_now
+        start_time = datetime.utcnow()
+        with open(session_file, "w", encoding="utf-8") as f:
+            json.dump({"start_balance": balance_start, "start_time": start_time.isoformat()}, f)
+
+    profit = balance_now - balance_start
+    roi = (profit / balance_start) * 100 if balance_start else 0
+    duration = datetime.utcnow() - start_time
+    hours = int(duration.total_seconds() // 3600)
+    days = duration.days
+
+    # Milestone цель
+    next_goal = int((balance_start + 25) // 25) * 25 + 25
+
+    msg = (
+        "*📈 Capital Growth*\n"
+        f"• Start: `{balance_start:.2f}` USDC\n"
+        f"• Now: `{balance_now:.2f}` USDC\n"
+        f"• Net Profit: `{profit:.2f}` USDC\n"
+        f"• ROI: `{roi:.2f}` %\n"
+        f"• Running: `{days}d {hours%24}h`\n"
+        f"• Next Milestone: `{next_goal} USDC`\n"
+    )
+    send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
+
+
+@register_command("/failstats", category="Статистика")
+@handle_errors
+def cmd_failstats(message, state=None, stop_event=None):
+    """
+    📉 Символы с худшей статистикой (risk_factor)
+    """
+    import json
+
+    from core.fail_stats_tracker import get_symbol_risk_factor
+
+    try:
+        path = "data/failure_log.json"
+        if not os.path.exists(path):
+            send_telegram_message("📭 failure_log.json not found.", force=True)
+            return
+
+        with open(path, encoding="utf-8") as f:
+            log_data = json.load(f)
+
+        stats = []
+        for symbol, info in log_data.items():
+            count = info.get("fail_count", 0)
+            r, _ = get_symbol_risk_factor(symbol)
+            stats.append((symbol, count, r))
+
+        top = sorted(stats, key=lambda x: x[2])[:5]  # по наименьшему risk_factor
+        if not top:
+            send_telegram_message("✅ No symbols with low risk factor.", force=True)
+            return
+
+        msg = "*📉 Worst Symbols (by risk factor)*\n"
+        for s, c, r in top:
+            msg += f"• `{s}` → risk: `{r:.2f}`, fails: `{c}`\n"
+
+        send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
+
+    except Exception as e:
+        send_telegram_message(f"❌ /failstats error: {e}", force=True)
+
+
+@register_command("/debugpanel", category="Статистика")
+@handle_errors
+def cmd_debugpanel(message, state=None, stop_event=None):
+    """
+    🧠 Полный статус: баланс, лимиты, риски, паузы, PnL
+    """
+    import datetime
+
+    from core.risk_guard import symbol_last_entry
+    from core.runtime_state import global_trading_pause_until, is_trading_globally_paused, paused_symbols
+    from core.trade_engine import open_positions_count
+    from tp_logger import get_today_pnl_from_csv
+    from utils_core import get_cached_balance, get_runtime_config
+
+    cfg = get_runtime_config()
+    balance = get_cached_balance()
+    now = datetime.datetime.utcnow()
+
+    msg = "*🧠 Debug Panel*\n\n"
+    msg += f"• 💰 Balance: `{balance:.2f}` USDC\n"
+    msg += f"• ⚙️ Max Positions: `{cfg.get('max_concurrent_positions', '?')}`\n"
+    msg += f"• 🎯 Risk Multiplier: `{cfg.get('risk_multiplier', '?')}`\n"
+    msg += f"• 🧮 Hourly Trade Limit: `{cfg.get('max_hourly_trade_limit', '?')}`\n"
+    msg += f"• ⏳ Cooldown: `{cfg.get('cooldown_minutes', '?')} min`\n"
+    msg += f"• 🧩 SL %: `{cfg.get('SL_PERCENT', '?') * 100:.2f}%`\n"
+    msg += f"• 🎯 TP Levels: `{cfg.get('step_tp_levels', [])}`\n"
+    msg += f"• 📈 TP Sizes: `{cfg.get('step_tp_sizes', [])}`\n"
+    msg += f"• 🕒 Max Hold: `{cfg.get('max_hold_minutes', '?')} min`\n"
+    msg += f"• 🛑 Margin Cap: `{cfg.get('max_margin_percent', '?') * 100:.0f}%`\n"
+    msg += f"• 🔄 Active Positions: `{open_positions_count}`\n"
+
+    # Paused symbols
+    paused = []
+    for sym, until in paused_symbols.items():
+        mins = int((until - now).total_seconds() // 60)
+        paused.append(f"{sym} ({mins}m)")
+    msg += f"• ⏸ Paused Symbols: `{', '.join(paused) if paused else 'none'}`\n"
+
+    # Anti-reentry
+    reentry = []
+    for sym, ts in symbol_last_entry.items():
+        age = int((now - ts).total_seconds())
+        if age < 300:
+            reentry.append(f"{sym} ({age}s ago)")
+    msg += f"• 🚫 Anti-Reentry: `{', '.join(reentry) if reentry else 'none'}`\n"
+
+    # Global pause
+    if is_trading_globally_paused():
+        until_str = global_trading_pause_until.strftime("%H:%M:%S") if global_trading_pause_until else "?"
+        msg += f"• ⛔ Global Pause: `until {until_str}`\n"
+    else:
+        msg += "• ⛔ Global Pause: `inactive`\n"
+
+    # Daily PnL
+    try:
+        pnl = get_today_pnl_from_csv()
+        msg += f"• 📉 Daily PnL: `{pnl:.2f}` USDC\n"
+    except Exception as e:
+        msg += f"• 📉 Daily PnL: error ({e})\n"
+
+    send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
 
 
 # === Основной хендлер ===
