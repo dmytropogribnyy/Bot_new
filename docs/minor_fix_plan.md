@@ -1,7 +1,7 @@
 Analysis of Issues and Solutions for BinanceBot Trade Execution
 Overview of Identified Problems
 The BinanceBot’s trade execution and risk management were experiencing several issues leading to unexpected behavior. After analyzing the codebase (core modules and logs), five key problems were confirmed:
-Market orders often returning zero fills: Trades would open but the executed quantity (filled_qty) remained 0.0, especially for market orders.
+Market orders often returning zero fills: Trades would open but the executed quantity (filled*qty) remained 0.0, especially for market orders.
 Frequent “Margin is insufficient” errors: Binance API would reject orders due to insufficient margin, indicating possible miscalculations in position size or capital usage.
 Take-Profit/Stop-Loss orders not being placed correctly: In many cases TP/SL orders were not submitted at all or were calculated with incorrect quantities.
 No enforcement of the max capital utilization limit (50%): The bot could exceed the intended max_capital_utilization_pct of 50% of account balance, risking over-exposure.
@@ -28,7 +28,7 @@ file-am23ugntgoih1y6kdjhqgn
 , preventing ghost positions.
 Issue 2: “Margin is insufficient” Errors
 Cause: This error indicates the bot tried to open a position larger than the available margin. Two factors contribute to this:
-The calculation of position size didn’t fully account for existing positions’ margin usage. The bot’s calculate_position_size function limits each position to a percentage of balance _ leverage (max_margin_percent), but the default is quite high (75%)
+The calculation of position size didn’t fully account for existing positions’ margin usage. The bot’s calculate_position_size function limits each position to a percentage of balance * leverage (max*margin_percent), but the default is quite high (75%)
 file-am23ugntgoih1y6kdjhqgn
 . With multiple trades, this could exceed total margin. For example, one open trade uses ~75% margin; a second trade might still attempt another ~75%, pushing total usage >100%. Binance’s API then rejects the order with insufficient margin.
 The bot’s capital utilization check (check_entry_allowed) was using a higher threshold by default (80% of balance)
@@ -63,7 +63,7 @@ Solution: Fix the inconsistency in share keys and ensure partial TP orders are s
 Pass correct TP share values to the order placement: We will include tp1_share, tp2_share, and tp3_share in the trade_data when creating a trade. For example, set trade_data["tp1_share"] = share1 and tp2_share = share2. The third share can be the remainder (1 – share1 – share2, which is 0 in the default 80/20 case). This way, inside place_take_profit_and_stop_loss_orders, the loop will retrieve the proper share percentages instead of defaulting to 0
 file-fflbkxxsxdumvsclmtdm4m
 .
-Verify TP order sizing logic: With correct shares, the function will calculate qty_i = qty _ share for each TP level. Any level with qty_i above the exchange min will be placed as a limit order at the target price
+Verify TP order sizing logic: With correct shares, the function will calculate qty_i = qty * share for each TP level. Any level with qty_i above the exchange min will be placed as a limit order at the target price
 file-fflbkxxsxdumvsclmtdm4m
 . If a portion is too small (e.g. a very tiny TP2), the code will merge that portion into TP1 as a fallback
 file-fflbkxxsxdumvsclmtdm4m
@@ -165,3 +165,122 @@ TP/SL не ставятся из-за неправильных долей (share
 ✅ runtime_config.json ✔️ max_capital_utilization_pct: 0.5, max_margin_percent: 0.5
 
 Готов сразу сформировать фикс-патч по каждому методу — хочешь начать с calculate_position_size и create_safe_market_order?
+
+## Just fixed
+
+✅ OptiFlow v3.2 – Финальный FixPack (Core Trade Chain & Risk Control)
+⚙️ 1. Risk & Positioning
+🔧 calculate_position_size(...):
+
+Ограничение по max_margin_percent и max_capital_utilization_pct
+
+Поддержка MIN_NOTIONAL_OPEN и fallback qty
+
+Округление через round_step_size(...) по step_size пары
+
+🔧 check_entry_allowed(...):
+
+Проверка: общее количество позиций (max_concurrent_positions)
+
+Проверка: общий capital usage (get_total_position_value() / balance)
+
+Защита от нулевого баланса
+
+Гибкий лимит по входам в час (hourly_limit_check_mode)
+
+💰 2. Entry & TP Logic
+🔧 should_enter_trade(...):
+
+Фильтрация по TP1, SL, min_profit_threshold
+
+TP-доли (tp1_share, tp2_share, tp3_share) добавлены в breakdown
+
+Проверка fallback qty, отбрасывание по маленькому notional
+
+check_min_profit(...) + логгирование причин отказа
+
+🔧 enter_trade(...):
+
+TP/SL рассчитываются ДО входа
+
+Используются доли TP1/TP2/TP3 при передаче в trade_data
+
+Обработка filled_qty == 0, notional < MIN_NOTIONAL
+
+Telegram логика + статистика, TP/SL log и try/fail block
+
+🔧 create_safe_market_order(...):
+
+Повторная попытка market order при filled_qty == 0
+
+Жёсткая защита: filled_qty == 0 или avg_price == 0 → success=False
+
+Комиссия, логгирование и fallback
+
+🎯 3. Take-Profit System
+🔧 place_take_profit_and_stop_loss_orders(...):
+
+Использует tp1_share, tp2_share, tp3_share из trade_data
+
+Fallback малых TP2/TP3 в TP1
+
+Проверка min_qty, Telegram уведомления при частичном TP
+
+SL защитный skip, если слишком близок к entry
+
+📈 4. Logging & Post-Trade
+🔧 record_trade_result(...):
+
+Расчёт Net PnL, комиссия, TP1/TP2/SL флаги
+
+Логика exit_reason, final_result_type
+
+Telegram уведомление с PnL и результатом
+
+SL-стрик + авто-пауза на 15 мин
+
+Обновление min_profit_threshold на успехе/провале
+
+🔧 log_trade_result(...):
+
+Запись tp_performance.csv + EXPORT_PATH
+
+Предотвращение дублирования, logged_trades_lock
+
+Округление, защита от NaN, дневная статистика
+
+🔧 calculate_tp_targets(...):
+
+Возвращает список TP1-целей для всех активных сделок
+
+Fallback: entry_price \* 1.05 при отсутствии tp1_price
+
+⚙️ 5. Configs & Runtime
+✅ runtime_config.json:
+
+"max_margin_percent": 0.5, "max_capital_utilization_pct": 0.5
+
+"min_profit_threshold": 0.06
+
+"step_tp_levels", "step_tp_sizes", "soft_exit_allow_at_zero": true
+
+✅ .env + config_loader.py:
+
+DRY_RUN, TELEGRAM, SYMBOLS, SL/TP % и комиссии
+
+Все параметры согласованы с runtime logic
+
+✅ leverage_config.py:
+
+Символы имеют дифференцированное плечо (DOGE/XRP: 12x, ETH/BTC: 5x и т.д.)
+
+Метод get_leverage_for_symbol(...) используется в risk-логике
+
+🧠 Общий эффект:
+📉 Устранены ошибки filled_qty=0, TP не ставится, SL пропускается
+
+✅ Вся цепочка сигнала → входа → TP/SL → фиксации — стабильна
+
+🛡 Риск ограничен по капиталу, плечу и min profit
+
+📊 Чистая структура логов, отчётов и Telegram-уведомлений

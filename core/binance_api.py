@@ -198,6 +198,7 @@ def create_safe_market_order(symbol, side, amount):
     import time
 
     from common.config_loader import DRY_RUN
+    from core.binance_api import calculate_commission, create_market_order, get_current_price, validate_order_size
     from core.exchange_init import exchange
     from utils_core import normalize_symbol
     from utils_logging import log
@@ -248,7 +249,7 @@ def create_safe_market_order(symbol, side, amount):
         avg_price = float(result.get("avgPrice", 0))
         status = result.get("status", "unknown")
 
-        # 🟡 Fallback: если 0 filled — повторно
+        # 🟡 Fallback: если 0 filled — повтор
         if filled_qty == 0 and not DRY_RUN:
             log(f"[MarketOrder] ⚠️ 0 filled — retrying after 1.5s for {symbol}", level="WARNING")
             time.sleep(1.5)
@@ -261,7 +262,12 @@ def create_safe_market_order(symbol, side, amount):
                 status = result_retry.get("status", "unknown")
                 result = result_retry
 
-        # ✅ Итог
+        # ❗ Финальная защита от "пустых" ордеров
+        if filled_qty == 0 or avg_price == 0:
+            log(f"[MarketOrder] ❌ Zero filled_qty or avg_price for {symbol} — treating as failure", level="ERROR")
+            return {"success": False, "error": "No volume filled (0 qty or 0 price)"}
+
+        # ✅ Успешно
         log(f"[MarketOrder] ✅ {symbol} {side} — filled={filled_qty}, avg_price={avg_price}, status={status}", level="INFO")
 
         return {
@@ -319,6 +325,20 @@ def get_ticker_data(symbol):
     Get ticker data for a symbol. Wrapper around fetch_ticker for compatibility.
     """
     return fetch_ticker(symbol)
+
+
+def round_step_size(symbol, qty):
+    """
+    Округляет qty до допустимого step_size символа Binance.
+    """
+    market = get_symbol_info(symbol)
+    step_size = market.get("precision", {}).get("amount", 0.001)
+
+    if not step_size or step_size <= 0:
+        step_size = 0.001  # fallback
+
+    rounded_qty = qty - (qty % step_size)
+    return round(rounded_qty, 8)
 
 
 def handle_rate_limits(func):

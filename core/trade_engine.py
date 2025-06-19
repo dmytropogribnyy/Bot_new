@@ -228,62 +228,63 @@ def calculate_risk_amount(balance, symbol=None, atr_percent=None, volume_usdc=No
     return risk_amount, effective_sl
 
 
-def calculate_position_size(entry_price, stop_price, risk_amount, symbol=None, balance=None) -> float:
+def calculate_position_size(symbol, entry_price, balance, leverage, runtime_config=None):
     """
-    Calculate position size with graduated risk adjustment, bounded by max margin and leverage.
-    Ensures qty does not exceed allowed capital utilization.
-    Always returns float (or 0.0 on error).
+    Рассчитывает размер позиции с учётом:
+    - риск-процента
+    - max_margin_percent на сделку
+    - max_capital_utilization_pct на все сделки
+    - минимального нотионала
+    Возвращает (qty, risk_amount)
     """
-    from common.leverage_config import get_leverage_for_symbol
-    from core.fail_stats_tracker import get_symbol_risk_factor
-    from utils_core import get_runtime_config
+    from common.config_loader import MIN_NOTIONAL_OPEN
+    from core.binance_api import round_step_size
+    from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
 
-    try:
-        if entry_price <= 0 or stop_price <= 0:
-            log(f"[PositionSize] Invalid entry or stop price: entry={entry_price}, stop={stop_price}", level="ERROR")
-            return 0.0
+    if runtime_config is None:
+        runtime_config = get_runtime_config()
 
-        # === Step 1: Risk factor
-        risk_factor = 1.0
-        if symbol:
-            rf, _ = get_symbol_risk_factor(symbol)
-            risk_factor = rf
-            if risk_factor < 1.0:
-                log(f"[Risk] Applied risk reduction to {symbol}: {risk_factor:.2f}x position size", level="INFO")
+    base_risk_pct = runtime_config.get("base_risk_pct", 0.01)
+    max_capital_utilization_pct = runtime_config.get("max_capital_utilization_pct", 0.5)
+    max_margin_percent = runtime_config.get("max_margin_percent", 0.5)
+    min_notional_open = runtime_config.get("MIN_NOTIONAL_OPEN", MIN_NOTIONAL_OPEN)
 
-        adjusted_risk = risk_amount * risk_factor
-        price_delta = abs(entry_price - stop_price)
-        if price_delta == 0:
-            log(f"[PositionSize] Zero price delta for {symbol}", level="ERROR")
-            return 0.0
+    risk_amount = balance * base_risk_pct
+    max_trade_value = balance * max_margin_percent
 
-        raw_position_size = adjusted_risk / price_delta
-        final_qty = raw_position_size
+    if entry_price <= 0:
+        log(f"[ERROR] Invalid entry price {entry_price} for {symbol}", level="ERROR")
+        return 0.0, 0.0
 
-        if balance is not None:
-            cfg = get_runtime_config()
-            max_margin_percent = cfg.get("max_margin_percent", 0.75)
-            leverage = get_leverage_for_symbol(symbol) if symbol else 5
-            max_notional = balance * leverage * max_margin_percent
-            max_qty = max_notional / entry_price
+    # Расчет позиции
+    qty = (risk_amount * leverage) / entry_price
+    notional = qty * entry_price
 
-            if raw_position_size > max_qty:
-                log(f"[Risk] ⚠️ Limiting position size for {symbol}: {raw_position_size:.4f} → {max_qty:.4f}", level="WARNING")
-                log(f"[Risk] Capital utilization for {symbol}: {max_qty * entry_price:.2f} ≈ {max_margin_percent * 100:.1f}% of balance", level="DEBUG")
-                final_qty = max_qty
+    if notional > max_trade_value:
+        qty = max_trade_value / entry_price
+        log(f"[CAP LIMIT] {symbol}: reduced qty to fit max_margin_percent ({max_margin_percent * 100:.1f}%)", level="WARNING")
+        notional = qty * entry_price
 
-            min_qty = cfg.get("min_trade_qty", 1e-3)
-            if final_qty < min_qty:
-                log(f"[PositionSize] Rejected: final_qty={final_qty:.6f} < min_trade_qty={min_qty}", level="WARNING")
-                return 0.0
+    # Проверка капитализации
+    total_used = get_total_position_value()
+    projected_total = total_used + notional
+    max_total = balance * max_capital_utilization_pct
 
-        log(f"[PositionSize] {symbol}: qty={final_qty:.4f}, notional={final_qty * entry_price:.2f}, risk={adjusted_risk:.2f}", level="DEBUG")
-        return float(round(final_qty, 8))
+    if projected_total > max_total:
+        log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
+        return 0.0, 0.0
 
-    except Exception as e:
-        log(f"[PositionSize] ❌ Exception during calculation for {symbol}: {e}", level="ERROR")
-        return 0.0
+    # Минимальный нотионал
+    if notional < min_notional_open:
+        log(f"[SKIPPED] {symbol}: notional {notional:.2f} < MIN_NOTIONAL_OPEN {min_notional_open}", level="WARNING")
+        return 0.0, 0.0
+
+    # Округление
+    qty = round_step_size(symbol, qty)
+    log(f"[QTY OK] {symbol} → qty={qty:.6f}, notional={qty * entry_price:.2f}, risk={risk_amount:.2f}", level="DEBUG")
+
+    return qty, risk_amount
 
 
 def get_position_size(symbol):
@@ -417,6 +418,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     import numpy as np
 
     from common.config_loader import DRY_RUN, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, get_priority_small_balance_pairs
+    from common.leverage_config import get_leverage_for_symbol
     from core.binance_api import convert_symbol, create_safe_market_order
     from core.component_tracker import log_component_data
     from core.entry_logger import log_entry
@@ -499,8 +501,9 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             log(f"[Risk] Invalid effective SL for {symbol}", level="ERROR")
             return False
 
-        stop_price = entry_price * (1 - effective_sl) if side.lower() == "buy" else entry_price * (1 + effective_sl)
-        qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol=symbol, balance=balance)
+        leverage = get_leverage_for_symbol(symbol)
+        qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
+
         if not isinstance(qty, (float, int)) or qty <= 0:
             log(f"[Risk] Invalid position size for {symbol}: {qty}", level="ERROR")
             return False
@@ -521,7 +524,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             log(f"[Orders] Too many open orders for {symbol}", level="WARNING")
             return False
 
-        # ✅ Перед входом: рассчитать TP/SL
         df = fetch_data_multiframe(symbol)
         if df is None or len(df) < 5:
             log(f"[Data] Failed to fetch data for {symbol} before TP calc", level="ERROR")
@@ -591,8 +593,9 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             "tp_prices": tp_prices,
             "tp1": tp1,
             "tp2": tp2,
-            "share1": share1,
-            "share2": share2,
+            "tp1_share": share1,
+            "tp2_share": share2,
+            "tp3_share": 0.0,
         }
 
         trade_manager.add_trade(symbol, trade_data)

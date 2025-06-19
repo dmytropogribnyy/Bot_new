@@ -14,6 +14,7 @@ TUNING_LOG_FILE = "data/filter_tuning_log.json"
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
     import pandas as pd
 
+    from common.leverage_config import get_leverage_for_symbol
     from core.binance_api import fetch_ohlcv
     from core.fail_stats_tracker import get_symbol_risk_factor
     from core.signal_utils import add_indicators, get_signal_breakdown, passes_1plus1
@@ -52,20 +53,32 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         if not (min_rsi <= rsi <= max_rsi):
             reasons.append("rsi_out_of_range")
 
-        # ✅ корректная распаковка сигнала
         _, breakdown = get_signal_breakdown(df)
         passes_combo = passes_1plus1(breakdown) if breakdown else False
         r_factor, _ = get_symbol_risk_factor(symbol)
 
         entry_price = latest.get("close", 0)
-        stop_price = entry_price * 0.99
         balance = get_cached_balance()
+        leverage = get_leverage_for_symbol(symbol)
 
         risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
-        qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol, balance=balance)
+
+        qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
 
         if not isinstance(qty, (float, int)) or qty <= 0:
-            raise ValueError(f"Invalid qty: {qty}")
+            log(f"[SKIPPED] {symbol}: position blocked or too small (qty={qty})", level="WARNING")
+            return {
+                "symbol": symbol,
+                "atr_pct": round(atr_percent, 5),
+                "volume": round(volume, 1),
+                "rsi": round(rsi, 2),
+                "risk_factor": round(r_factor, 3),
+                "passes_1plus1": passes_combo,
+                "entry_notional": 0.0,
+                "filtered": True,
+                "reasons": reasons + ["qty_blocked"],
+                "status": "skipped",
+            }
 
         notional = round(qty * entry_price, 2)
 

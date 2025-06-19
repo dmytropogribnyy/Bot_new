@@ -183,7 +183,8 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     import pandas as pd
     import ta
 
-    from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE, is_monitoring_hours_utc
+    from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
+    from common.leverage_config import get_leverage_for_symbol
     from core.component_tracker import log_component_data
     from core.entry_logger import log_entry
     from core.missed_signal_logger import log_missed_signal
@@ -216,8 +217,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         failure_reasons.append("symbol_paused")
         return None, failure_reasons
 
-    log(f"[Entry] Checking {symbol} for entry...", level="DEBUG")
-
     pair_type = symbol_type_map.get(symbol, "unknown")
     df = fetch_data_multiframe(symbol)
     if df is None or not isinstance(df, pd.DataFrame):
@@ -232,14 +231,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         latest_time = df.iloc[-1]["time"] if "time" in df.columns else None
         if latest_time and now - latest_time < timedelta(minutes=1):
             failure_reasons.append("candle_not_closed")
-            log(f"[Filter] ❌ Last candle still forming for {symbol} (now={now}, last={latest_time})", level="DEBUG")
             log_missed_signal(symbol, {}, reason="candle_not_closed")
             return None, failure_reasons
 
     direction, breakdown = get_signal_breakdown(df)
-    log(f"[SignalCheck] Breakdown for {symbol}: {breakdown}", level="DEBUG")
-    log(f"[SignalCheck] Direction={direction}", level="DEBUG")
-
     if not direction or not breakdown:
         failure_reasons.append("no_direction")
         log_missed_signal(symbol, {}, reason="no_direction")
@@ -256,23 +251,17 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     macd_override = cfg.get("macd_strength_override", 1.0)
     rsi_override = cfg.get("rsi_strength_override", 10.0)
 
-    macd_weak = macd_strength < min_macd_strength
-    rsi_weak = rsi_strength < min_rsi_strength
-
-    if macd_weak and rsi_weak:
+    if macd_strength < min_macd_strength and rsi_strength < min_rsi_strength:
         if enable_override and (macd_strength >= macd_override or rsi_strength >= rsi_override):
             log(f"[Override] ✅ Signal override triggered: macd={macd_strength}, rsi={rsi_strength}", level="INFO")
         else:
             failure_reasons.append("weak_macd_rsi")
-            log(f"[Filter] ❌ MACD/RSI both weak: {macd_strength:.4f}/{rsi_strength:.2f}", level="DEBUG")
             log_missed_signal(symbol, breakdown, reason="weak_macd_rsi")
             return None, failure_reasons
 
     htf_score = breakdown.get("HTF", 1)
-    allow_short = cfg.get("allow_short_if_htf_zero", True)
-    if direction == "sell" and htf_score < 1 and not allow_short:
+    if direction == "sell" and htf_score < 1 and not cfg.get("allow_short_if_htf_zero", True):
         failure_reasons.append("htf_mismatch")
-        log(f"[Filter] ❌ HTF mismatch — skip short: HTF={htf_score}", level="DEBUG")
         log_missed_signal(symbol, breakdown, reason="htf_mismatch")
         return None, failure_reasons
 
@@ -304,8 +293,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     atr_pct = atr / entry_price if entry_price > 0 else 0
 
     balance = get_cached_balance()
-    log(f"[DEBUG] Capital pre-check: balance={balance:.2f}", level="DEBUG")
-
     can_enter, reason = check_entry_allowed(balance)
     if not can_enter:
         failure_reasons.append(reason)
@@ -314,9 +301,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     volume = breakdown.get("volume", 0)
     risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_pct, volume_usdc=volume)
-    stop_price = entry_price * (1 - effective_sl) if direction == "buy" else entry_price * (1 + effective_sl)
 
-    qty = calculate_position_size(entry_price, stop_price, risk_amount, symbol=symbol, balance=balance)
+    leverage = get_leverage_for_symbol(symbol)
+    qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
+
     if not qty or qty <= 0:
         fallback_qty = MIN_NOTIONAL_OPEN / entry_price
         log(f"[Fallback] {symbol} qty fallback: {fallback_qty:.4f}", level="DEBUG")
@@ -324,7 +312,9 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     notional = qty * entry_price
     if notional < MIN_NOTIONAL_OPEN:
-        log(f"[QtyCheck] {symbol}: notional below MIN_NOTIONAL_OPEN → {notional:.2f}", level="WARNING")
+        failure_reasons.append("notional_too_small")
+        log_missed_signal(symbol, breakdown, reason="notional_too_small")
+        return None, failure_reasons
 
     try:
         tp1, tp2, sl_price, share1, share2 = calculate_tp_levels(entry_price, direction, df=df)
@@ -334,7 +324,11 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         tp_prices = [tp1, tp2, tp2 * 1.5]
         breakdown["tp1"] = tp1
         breakdown["tp2"] = tp2
-        breakdown["sl"] = sl_price
+        breakdown["sl_price"] = sl_price
+        breakdown["tp1_share"] = share1
+        breakdown["tp2_share"] = share2
+        breakdown["tp3_share"] = 0.0
+        breakdown["tp_prices"] = tp_prices
 
         min_profit_required = cfg.get("min_profit_threshold", 0.06)
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
@@ -363,8 +357,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         last_trade_times[symbol] = datetime.utcnow()
 
     is_reentry = breakdown.get("is_reentry", False)
-    if is_monitoring_hours_utc():
-        log(f"[TimeFilter] ⏰ {symbol} within monitoring hours → allowed", level="DEBUG")
 
     entry_data = {
         "symbol": symbol,
@@ -383,8 +375,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         "share2": share2,
     }
 
-    log(f"[EntryData] {symbol} entry_data = {entry_data}", level="DEBUG")
-
     try:
         log_entry(entry_data, status="SUCCESS")
     except Exception as e:
@@ -394,9 +384,8 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         assert direction in ("buy", "sell")
         assert isinstance(qty, (float, int)) and qty > 0
         assert isinstance(breakdown, dict)
-    except Exception as e:
+    except Exception:
         failure_reasons.append("invalid_return_structure")
-        log(f"[SignalCheck] ❌ {symbol} → return structure invalid: {e}", level="ERROR")
         log_missed_signal(symbol, breakdown, reason="invalid_return_structure")
         return None, failure_reasons
 

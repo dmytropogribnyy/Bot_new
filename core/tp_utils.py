@@ -173,30 +173,26 @@ def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit
     Проверяет, даст ли TP1 достаточно чистой прибыли.
     Возвращает (bool: хватает ли, float: ожидаемая чистая прибыль)
     """
-    from utils_core import get_cached_balance
+    from utils_core import get_runtime_config
     from utils_logging import log
 
-    # 🧠 Адаптивный порог в зависимости от баланса
     if min_profit_usd is None:
-        balance = get_cached_balance()
-        if balance <= 300:
-            min_profit_usd = 0.06
-        elif balance <= 500:
-            min_profit_usd = 0.08
-        else:
-            min_profit_usd = 0.10
-        log(f"[ProfitCheck] Adaptive threshold → balance={balance:.2f} → min_profit={min_profit_usd:.2f}$", level="DEBUG")
+        # ✅ получаем порог из runtime config
+        config = get_runtime_config()
+        min_profit_usd = config.get("min_profit_threshold", 0.06)
+        log(f"[ProfitCheck] Runtime config threshold → min_profit={min_profit_usd:.2f}$", level="DEBUG")
+    else:
+        log(f"[ProfitCheck] Explicit threshold passed → min_profit={min_profit_usd:.2f}$", level="DEBUG")
 
-    # 🔒 Минимально допустимый фильтр
+    # 🔒 safety нижняя граница
     min_profit_usd = max(min_profit_usd, 0.05)
 
     gross_profit = abs(tp1 - entry) * qty * share_tp1
-    commission = 2 * qty * entry * fee_rate  # вход + выход
-    net_profit = gross_profit - commission
+    commission = 2 * qty * entry * fee_rate
+    net_profit = round(gross_profit - commission, 2)
+    is_valid = net_profit >= round(min_profit_usd, 2)
 
-    is_valid = net_profit >= min_profit_usd
     verdict = "✅ OK" if is_valid else "❌ reject"
-
     log(f"[ProfitCheck] expected={net_profit:.2f}$ vs required={min_profit_usd:.2f}$ → {verdict}", level="DEBUG")
 
     return is_valid, round(net_profit, 2)
@@ -224,6 +220,10 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     try:
         api_symbol = convert_symbol(symbol)
         market_info = exchange.markets.get(api_symbol, {})
+        if not market_info:
+            log(f"[TP/SL] {symbol}: No market info found — aborting TP/SL", level="ERROR")
+            return False
+
         min_qty = market_info.get("limits", {}).get("amount", {}).get("min", 0.001)
 
         shares = ["tp1", "tp2", "tp3"]
@@ -243,6 +243,9 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                 share = 0.0
 
             qty_i = round(qty * share, 8)
+            if not isinstance(qty_i, float) or qty_i <= 0:
+                continue
+
             tp_adjusted[i] = qty_i
             if qty_i >= min_qty:
                 usable_levels.append(i)
@@ -275,7 +278,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             else:
                 failed_levels.append(level.upper())
 
-        # === Проверка SL до размещения (анти-Binance -2021)
+        # === Проверка SL до размещения
         min_gap = entry_price * 0.001  # 0.1%
         skip_sl = False
         if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):

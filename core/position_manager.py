@@ -51,10 +51,15 @@ def check_entry_allowed(balance):
         log(f"[EntryCheck] ❌ Too many positions: {current_positions}/{max_positions}", level="INFO")
         return False, "position_limit_reached"
 
+    # === Check: баланс должен быть положительным
+    if balance <= 0:
+        log("[EntryCheck] ❌ Cannot enter: balance is zero", level="WARNING")
+        return False, "zero_balance"
+
     # === Check: capital utilization (с учётом текущих открытых)
     used_capital = get_total_position_value()
     max_cap_pct = config.get("max_capital_utilization_pct", 0.80)
-    cap_utilization = used_capital / balance if balance > 0 else 1.0
+    cap_utilization = used_capital / balance
 
     log(f"[EntryCheck] Capital usage = {cap_utilization:.2%}, limit = {max_cap_pct:.2%}", level="DEBUG")
 

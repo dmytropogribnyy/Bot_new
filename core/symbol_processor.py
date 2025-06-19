@@ -15,7 +15,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     from core.tp_utils import calculate_tp_levels, check_min_profit
     from core.trade_engine import get_market_regime, get_position_size, open_positions_lock
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import MARGIN_SAFETY_BUFFER, get_min_net_profit, normalize_symbol
+    from utils_core import MARGIN_SAFETY_BUFFER, get_min_net_profit, get_runtime_config, normalize_symbol
     from utils_logging import log
 
     symbol = normalize_symbol(symbol)
@@ -75,7 +75,6 @@ def process_symbol(symbol, balance, last_trade_times, lock):
         regime = get_market_regime(symbol)
         tp1, tp2, sl_price, share_tp1, share_tp2 = calculate_tp_levels(entry, direction, regime=regime)
 
-        # ✅ Новый фикс: проверка tp1 > 0
         if tp1 is None or tp1 <= 0:
             log(f"⚠️ Skipping {symbol} — tp1={tp1} is invalid", level="WARNING")
             return None
@@ -107,9 +106,13 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             if not enough_profit:
                 log(f"⚠️ Skipping {symbol} — profit ~{net_profit_tp1:.2f} USDC below threshold", level="WARNING")
                 return None
-            if balance < 300 and net_profit_tp1 < 0.25:
-                log(f"⚠️ Skipping {symbol} — micro-balance profit {net_profit_tp1:.2f} too small", level="WARNING")
+
+            # ✅ Гибкая проверка min_profit из runtime_config
+            min_profit_required = get_runtime_config().get("min_profit_threshold", 0.06)
+            if net_profit_tp1 < min_profit_required:
+                log(f"⚠️ Skipping {symbol} — profit {net_profit_tp1:.2f} < min {min_profit_required:.2f}", level="WARNING")
                 return None
+
         except Exception as e:
             log(f"⚠️ Profit check error for {symbol}: {e}", level="ERROR")
             return None

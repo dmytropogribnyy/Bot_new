@@ -125,3 +125,122 @@
 -   ENV конфигурация масштабируема под мультиботы
 
 📌 Цель: **\$3–5/час при \$225**, далее — параллельные запуски HFT/Scalp/TP-Sniper ботов.
+
+## Just fixed
+
+✅ OptiFlow v3.2 – Финальный FixPack (Core Trade Chain & Risk Control)
+⚙️ 1. Risk & Positioning
+🔧 calculate_position_size(...):
+
+Ограничение по max_margin_percent и max_capital_utilization_pct
+
+Поддержка MIN_NOTIONAL_OPEN и fallback qty
+
+Округление через round_step_size(...) по step_size пары
+
+🔧 check_entry_allowed(...):
+
+Проверка: общее количество позиций (max_concurrent_positions)
+
+Проверка: общий capital usage (get_total_position_value() / balance)
+
+Защита от нулевого баланса
+
+Гибкий лимит по входам в час (hourly_limit_check_mode)
+
+💰 2. Entry & TP Logic
+🔧 should_enter_trade(...):
+
+Фильтрация по TP1, SL, min_profit_threshold
+
+TP-доли (tp1_share, tp2_share, tp3_share) добавлены в breakdown
+
+Проверка fallback qty, отбрасывание по маленькому notional
+
+check_min_profit(...) + логгирование причин отказа
+
+🔧 enter_trade(...):
+
+TP/SL рассчитываются ДО входа
+
+Используются доли TP1/TP2/TP3 при передаче в trade_data
+
+Обработка filled_qty == 0, notional < MIN_NOTIONAL
+
+Telegram логика + статистика, TP/SL log и try/fail block
+
+🔧 create_safe_market_order(...):
+
+Повторная попытка market order при filled_qty == 0
+
+Жёсткая защита: filled_qty == 0 или avg_price == 0 → success=False
+
+Комиссия, логгирование и fallback
+
+🎯 3. Take-Profit System
+🔧 place_take_profit_and_stop_loss_orders(...):
+
+Использует tp1_share, tp2_share, tp3_share из trade_data
+
+Fallback малых TP2/TP3 в TP1
+
+Проверка min_qty, Telegram уведомления при частичном TP
+
+SL защитный skip, если слишком близок к entry
+
+📈 4. Logging & Post-Trade
+🔧 record_trade_result(...):
+
+Расчёт Net PnL, комиссия, TP1/TP2/SL флаги
+
+Логика exit_reason, final_result_type
+
+Telegram уведомление с PnL и результатом
+
+SL-стрик + авто-пауза на 15 мин
+
+Обновление min_profit_threshold на успехе/провале
+
+🔧 log_trade_result(...):
+
+Запись tp_performance.csv + EXPORT_PATH
+
+Предотвращение дублирования, logged_trades_lock
+
+Округление, защита от NaN, дневная статистика
+
+🔧 calculate_tp_targets(...):
+
+Возвращает список TP1-целей для всех активных сделок
+
+Fallback: entry_price \* 1.05 при отсутствии tp1_price
+
+⚙️ 5. Configs & Runtime
+✅ runtime_config.json:
+
+"max_margin_percent": 0.5, "max_capital_utilization_pct": 0.5
+
+"min_profit_threshold": 0.06
+
+"step_tp_levels", "step_tp_sizes", "soft_exit_allow_at_zero": true
+
+✅ .env + config_loader.py:
+
+DRY_RUN, TELEGRAM, SYMBOLS, SL/TP % и комиссии
+
+Все параметры согласованы с runtime logic
+
+✅ leverage_config.py:
+
+Символы имеют дифференцированное плечо (DOGE/XRP: 12x, ETH/BTC: 5x и т.д.)
+
+Метод get_leverage_for_symbol(...) используется в risk-логике
+
+🧠 Общий эффект:
+📉 Устранены ошибки filled_qty=0, TP не ставится, SL пропускается
+
+✅ Вся цепочка сигнала → входа → TP/SL → фиксации — стабильна
+
+🛡 Риск ограничен по капиталу, плечу и min profit
+
+📊 Чистая структура логов, отчётов и Telegram-уведомлений
