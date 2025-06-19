@@ -46,7 +46,7 @@ _last_logged_hour = None
 
 def auto_update_valid_pairs_if_needed():
     """
-    Обновляет valid_usdc_symbols.json каждые 6 часов через test_api.py.
+    Обновляет valid_usdc_symbols.json каждые 1 час через test_api.py.
     """
     last_updated_path = Path("data/valid_usdc_last_updated.txt")
     now = int(time.time())
@@ -240,7 +240,11 @@ def select_active_symbols():
         if sym in fixed:
             continue
         df = fetch_data_multiframe(sym)
-        if df is None or len(df) < 20:
+        if df is None:
+            log(f"[Selector] Skipping {sym} — fetch_data_multiframe returned None", level="WARNING")
+            continue
+        if len(df) < 20:
+            log(f"[Selector] Skipping {sym} — not enough data rows ({len(df)})", level="DEBUG")
             continue
         last_price = df["close"].iloc[-1]
         atr_val = df["atr"].iloc[-1]
@@ -329,6 +333,10 @@ def select_active_symbols():
         dyn_count = max(min_dyn, min(len(uncorrelated), max_dyn))
         dynamic_list = uncorrelated[:dyn_count]
 
+    # 🔔 Уведомление, если не хватило пар
+    if len(dynamic_list) < min_dyn:
+        send_telegram_message(f"⚠️ Only {len(dynamic_list)} dynamic pairs selected (min required: {min_dyn}) — check volume/atr tiers.", force=True)
+
     # Финальный список символов
     final_symbols_list = [{"symbol": fsym, "type": "fixed"} for fsym in fixed]
 
@@ -346,7 +354,6 @@ def select_active_symbols():
 
     save_symbols_file(final_symbols_list)
 
-    # 🔔 Telegram уведомление + отладка
     msg = (
         f"🔄 Symbol rotation:\n"
         f"Balance: {balance:.1f} USDC\n"

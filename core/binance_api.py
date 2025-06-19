@@ -162,22 +162,22 @@ def validate_order_size(symbol, side, amount, price=None):
         if not price:
             return False, "Could not fetch current price"
 
-    # Get symbol info for limits
     market = get_symbol_info(symbol)
     if not market:
         return False, f"Symbol info not found for {symbol}"
 
-    # Check minimum amount
     min_amount = market.get("limits", {}).get("amount", {}).get("min", 0)
     if amount < min_amount:
         return False, f"Amount {amount} below minimum {min_amount}"
 
-    # Check notional value - with validation
     notional = amount * price
     min_notional = market.get("limits", {}).get("cost", {}).get("min", 0)
     if notional < min_notional:
         required_amount = min_notional / price
         return False, (f"Order value ${notional:.2f} below minimum ${min_notional:.2f}. " f"Need at least {required_amount:.6f} {symbol.split('/')[0]}.")
+
+    # ✅ Успешная валидация — логируем для отладки
+    log(f"[validate_order_size] ✅ {symbol} {side}: amount={amount}, price={price}, " f"notional={notional:.4f}, min_amount={min_amount}, min_notional={min_notional}", level="DEBUG")
 
     return True, ""
 
@@ -186,23 +186,51 @@ def create_safe_market_order(symbol, side, amount):
     """
     Creates a market order with validation for small deposits,
     always returning a standardized dict:
-      {"success": True, "result": ...}
+      {
+        "success": True,
+        "result": ...,          # raw order response
+        "filled_qty": ...,      # float, parsed from executedQty
+        "avg_price": ...,       # float, parsed from avgPrice
+        "status": ...,          # e.g., 'filled', 'partially_filled'
+      }
       {"success": False, "error": ...}
     """
+    import time
+
+    from common.config_loader import DRY_RUN
+    from core.exchange_init import exchange
     from utils_core import normalize_symbol
+    from utils_logging import log
 
     symbol = normalize_symbol(symbol)
 
-    # 1) Валидация ордера
+    # 🔍 Лог лимитов биржи перед ордером
+    try:
+        market = exchange.markets[symbol]
+        limits = market.get("limits", {}).get("amount", {})
+        min_qty = limits.get("min")
+        step_size = market.get("precision", {}).get("amount")
+        log(f"[MarketOrder] Limits for {symbol}: min_qty={min_qty}, step_size={step_size}", level="DEBUG")
+
+        margin_info = exchange.fetch_balance()["info"]
+        avail_margin = float(margin_info.get("totalMarginBalance", 0)) - float(margin_info.get("totalPositionInitialMargin", 0)) - float(margin_info.get("totalOpenOrderInitialMargin", 0))
+        log(f"[MarketOrder] Available margin: {avail_margin:.4f}", level="DEBUG")
+    except Exception as e:
+        log(f"[MarketOrder] ⚠️ Could not fetch margin/limits for {symbol}: {e}", level="WARNING")
+
+    # 1) Валидация
     is_valid, error = validate_order_size(symbol, side, amount)
     if not is_valid:
         price = get_current_price(symbol)
         log(f"[MarketOrder] ❌ Validation failed for {symbol}: {error} (qty={amount}, price={price})", level="ERROR")
         return {"success": False, "error": error}
+    else:
+        price = get_current_price(symbol)
+        notional = amount * price if price else 0
+        log(f"[MarketOrder] {symbol} validation ok: amount={amount}, price={price}, notional={notional}", level="DEBUG")
 
-    # 2) Рассчитываем комиссию
-    price = get_current_price(symbol)
-    if price is not None:
+    # 2) Комиссия
+    if price:
         commission = calculate_commission(amount, price, is_maker=False)
         log(f"[MarketOrder] {symbol} {side} qty={amount:.4f} — estimated fee ≈ {commission:.6f} USDC", level="DEBUG")
 
@@ -211,19 +239,47 @@ def create_safe_market_order(symbol, side, amount):
         result = create_market_order(symbol, side, amount)
         log(f"[MarketOrder] Binance raw result: {result}", level="DEBUG")
 
-        if isinstance(result, dict):
-            log(f"[MarketOrder] ✅ Order success: {symbol} {side} qty={amount}", level="INFO")
-            return {"success": True, "result": result}
-        else:
+        if not isinstance(result, dict):
             msg = f"[MarketOrder] ❌ Unexpected result type: {type(result)} for {symbol}"
             log(msg, level="ERROR")
             return {"success": False, "error": msg}
 
+        filled_qty = float(result.get("executedQty", 0))
+        avg_price = float(result.get("avgPrice", 0))
+        status = result.get("status", "unknown")
+
+        # 🟡 Fallback: если 0 filled — повторно
+        if filled_qty == 0 and not DRY_RUN:
+            log(f"[MarketOrder] ⚠️ 0 filled — retrying after 1.5s for {symbol}", level="WARNING")
+            time.sleep(1.5)
+            result_retry = create_market_order(symbol, side, amount)
+            log(f"[MarketOrder] Retry result: {result_retry}", level="DEBUG")
+
+            if isinstance(result_retry, dict):
+                filled_qty = float(result_retry.get("executedQty", 0))
+                avg_price = float(result_retry.get("avgPrice", 0))
+                status = result_retry.get("status", "unknown")
+                result = result_retry
+
+        # ✅ Итог
+        log(f"[MarketOrder] ✅ {symbol} {side} — filled={filled_qty}, avg_price={avg_price}, status={status}", level="INFO")
+
+        return {
+            "success": True,
+            "result": result,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
+            "status": status,
+        }
+
     except Exception as e:
         error_str = str(e)
-        if "MIN_NOTIONAL" in error_str:
+        if "MIN_NOTIONAL" in error_str or "minNotional" in error_str:
             log(f"[MarketOrder] ❌ Notional too low for {symbol}: {error_str}", level="ERROR")
             return {"success": False, "error": "Order size too small for exchange minimum"}
+        if "insufficient" in error_str.lower() or "margin" in error_str.lower():
+            log(f"[MarketOrder] ❌ Margin error for {symbol}: {error_str}", level="ERROR")
+            return {"success": False, "error": "Margin is insufficient"}
 
         log(f"[MarketOrder] ❌ Exception during order for {symbol}: {error_str}", level="ERROR")
         return {"success": False, "error": error_str}

@@ -25,6 +25,9 @@ FIELDNAMES = [
 ]
 
 
+_recent_entries = set()  # глобальная in-memory защита от дубликатов (перезаписывается при рестарте)
+
+
 def log_entry(trade: dict, status="SUCCESS"):
     try:
         if not trade.get("entry") or not trade.get("qty"):
@@ -35,20 +38,37 @@ def log_entry(trade: dict, status="SUCCESS"):
         account_category = "Small" if balance < 120 else "Medium" if balance < 300 else "Standard"
 
         symbol = extract_symbol(trade.get("symbol", ""))
-        direction = trade.get("direction", "").lower()
+        direction = trade.get("side", "").lower()
         entry_price = float(trade.get("entry", 0) or 0)
         qty = float(trade.get("qty", 0) or 0)
-
         commission = qty * entry_price * TAKER_FEE_RATE * 2
 
-        tp1_price = float(trade.get("tp1", 0) or 0)
-        tp1_share = 0.7
-        if tp1_price and entry_price:
-            gross_profit = qty * tp1_share * (tp1_price - entry_price) if direction == "buy" else qty * tp1_share * (entry_price - tp1_price)
-            expected_profit = gross_profit - commission
-        else:
-            expected_profit = 0.0
+        # === TP1 price
+        tp_prices = trade.get("tp_prices", [])
+        tp1_price = tp_prices[0] if isinstance(tp_prices, list) and len(tp_prices) >= 1 else 0.0
 
+        # === TP1 share (адаптивный)
+        from utils_core import get_runtime_config
+
+        tp1_share = 0.7  # fallback
+        try:
+            config = get_runtime_config()
+            step_tp_sizes = config.get("step_tp_sizes", [])
+            if isinstance(step_tp_sizes, list) and len(step_tp_sizes) > 0:
+                tp1_share = float(step_tp_sizes[0]) or 0.7
+        except Exception as e:
+            log(f"[entry_logger] Fallback tp1_share used due to: {e}", level="WARNING")
+
+        # === Ожидаемая прибыль
+        expected_profit = 0.0
+        if tp1_price and entry_price and qty:
+            gross = qty * tp1_share * (tp1_price - entry_price) if direction == "buy" else qty * tp1_share * (entry_price - tp1_price)
+            expected_profit = gross - commission
+
+        if expected_profit == 0.0:
+            log(f"[entry_logger] ⚠️ expected_profit=0.0 for {symbol} @ {entry_price}, tp1={tp1_price}", level="WARNING")
+
+        # === Прочее
         pair_type = (trade.get("type") or trade.get("pair_type") or "unknown").lower()
         if pair_type not in ["fixed", "dynamic"]:
             pair_type = "unknown"
@@ -76,6 +96,14 @@ def log_entry(trade: dict, status="SUCCESS"):
             "exit_reason": exit_reason,
         }
 
+        # === Защита от дубликатов (по symbol, direction, price, qty)
+        entry_key = f"{symbol}_{direction}_{round(entry_price, 6)}_{qty}"
+        if entry_key in _recent_entries:
+            log(f"[entry_logger] Skipping duplicate entry: {entry_key}", level="DEBUG")
+            return
+        _recent_entries.add(entry_key)
+
+        # === Запись в CSV
         write_header = not os.path.exists(ENTRY_LOG_PATH)
         os.makedirs(os.path.dirname(ENTRY_LOG_PATH), exist_ok=True)
 

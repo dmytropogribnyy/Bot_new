@@ -1,14 +1,12 @@
-# symbol_processor.py
-
-
 def process_symbol(symbol, balance, last_trade_times, lock):
     """
     Обрабатывает торговый символ:
-    - проверяет лимиты и маржу
     - вызывает should_enter_trade(...)
-    - рассчитывает TP/SL, проверяет min_profit и min_notional
+    - проверяет TP/SL, min_profit, min_notional
     - возвращает параметры сделки или None
     """
+    import traceback
+
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
     from core.binance_api import convert_symbol
     from core.exchange_init import exchange
@@ -50,8 +48,18 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             return None
 
         direction, qty, is_reentry, breakdown = result
+        if not direction:
+            log(f"❌ No direction returned for {symbol}", level="ERROR")
+            return None
+
         direction = direction.upper()
-        if direction not in ("BUY", "SELL") or not isinstance(qty, (float, int)) or qty <= 0:
+        try:
+            qty = float(qty)
+        except Exception:
+            log(f"❌ Invalid qty type from should_enter_trade for {symbol}: {qty}", level="ERROR")
+            return None
+
+        if direction not in ("BUY", "SELL") or qty <= 0:
             log(f"❌ Invalid signal for {symbol} (direction={direction}, qty={qty})", level="WARNING")
             return None
 
@@ -66,7 +74,12 @@ def process_symbol(symbol, balance, last_trade_times, lock):
 
         regime = get_market_regime(symbol)
         tp1, tp2, sl_price, share_tp1, share_tp2 = calculate_tp_levels(entry, direction, regime=regime)
-        if any(x is None for x in (tp1, sl_price, share_tp1)):
+
+        # ✅ Новый фикс: проверка tp1 > 0
+        if tp1 is None or tp1 <= 0:
+            log(f"⚠️ Skipping {symbol} — tp1={tp1} is invalid", level="WARNING")
+            return None
+        if any(x is None for x in (sl_price, share_tp1)):
             log(f"⚠️ Skipping {symbol} — invalid TP/SL", level="ERROR")
             return None
 
@@ -84,10 +97,10 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             if new_qty * entry <= margin_with_buffer:
                 log(f"ℹ️ Adjusting qty to meet min_notional → {new_qty:.4f}", level="INFO")
                 qty = new_qty
+                notional = qty * entry
             else:
                 log(f"⚠️ Skipping {symbol} — insufficient margin after notional adjust", level="WARNING")
                 return None
-            notional = qty * entry
 
         try:
             enough_profit, net_profit_tp1 = check_min_profit(entry, tp1, qty, share_tp1, direction, TAKER_FEE_RATE, get_min_net_profit(balance))
@@ -101,7 +114,9 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(f"⚠️ Profit check error for {symbol}: {e}", level="ERROR")
             return None
 
+        log(f"[Confirm] {symbol} TP1={tp1:.4f}, TP2={tp2:.4f}, SL={sl_price:.4f} | Notional=${notional:.2f}", level="DEBUG")
         log(f"{symbol} => {direction}, qty={qty:.3f}, notional={notional:.2f}, expProfit={net_profit_tp1:.2f}", level="INFO")
+        send_telegram_message(f"🟢 VALID SIGNAL {symbol} {direction} qty={qty:.4f} @ {entry:.4f}")
 
         return {
             "symbol": symbol,
@@ -113,11 +128,10 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             "sl": sl_price,
             "is_reentry": is_reentry,
             "breakdown": breakdown,
+            "tp_prices": [tp1, tp2, tp2 * 1.5],
         }
 
     except Exception as e:
-        import traceback
-
         log(f"🔥 Error in process_symbol({symbol}): {e}\n{traceback.format_exc(limit=1)}", level="ERROR")
         send_telegram_message(f"❌ process_symbol error for {symbol}: {e}", force=True)
         return None

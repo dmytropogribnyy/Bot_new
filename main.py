@@ -375,12 +375,7 @@ if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
     log("📦 Runtime environment initialized", level="INFO")
 
-    # === Убедимся, что все ключевые файлы существуют ===
     Path("data/missed_opportunities.json").write_text("{}", encoding="utf-8") if not Path("data/missed_opportunities.json").exists() else None
-
-    if not Path("data/tp_performance.csv").exists():
-        with open("data/tp_performance.csv", "w", encoding="utf-8") as f:
-            f.write("timestamp,symbol,side,entry,exit,qty,pnl_percent,result,tp1_hit,tp2_hit,sl_hit,commission\n")
 
     # === Инициализация конфигураций и адаптаций ===
     auto_cleanup_signal_failures()

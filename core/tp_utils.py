@@ -206,6 +206,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     """
     Ставит TP1/TP2/TP3 и SL ордера с адаптацией под малые qty.
     Остатки TP2/TP3 добавляются к TP1, если не проходят лимит.
+    Telegram-уведомление при неполном TP покрытии или fallback в TP1.
     """
     from core.binance_api import convert_symbol
     from core.exchange_init import exchange
@@ -269,7 +270,8 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             if order:
                 orders.append(order)
                 tp_total_placed += qty_i
-                trade_manager.update_trade(symbol, {f"{level}_price": price, f"{level}_qty": qty_i})  # ✅ FIXED
+                trade_manager.update_trade(symbol, f"{level}_price", price)
+                trade_manager.update_trade(symbol, f"{level}_qty", qty_i)
             else:
                 failed_levels.append(level.upper())
 
@@ -295,13 +297,23 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             )
             if sl_order:
                 orders.append(sl_order)
-                trade_manager.update_trade(symbol, {"sl_price": sl_price})
+                trade_manager.update_trade(symbol, "sl_price", sl_price)
             else:
                 log(f"[SL-Fail] {symbol} Failed to place SL at {sl_price}", level="ERROR")
                 send_telegram_message(f"⚠️ {symbol} failed to place SL at {sl_price}")
                 return False
 
-        # Уведомления
+        # === TP-покрытие логика и Telegram уведомления
+        coverage_pct = (tp_total_placed / qty) * 100 if qty > 0 else 0
+        tp1_qty = trade_manager.get_trade(symbol, "tp1_qty") or 0
+        tp2_qty = trade_manager.get_trade(symbol, "tp2_qty") or 0
+        tp3_qty = trade_manager.get_trade(symbol, "tp3_qty") or 0
+
+        log(f"[TP-COVERAGE] {symbol}: TP1={tp1_qty:.4f}, TP2={tp2_qty:.4f}, TP3={tp3_qty:.4f} | Total={tp_total_placed:.4f}/{qty:.4f} ({coverage_pct:.2f}%)", level="DEBUG")
+
+        if tp2_qty == 0 and tp3_qty == 0 and tp1_qty >= qty * 0.99:
+            send_telegram_message(f"ℹ️ {symbol}: All TP routed to TP1 due to low qty")
+
         if tp_total_placed < qty:
             msg = f"⚠️ {symbol}: TP coverage incomplete: {tp_total_placed:.4f} of {qty:.4f}"
             log(msg, level="WARNING")

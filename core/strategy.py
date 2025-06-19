@@ -245,7 +245,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, {}, reason="no_direction")
         return None, failure_reasons
 
-    breakdown["pair_type"] = pair_type  # добавим тип пары в breakdown
+    breakdown["pair_type"] = pair_type
 
     min_macd_strength = cfg.get("min_macd_strength", 0.002)
     min_rsi_strength = cfg.get("min_rsi_strength", 12.0)
@@ -323,17 +323,23 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         qty = fallback_qty
 
     notional = qty * entry_price
+    if notional < MIN_NOTIONAL_OPEN:
+        log(f"[QtyCheck] {symbol}: notional below MIN_NOTIONAL_OPEN → {notional:.2f}", level="WARNING")
 
     try:
         tp1, tp2, sl_price, share1, share2 = calculate_tp_levels(entry_price, direction, df=df)
         if any(x is None or (isinstance(x, float) and np.isnan(x)) for x in (tp1, sl_price, share1)):
             raise ValueError("TP/SL invalid")
 
-        log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
+        tp_prices = [tp1, tp2, tp2 * 1.5]
+        breakdown["tp1"] = tp1
+        breakdown["tp2"] = tp2
+        breakdown["sl"] = sl_price
 
         min_profit_required = cfg.get("min_profit_threshold", 0.06)
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
 
+        log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
         log(f"[ProfitCalc] {symbol} → NetProfit=${net_profit:.2f} (required=${min_profit_required:.2f})", level="DEBUG")
 
         if not enough_profit:
@@ -370,7 +376,14 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         "pair_type": pair_type,
         "atr": round(atr, 5),
         "sl": round(sl_price, 5),
+        "tp_prices": tp_prices,
+        "tp1": tp1,
+        "tp2": tp2,
+        "share1": share1,
+        "share2": share2,
     }
+
+    log(f"[EntryData] {symbol} entry_data = {entry_data}", level="DEBUG")
 
     try:
         log_entry(entry_data, status="SUCCESS")

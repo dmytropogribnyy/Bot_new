@@ -383,19 +383,22 @@ def cmd_pnl_today(message, state=None, stop_event=None):
 
     import pandas as pd
 
+    from common.config_loader import TP_LOG_FILE
+    from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
+
     try:
-        df = pd.read_csv("data/tp_performance.csv", parse_dates=["timestamp"])
+        df = pd.read_csv(TP_LOG_FILE, parse_dates=["Date"])
         today = pd.Timestamp.now().normalize()
-        df_today = df[df["timestamp"] >= today]
+        df_today = df[df["Date"] >= today]
         if df_today.empty:
             send_telegram_message("📋 No trades today.", force=True)
             return
         total = len(df_today)
-        win = (df_today["result"].isin(["TP1", "TP2"])).sum()
-        loss = (df_today["result"] == "SL").sum()
-        avg = df_today["pnl_percent"].mean()
+        win = (df_today["Result"].isin(["TP1", "TP2"])).sum()
+        loss = (df_today["Result"] == "SL").sum()
+        avg = df_today["PnL (%)"].mean()
         msg = f"📈 *PnL Today*\nTotal Trades: {total}\nWins: {win}\nLosses: {loss}\nAvg PnL: {avg:.2f}%"
-        send_telegram_message(escape_markdown_v2(msg))
+        send_telegram_message(escape_markdown_v2(msg), force=True)
     except Exception as e:
         send_telegram_message(f"❌ /pnl_today error: {e}", force=True)
 
@@ -454,26 +457,34 @@ def cmd_summary(message, state=None, stop_event=None):
 
     import pandas as pd
 
+    from common.config_loader import TP_LOG_FILE
     from core.runtime_state import global_trading_pause_until, is_trading_globally_paused
+    from telegram.telegram_utils import send_telegram_message
+    from utils_core import get_cached_balance, get_runtime_config
+    from utils_logging import log
 
     try:
+        # === Загружаем список активных пар
         with open("data/dynamic_symbols.json", encoding="utf-8") as f:
             pairs = json.load(f)
+
         cfg = get_runtime_config()
         balance = get_cached_balance()
 
-        # Загружаем TP performance CSV
+        # === Загружаем TP Performance CSV
         pnl_today = 0.0
         tp1_hits = 0
         sl_hits = 0
         trade_count = 0
+
         try:
-            df = pd.read_csv("data/tp_performance.csv", parse_dates=["Date"])
+            df = pd.read_csv(TP_LOG_FILE, parse_dates=["Date"])
             today = pd.Timestamp.now().normalize()
             df_today = df[df["Date"] >= today]
+
             trade_count = len(df_today)
-            tp1_hits = (df_today["TP1 Hit"] == "YES").sum()
-            sl_hits = (df_today["SL Hit"] == "YES").sum()
+            tp1_hits = df_today["TP1 Hit"].sum()  # ✅ True/False считаем через sum()
+            sl_hits = df_today["SL Hit"].sum()
             pnl_today = df_today["PnL (%)"].sum()
         except Exception as e:
             log(f"[Summary] CSV parse error: {e}", level="DEBUG")
@@ -488,7 +499,7 @@ def cmd_summary(message, state=None, stop_event=None):
             f"• PnL Today: `{round(pnl_today, 2)}` %\n"
         )
 
-        # Добавим статус глобальной паузы
+        # === Статус глобальной паузы
         if is_trading_globally_paused():
             pause_until_str = global_trading_pause_until.strftime("%H:%M:%S") if global_trading_pause_until else "?"
             msg += f"• ⛔ *Global Pause:* until `{pause_until_str}`\n"
@@ -496,6 +507,7 @@ def cmd_summary(message, state=None, stop_event=None):
             msg += "• ⛔ Global Pause: `inactive`\n"
 
         send_telegram_message(msg, parse_mode="MarkdownV2", force=True)
+
     except Exception as e:
         send_telegram_message(f"❌ /summary error: {e}", force=True)
 

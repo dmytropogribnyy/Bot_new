@@ -73,8 +73,10 @@ def log_trade_result(
     absolute_profit: float = 0.0,
 ):
     """
-    Низкоуровневая запись сделки в tp_performance.csv.
-    Пишет расширенные поля и обновляет статистику дня.
+    Запись сделки в tp_performance.csv (и EXPORT_PATH).
+    - Предотвращает дубли
+    - Обновляет дневную статистику
+    - Логирует результат (Net, ATR, Exit Reason)
     """
     import csv
     import math
@@ -86,14 +88,13 @@ def log_trade_result(
     from utils_logging import log
 
     symbol = extract_symbol(symbol)
-
     if DRY_RUN:
         return False
 
     try:
         timestamp = now_with_timezone()
         date_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        final_result = result_type.upper() if result_type else "MANUAL"
+        result_label = (result_type or "manual").upper()
         exit_reason = exit_reason or "unknown"
 
         trade_key = f"{symbol}_{entry_price}_{exit_price}_{qty}"
@@ -103,10 +104,10 @@ def log_trade_result(
                 return False
             logged_trades.add(trade_key)
 
-        if math.isnan(net_pnl):
-            net_pnl = 0.0
-        if math.isnan(absolute_profit):
-            absolute_profit = 0.0
+        # Защита от NaN
+        net_pnl = 0.0 if math.isnan(net_pnl) else net_pnl
+        absolute_profit = 0.0 if math.isnan(absolute_profit) else absolute_profit
+        commission = 0.0 if math.isnan(commission) else commission
 
         pnl_usd = round(absolute_profit, 2)
 
@@ -121,7 +122,7 @@ def log_trade_result(
             tp2_hit,
             sl_hit,
             round(pnl_percent, 2),
-            final_result,
+            result_label,
             duration_minutes,
             round(commission, 4),
             round(net_pnl, 2),
@@ -153,20 +154,23 @@ def log_trade_result(
         ]
 
         for path in [TP_LOG_FILE, EXPORT_PATH]:
-            exists = os.path.isfile(path)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "a", newline="") as f:
-                writer = csv.writer(f)
-                if not exists:
-                    writer.writerow(header)
-                writer.writerow(row)
+            try:
+                exists = os.path.isfile(path)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    if not exists:
+                        writer.writerow(header)
+                    writer.writerow(row)
+            except Exception as io_err:
+                log(f"[TP Logger] ❌ Error writing to {path}: {io_err}", level="ERROR")
 
         log(
-            f"[REAL_RUN] {symbol} {final_result}: PnL={pnl_percent:.2f}%, " f"Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, ATR={atr:.3f}, " f"Type={pair_type}, Reason={exit_reason}",
+            f"[REAL_RUN] {symbol} {result_label}: PnL={pnl_percent:.2f}%, " f"Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, ATR={atr:.3f}, " f"Type={pair_type}, Reason={exit_reason}",
             level="INFO",
         )
 
-        # 📊 Обновляем дневную статистику
+        # Статистика дня
         with daily_stats_lock:
             daily_trade_stats["count"] += 1
             daily_trade_stats["commission_total"] += commission
