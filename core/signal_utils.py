@@ -126,16 +126,19 @@ def get_signal_breakdown(df):
 
 def passes_1plus1(breakdown):
     """
-    Адаптивная проверка сигнала по модели 1+1 + безопасный override по сильному компоненту.
+    Проверка сигнала по логике 1+1 с комбинированной стратегией:
+    - вход при ≥2 primary ИЛИ ≥1 primary + ≥1 secondary
+    - вход при сильном MACD/RSI, даже если только один PRIMARY
+    - отклоняется, если только один SECONDARY
     """
     config = get_runtime_config()
-    soft_mode = config.get("enable_passes_1plus1_soft", True)
-    min_primary = config.get("min_primary_score", 1)
-    min_secondary = config.get("min_secondary_score", 0)
+    mode = config.get("passes_1plus1_mode", "hybrid_strict")
+    min_primary = config.get("min_primary_score", 2)
+    min_secondary = config.get("min_secondary_score", 1)
 
-    enable_strong_override = config.get("enable_strong_signal_override", True)
-    macd_override = config.get("macd_strength_override", 2.5)
-    rsi_override = config.get("rsi_strength_override", 25)
+    enable_override = config.get("enable_strong_signal_override", True)
+    macd_override = config.get("macd_strength_override", 2.0)
+    rsi_override = config.get("rsi_strength_override", 20)
 
     primary_components = {
         "MACD": int(breakdown.get("MACD", 0) or 0),
@@ -158,23 +161,25 @@ def passes_1plus1(breakdown):
         log("[1plus1] ❌ All components zero for signal → reject", level="DEBUG")
         return False
 
-    if soft_mode:
-        result = (primary_sum >= min_primary and secondary_sum >= min_secondary) or (primary_sum >= 1)
-    else:
-        result = primary_sum >= min_primary and secondary_sum >= min_secondary
+    # === Основная логика ===
+    result = primary_sum >= min_primary or (primary_sum >= 1 and secondary_sum >= min_secondary)
 
-    # ✅ Override fallback — если обычная логика НЕ прошла
-    if not result and enable_strong_override:
+    # === Допуск при одном MACD или RSI с силой
+    if not result and primary_sum == 1 and secondary_sum == 0:
+        if macd_strength > 0.0012 or rsi_strength > 1.0:
+            result = True
+            log("[1plus1] 🔓 Permissive pass: 1 strong primary without secondary", level="DEBUG")
+
+    # === Override (сильный макд или рси)
+    if not result and enable_override:
         if macd_strength >= macd_override or rsi_strength >= rsi_override:
-            log(f"[1plus1] 🚨 Strong signal override: macd_strength={macd_strength:.2f}, " f"rsi_strength={rsi_strength:.2f} → ✅ OVERRIDE PASS", level="DEBUG")
-            return True
+            result = True
+            log(f"[1plus1] 🚨 Strong signal override: macd_strength={macd_strength:.2f}, rsi_strength={rsi_strength:.2f} → ✅ OVERRIDE PASS", level="DEBUG")
         else:
-            log(f"[1plus1] ⛔ Override check failed: macd={macd_strength:.2f}, rsi={rsi_strength:.2f} " f"(thresholds: {macd_override}/{rsi_override})", level="DEBUG")
+            log(f"[1plus1] ⛔ Override check failed: macd={macd_strength:.2f}, rsi={rsi_strength:.2f} (thresholds: {macd_override}/{rsi_override})", level="DEBUG")
 
     log(
-        f"[1plus1] ➕ PRIMARY: {primary_components} = {primary_sum} | "
-        f"🔧 SECONDARY: {secondary_components} = {secondary_sum} | "
-        f"🧠 Mode={'SOFT' if soft_mode else 'STRICT'} | ✅ RESULT: {result}",
+        f"[1plus1] ➕ PRIMARY: {primary_components} = {primary_sum} | " f"🔧 SECONDARY: {secondary_components} = {secondary_sum} | " f"🧠 Mode={mode} | ✅ RESULT: {result}",
         level="DEBUG",
     )
 
@@ -240,19 +245,19 @@ def passes_filters(df: pd.DataFrame, symbol: str) -> bool:
         volume_usdt = latest.get("volume_usdt_15m", 0)
 
         if latest.get("rsi_15m", 0) < rsi_thr:
-            log(f"[Filter] {symbol} ❌ rsi_15m < {rsi_thr}", level="DEBUG")
+            log(f"[Filter] {symbol} ❌ rsi_15m={latest.get('rsi_15m', 0):.2f} < {rsi_thr}", level="DEBUG")
             return False
 
         if rel_volume < vol_thr:
-            log(f"[Filter] {symbol} ❌ rel_volume_15m < {vol_thr}", level="DEBUG")
+            log(f"[Filter] {symbol} ❌ rel_volume_15m={rel_volume:.3f} < {vol_thr}", level="DEBUG")
             return False
 
         if atr_pct < atr_thr_pct:
-            log(f"[Filter] {symbol} ❌ atr_pct {atr_pct:.5f} < {atr_thr_pct}", level="DEBUG")
+            log(f"[Filter] {symbol} ❌ atr_pct={atr_pct:.5f} < {atr_thr_pct}", level="DEBUG")
             return False
 
         if volume_usdt < vol_abs_min:
-            log(f"[Filter] {symbol} ❌ volume_usdt {volume_usdt:.1f} < {vol_abs_min}", level="DEBUG")
+            log(f"[Filter] {symbol} ❌ volume_usdt={volume_usdt:.1f} < {vol_abs_min}", level="DEBUG")
             return False
 
         return True

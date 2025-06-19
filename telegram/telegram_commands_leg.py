@@ -90,17 +90,29 @@ def _format_pos_dry(t):
         return f"{t.get('symbol', 'Unknown')} (Error)"
 
 
-def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
+def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30, stop_event=None):
     """
     Monitor stop/shutdown process with a time limit,
     re-closing positions if needed.
     """
+    from core.binance_api import close_real_trade, get_open_positions
+    from core.trade_engine import trade_manager
+    from telegram.telegram_utils import send_telegram_message
+    from utils_core import save_state
+    from utils_logging import log
+
+    def _format_pos_real(p):
+        return f"{p['symbol']} ({p.get('side', '?')}, qty={p.get('contracts', '?')})"
+
+    def _format_pos_dry(t):
+        return f"{t['symbol']} (sim, qty={t.get('qty', '?')})"
+
     start = time.time()
     check_interval = 60
     last_notification_time = 0
     notification_interval = 30
 
-    from core.binance_api import get_open_positions
+    from common.config_loader import DRY_RUN
 
     while state.get("stopping") and (time.time() - start < timeout_minutes * 60):
         try:
@@ -108,15 +120,15 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
                 open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
             else:
                 positions = get_open_positions()
-                open_details = [_format_pos_real(p) for p in positions]
+                open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
 
                 # Retry closing after 5 minutes
                 if open_details and (time.time() - start) > 300:
-                    for pos in positions:
-                        if float(pos.get("contracts", 0)) > 0:
+                    for p in positions:
+                        if float(p.get("contracts", 0)) > 0:
                             try:
-                                close_real_trade(pos["symbol"])
-                                log(f"[Stop] Retry closing position for {pos['symbol']}", level="INFO")
+                                close_real_trade(p["symbol"])
+                                log(f"[Stop] Retry closing position for {p['symbol']}", level="INFO")
                             except Exception as e:
                                 log(f"[Stop] Failed to close pos: {e}", level="ERROR")
 
@@ -139,6 +151,8 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
                         )
                         state["stopping"] = False
                         save_state(state)
+                        if stop_event:
+                            stop_event.set()
                         break
                 elif open_details:
                     symbols = [p.split("(")[0] for p in open_details]
@@ -159,6 +173,8 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
             state["stopping"] = False
             save_state(state)
             log("[Stop Monitor] All positions successfully closed", level="INFO")
+            if stop_event:
+                stop_event.set()
 
 
 # ---------------------------------------------------------------------
@@ -385,45 +401,46 @@ def cmd_shutdown(message, state=None, stop_event=None):
     🛑 Полностью завершить работу бота после закрытия всех позиций.
     Usage: /shutdown
     """
-    import common.config_loader as cfg_loader
+
+    from threading import Thread
+
+    from common.config_loader import DRY_RUN
+    from core.exchange_init import exchange
+    from core.trade_engine import trade_manager
+    from telegram.telegram_utils import send_telegram_message
+    from utils_core import save_state
+    from utils_logging import log
 
     log("[Shutdown] /shutdown command received.", level="INFO")
 
-    cfg_loader.RUNNING = False
+    # ✅ Устанавливаем флаги "мягкой остановки"
     state["shutdown"] = True
     state["stopping"] = True
     save_state(state)
 
-    if stop_event:
-        stop_event.set()
-
     try:
-        positions = exchange.fetch_positions()
-        open_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
-
+        # ⏳ Список активных позиций (реальных или dry-run)
         if DRY_RUN:
-            open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
+            open_details = [t for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
         else:
-            open_details = [_format_pos_real(p) for p in open_positions]
-            for pos in open_positions:
-                if float(pos.get("contracts", 0)) > 0:
-                    try:
-                        close_real_trade(pos["symbol"])
-                        log(f"[Shutdown] Closing position for {pos['symbol']}", level="INFO")
-                    except Exception as e:
-                        log(f"[Shutdown] Failed to close pos: {e}", level="ERROR")
+            positions = exchange.fetch_positions()
+            open_details = [p for p in positions if float(p.get("contracts", 0)) > 0]
 
         if open_details:
-            msg = "🛑 *Shutdown initiated*.\n" "Waiting for positions:\n" + "\n".join(open_details) + "\nBot will exit soon."
-            Thread(target=_monitor_stop_timeout, args=("Shutdown", state, 15), daemon=True).start()
+            msg = (
+                "🛑 *Shutdown initiated*\\.\nWaiting for positions to close softly:\n"
+                + "\n".join([f"{p['symbol']} ({p.get('side', '?')}, qty={p.get('contracts', '?')})" for p in open_details])
+                + "\nBot will exit automatically after all are closed\\."
+            )
+            Thread(target=_monitor_stop_timeout, args=("Shutdown", state, 15, stop_event), daemon=True).start()
         else:
-            msg = "🛑 *Shutdown initiated*.\nNo open positions. Exiting immediately."
-            log("[Shutdown] No open positions, exiting now...", level="INFO")
-            send_telegram_message("✅ Shutdown complete, no open trades. Exiting...", force=True)
-            os._exit(0)
+            msg = "🛑 *Shutdown initiated*\\.\nNo open positions\\. Bot will stop shortly\\."
+            log("[Shutdown] No open positions. Graceful exit expected.", level="INFO")
+            if stop_event:
+                stop_event.set()
 
         send_telegram_message(msg, force=True, parse_mode="MarkdownV2")
-        log("[Shutdown] Awaiting closure of positions...", level="INFO")
+
     except Exception as e:
         send_telegram_message(f"❌ Failed to initiate shutdown: {e}", force=True)
         log(f"Shutdown error: {e}", level="ERROR")

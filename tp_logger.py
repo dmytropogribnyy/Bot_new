@@ -103,7 +103,6 @@ def log_trade_result(
                 return False
             logged_trades.add(trade_key)
 
-        # Чистим NaN
         if math.isnan(net_pnl):
             net_pnl = 0.0
         if math.isnan(absolute_profit):

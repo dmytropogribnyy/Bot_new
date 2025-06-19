@@ -202,93 +202,118 @@ def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit
     return is_valid, round(net_profit, 2)
 
 
-def place_take_profit_and_stop_loss_orders(api_symbol, side, qty, entry_price):
+def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_prices, sl_price):
     """
-    Устанавливает TP и SL ордера после входа:
-    - TP уровни берутся из step_tp_levels и step_tp_sizes
-    - SL = STOP_MARKET с SL_PERCENT
-    Сохраняет уровни SL и TP в trade_manager для последующего контроля.
+    Ставит TP1/TP2/TP3 и SL ордера с адаптацией под малые qty.
+    Остатки TP2/TP3 добавляются к TP1, если не проходят лимит.
     """
+    from core.binance_api import convert_symbol
     from core.exchange_init import exchange
     from core.trade_engine import trade_manager
-    from utils_core import get_runtime_config
+    from telegram.telegram_utils import send_telegram_message
+    from utils_core import safe_call_retry
     from utils_logging import log
 
-    config = get_runtime_config()
-
-    step_tp_levels = config.get("step_tp_levels", [0.06, 0.10, 0.18])
-    step_tp_sizes = config.get("step_tp_sizes", [0.3, 0.3, 0.3])
-    sl_pct = config.get("SL_PERCENT", 0.012)
-
-    side = side.lower()  # ✅ нормализуем один раз
-    side_close = "sell" if side == "buy" else "buy"
+    if not tp_prices or not isinstance(tp_prices, (list, tuple)) or len(tp_prices) < 3 or sl_price is None:
+        msg = f"[TP/SL] Invalid TP/SL params for {symbol}. Skipping TP/SL."
+        log(msg, level="ERROR")
+        send_telegram_message(f"⚠️ {msg}")
+        return False
 
     try:
-        open_orders = exchange.fetch_open_orders(api_symbol)
-        reduce_orders = [o for o in open_orders if o.get("reduceOnly")]
-        if reduce_orders:
-            log(f"[TP/SL] {api_symbol}: reduceOnly orders already exist ({len(reduce_orders)}) — skipping setup", level="WARNING")
-            return False
+        api_symbol = convert_symbol(symbol)
+        market_info = exchange.markets.get(api_symbol, {})
+        min_qty = market_info.get("limits", {}).get("amount", {}).get("min", 0.001)
 
-        tp_prices_set = []
-        total_tp_qty = 0
+        shares = ["tp1", "tp2", "tp3"]
+        usable_levels = []
+        tp_adjusted = [0.0, 0.0, 0.0]
+        orders = []
+        tp_total_placed = 0
+        failed_levels = []
 
-        # === TP ордера ===
-        for i, (tp_pct, tp_share) in enumerate(zip(step_tp_levels, step_tp_sizes)):
-            if tp_share <= 0:
-                continue
-            tp_price = entry_price * (1 + tp_pct) if side == "buy" else entry_price * (1 - tp_pct)
-            tp_price = round(tp_price, 6)
-            tp_qty = round(qty * tp_share, 6)
-            if tp_qty <= 0:
-                continue
+        trade_data = trade_manager.get_trade(symbol) or {}
+        for i in range(3):
+            share_key = f"{shares[i]}_share"
+            raw_share = trade_data.get(share_key, 0.0)
             try:
-                exchange.create_limit_order(
-                    api_symbol,
-                    side_close,
-                    tp_qty,
-                    tp_price,
-                    {
-                        "reduceOnly": True,
-                        "postOnly": True,
-                        "timeInForce": "GTC",
-                    },
-                )
-                log(f"[TP] {api_symbol}: TP{i+1} placed at {tp_price:.6f} for {tp_qty}", level="INFO")
-                tp_prices_set.append(tp_price)
-                total_tp_qty += tp_qty
-            except Exception as e:
-                log(f"[TP] Failed to place TP{i+1} for {api_symbol}: {e}", level="ERROR")
+                share = float(raw_share)
+            except Exception:
+                share = 0.0
 
-        if total_tp_qty == 0:
-            log(f"[TP/SL] ⚠️ No TP orders were placed for {api_symbol}", level="WARNING")
+            qty_i = round(qty * share, 8)
+            tp_adjusted[i] = qty_i
+            if qty_i >= min_qty:
+                usable_levels.append(i)
 
-        # === SL ордер ===
-        sl_price = entry_price * (1 - sl_pct) if side == "buy" else entry_price * (1 + sl_pct)
-        sl_price = round(sl_price, 6)
+        # Fallback: если TP2/TP3 слишком малы — добавляем их к TP1
+        fallback_qty = sum(tp_adjusted[i] for i in [1, 2] if i not in usable_levels)
+        if fallback_qty > 0:
+            log(f"[TP-Fallback] {symbol}: redirecting {fallback_qty:.4f} from TP2/3 to TP1", level="DEBUG")
+            tp_adjusted[0] = round(tp_adjusted[0] + fallback_qty, 8)
 
-        try:
-            exchange.create_order(
-                symbol=api_symbol,
-                type="STOP_MARKET",
-                side=side_close,
-                amount=qty,
-                params={
-                    "stopPrice": sl_price,
-                    "reduceOnly": True,
-                },
+        # TP Orders
+        for i in range(3):
+            level = shares[i]
+            qty_i = tp_adjusted[i]
+            price = tp_prices[i]
+            if qty_i < min_qty:
+                failed_levels.append(level.upper())
+                continue
+
+            order = safe_call_retry(
+                lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, qty_i, price),
+                label=f"tp_limit_{symbol}_{i}",
             )
-            log(f"[SL] {api_symbol}: SL placed at {sl_price:.6f} for {qty}", level="INFO")
-        except Exception as e:
-            log(f"[SL] Failed to place SL for {api_symbol}: {e}", level="ERROR")
-            return False
 
-        # === Сохраняем TP/SL уровни в trade_manager ===
-        trade_manager.update_trade(api_symbol, "sl_price", sl_price)
-        trade_manager.update_trade(api_symbol, "tp_prices", tp_prices_set)
+            if order:
+                orders.append(order)
+                tp_total_placed += qty_i
+                trade_manager.update_trade(symbol, {f"{level}_price": price, f"{level}_qty": qty_i})  # ✅ FIXED
+            else:
+                failed_levels.append(level.upper())
+
+        # === Проверка SL до размещения (анти-Binance -2021)
+        min_gap = entry_price * 0.001  # 0.1%
+        skip_sl = False
+        if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):
+            log(f"[SL-Skip] {symbol}: SL too close to entry → skipped (SL={sl_price:.4f}, Entry={entry_price:.4f})", level="WARNING")
+            send_telegram_message(f"⚠️ {symbol}: SL skipped — too close to entry")
+            skip_sl = True
+
+        # SL Order
+        if not skip_sl:
+            sl_order = safe_call_retry(
+                lambda: exchange.create_order(
+                    api_symbol,
+                    type="STOP_MARKET",
+                    side="sell" if side == "buy" else "buy",
+                    amount=qty,
+                    params={"stopPrice": sl_price, "reduceOnly": True},
+                ),
+                label=f"sl_stop_market_{symbol}",
+            )
+            if sl_order:
+                orders.append(sl_order)
+                trade_manager.update_trade(symbol, {"sl_price": sl_price})
+            else:
+                log(f"[SL-Fail] {symbol} Failed to place SL at {sl_price}", level="ERROR")
+                send_telegram_message(f"⚠️ {symbol} failed to place SL at {sl_price}")
+                return False
+
+        # Уведомления
+        if tp_total_placed < qty:
+            msg = f"⚠️ {symbol}: TP coverage incomplete: {tp_total_placed:.4f} of {qty:.4f}"
+            log(msg, level="WARNING")
+            send_telegram_message(msg)
+
+        if failed_levels:
+            msg = f"⚠️ {symbol}: Skipped TP levels or merged to TP1: {', '.join(failed_levels)}"
+            send_telegram_message(msg)
 
         return True
 
     except Exception as e:
-        log(f"[TP/SL] General error placing TP/SL for {api_symbol}: {e}", level="ERROR")
+        log(f"[TP/SL ERROR] {symbol}: {e}", level="ERROR")
+        send_telegram_message(f"❌ {symbol} TP/SL error: {e}")
         return False

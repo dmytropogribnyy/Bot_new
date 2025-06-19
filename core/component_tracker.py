@@ -1,4 +1,3 @@
-# component_tracker.py
 import os
 
 
@@ -50,27 +49,34 @@ def log_component_data(symbol, breakdown, is_successful=True):
 
         # Update counts for each active component
         for component, value in breakdown.items():
-            if value > 0:
-                # Global component stats
-                if component not in data["components"]:
-                    data["components"][component] = {"count": 0, "successful": 0, "last_used": ""}
+            try:
+                numeric_value = float(value)
+                if numeric_value <= 0:
+                    continue
+            except Exception:
+                log(f"[ComponentTracker] Skipping non-numeric component: {component}={value}", level="DEBUG")
+                continue
 
-                data["components"][component]["count"] += 1
-                if is_successful:
-                    data["components"][component]["successful"] += 1
-                data["components"][component]["last_used"] = datetime.utcnow().isoformat()
+            # Global component stats
+            if component not in data["components"]:
+                data["components"][component] = {"count": 0, "successful": 0, "last_used": ""}
 
-                # Symbol-specific component stats
-                if component not in data["symbols"][symbol]["components"]:
-                    data["symbols"][symbol]["components"][component] = {"count": 0, "successful": 0}
+            data["components"][component]["count"] += 1
+            if is_successful:
+                data["components"][component]["successful"] += 1
+            data["components"][component]["last_used"] = datetime.utcnow().isoformat()
 
-                data["symbols"][symbol]["components"][component]["count"] += 1
-                if is_successful:
-                    data["symbols"][symbol]["components"][component]["successful"] += 1
+            # Symbol-specific component stats
+            if component not in data["symbols"][symbol]["components"]:
+                data["symbols"][symbol]["components"][component] = {"count": 0, "successful": 0}
+
+            data["symbols"][symbol]["components"][component]["count"] += 1
+            if is_successful:
+                data["symbols"][symbol]["components"][component]["successful"] += 1
 
         # Save back to file
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
 
     except Exception as e:
-        log(f"Error logging component data: {e}", level="ERROR")
+        log(f"[ComponentTracker] ❌ Error logging component data: {e}", level="ERROR")

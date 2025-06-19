@@ -29,35 +29,70 @@ def get_open_positions_count():
 
 def check_entry_allowed(balance):
     """
-    Проверяет, можно ли открыть новую позицию.
-    Возвращает (True, None) если да,
-             или (False, причина:str) если нет.
+    Проверяет, можно ли открыть новую позицию:
+    - по количеству позиций
+    - по capital utilization
+    - по лимиту на количество входов в час
     """
+    from datetime import datetime, timedelta
+
     from core.risk_utils import get_max_positions
+    from core.trade_engine import trade_manager
     from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
 
-    current_positions = get_open_positions_count()
+    config = get_runtime_config()
     max_positions = get_max_positions(balance)
+    current_positions = trade_manager.count_active_positions()
+    now = datetime.utcnow()
 
+    # === Check: максимальное количество одновременных позиций
     if current_positions >= max_positions:
         log(f"[EntryCheck] ❌ Too many positions: {current_positions}/{max_positions}", level="INFO")
         return False, "position_limit_reached"
 
-    position_value = get_total_position_value()
-    cap_usage = position_value / balance if balance > 0 else 1.0
+    # === Check: capital utilization (с учётом текущих открытых)
+    used_capital = get_total_position_value()
+    max_cap_pct = config.get("max_capital_utilization_pct", 0.80)
+    cap_utilization = used_capital / balance if balance > 0 else 1.0
 
-    # 💡 Получаем лимит из конфигурации
-    config = get_runtime_config()
-    max_cap_usage = config.get("max_margin_percent", 0.75)
+    log(f"[EntryCheck] Capital usage = {cap_utilization:.2%}, limit = {max_cap_pct:.2%}", level="DEBUG")
 
-    log(f"[EntryCheck] Capital check → used={cap_usage:.2%}, limit={max_cap_usage:.2%}", level="DEBUG")
-
-    if cap_usage > max_cap_usage:
-        log(f"[EntryCheck] ❌ Capital usage too high: {cap_usage:.2%} > {max_cap_usage:.2%}", level="INFO")
+    if cap_utilization > max_cap_pct:
+        log(f"[EntryCheck] ❌ Capital usage too high: {cap_utilization:.2%}", level="INFO")
         return False, "capital_utilization_limit"
 
-    log(f"[EntryCheck] ✅ Allowed to enter. Positions: {current_positions}/{max_positions}, Capital used: {cap_usage:.2%}", level="DEBUG")
+    # === Check: max_hourly_trade_limit (гибкий)
+    hourly_limit = config.get("max_hourly_trade_limit", None)
+    limit_mode = config.get("hourly_limit_check_mode", "active_only")
+
+    if hourly_limit:
+        recent_entries = 0
+        one_hour_ago = now - timedelta(minutes=60)
+
+        for trade in trade_manager.get_all_trades().values():
+            start = trade.get("start_time")
+            if isinstance(start, str):
+                try:
+                    start = datetime.fromisoformat(start)
+                except Exception:
+                    continue
+            if not isinstance(start, datetime):
+                continue
+
+            is_open = not trade.get("tp1_hit") and not trade.get("sl_hit") and not trade.get("soft_exit_hit")
+            if limit_mode == "active_only":
+                if is_open:
+                    recent_entries += 1
+            else:
+                if start >= one_hour_ago:
+                    recent_entries += 1
+
+        if recent_entries >= hourly_limit:
+            log(f"[EntryCheck] ❌ Hourly trade limit reached: {recent_entries}/{hourly_limit}", level="INFO")
+            return False, "hourly_limit_reached"
+
+    log(f"[EntryCheck] ✅ Allowed to enter. Positions: {current_positions}/{max_positions}, Capital used: {cap_utilization:.2%}", level="DEBUG")
     return True, None
 
 

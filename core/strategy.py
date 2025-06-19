@@ -14,7 +14,6 @@ from core.signal_utils import (
     detect_ema_crossover,
     detect_volume_spike,
 )
-from core.trade_engine import trade_manager
 from utils_core import (
     get_runtime_config,
     normalize_symbol,
@@ -178,7 +177,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     Генерирует сигнал на вход в сделку.
     Возвращает: (direction, qty, is_reentry, breakdown), либо None + причины отказа.
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     import numpy as np
     import pandas as pd
@@ -226,15 +225,55 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, {}, reason="data_fetch_error")
         return None, failure_reasons
 
-    direction, breakdown = get_signal_breakdown(df)
+    cfg = get_runtime_config()
+    require_closed = cfg.get("require_closed_candle_for_entry", False)
+    if require_closed:
+        now = datetime.utcnow()
+        latest_time = df.iloc[-1]["time"] if "time" in df.columns else None
+        if latest_time and now - latest_time < timedelta(minutes=1):
+            failure_reasons.append("candle_not_closed")
+            log(f"[Filter] ❌ Last candle still forming for {symbol} (now={now}, last={latest_time})", level="DEBUG")
+            log_missed_signal(symbol, {}, reason="candle_not_closed")
+            return None, failure_reasons
 
-    # 💬 DEBUG LOG
+    direction, breakdown = get_signal_breakdown(df)
     log(f"[SignalCheck] Breakdown for {symbol}: {breakdown}", level="DEBUG")
     log(f"[SignalCheck] Direction={direction}", level="DEBUG")
 
     if not direction or not breakdown:
         failure_reasons.append("no_direction")
         log_missed_signal(symbol, {}, reason="no_direction")
+        return None, failure_reasons
+
+    breakdown["pair_type"] = pair_type  # добавим тип пары в breakdown
+
+    min_macd_strength = cfg.get("min_macd_strength", 0.002)
+    min_rsi_strength = cfg.get("min_rsi_strength", 12.0)
+    macd_strength = breakdown.get("macd_strength", 0.0)
+    rsi_strength = breakdown.get("rsi_strength", 0.0)
+
+    enable_override = cfg.get("enable_strong_signal_override", False)
+    macd_override = cfg.get("macd_strength_override", 1.0)
+    rsi_override = cfg.get("rsi_strength_override", 10.0)
+
+    macd_weak = macd_strength < min_macd_strength
+    rsi_weak = rsi_strength < min_rsi_strength
+
+    if macd_weak and rsi_weak:
+        if enable_override and (macd_strength >= macd_override or rsi_strength >= rsi_override):
+            log(f"[Override] ✅ Signal override triggered: macd={macd_strength}, rsi={rsi_strength}", level="INFO")
+        else:
+            failure_reasons.append("weak_macd_rsi")
+            log(f"[Filter] ❌ MACD/RSI both weak: {macd_strength:.4f}/{rsi_strength:.2f}", level="DEBUG")
+            log_missed_signal(symbol, breakdown, reason="weak_macd_rsi")
+            return None, failure_reasons
+
+    htf_score = breakdown.get("HTF", 1)
+    allow_short = cfg.get("allow_short_if_htf_zero", True)
+    if direction == "sell" and htf_score < 1 and not allow_short:
+        failure_reasons.append("htf_mismatch")
+        log(f"[Filter] ❌ HTF mismatch — skip short: HTF={htf_score}", level="DEBUG")
+        log_missed_signal(symbol, breakdown, reason="htf_mismatch")
         return None, failure_reasons
 
     if not passes_1plus1(breakdown):
@@ -274,8 +313,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         return None, failure_reasons
 
     volume = breakdown.get("volume", 0)
-
-    # ✅ Новый: рассчитываем риск и adaptive SL
     risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_pct, volume_usdc=volume)
     stop_price = entry_price * (1 - effective_sl) if direction == "buy" else entry_price * (1 + effective_sl)
 
@@ -294,7 +331,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
         log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
 
-        min_profit_required = get_runtime_config().get("min_profit_threshold", 0.06)
+        min_profit_required = cfg.get("min_profit_threshold", 0.06)
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
 
         log(f"[ProfitCalc] {symbol} → NetProfit=${net_profit:.2f} (required=${min_profit_required:.2f})", level="DEBUG")
@@ -309,7 +346,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, breakdown, reason="invalid_tp_sl")
         return None, failure_reasons
 
-    cfg = get_runtime_config()
     with last_trade_times_lock:
         now_ts = datetime.utcnow().timestamp()
         last_t = last_trade_times.get(symbol)
@@ -322,12 +358,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     is_reentry = breakdown.get("is_reentry", False)
     if is_monitoring_hours_utc():
-        score = breakdown.get("score", 0)
-        if not is_reentry and score < 8.5:
-            failure_reasons.append("monitoring_hours")
-            log(f"[TimeFilter] ⏰ {symbol} skipped in monitoring hours (score={score})", level="DEBUG")
-            log_missed_signal(symbol, breakdown, reason="monitoring_hours")
-            return None, failure_reasons
+        log(f"[TimeFilter] ⏰ {symbol} within monitoring hours → allowed", level="DEBUG")
 
     entry_data = {
         "symbol": symbol,
@@ -346,7 +377,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     except Exception as e:
         log(f"[WARN] Failed to log_entry for {symbol}: {e}", level="WARNING")
 
-    # ✅ Проверка структуры выхода
     try:
         assert direction in ("buy", "sell")
         assert isinstance(qty, (float, int)) and qty > 0
@@ -357,7 +387,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, breakdown, reason="invalid_return_structure")
         return None, failure_reasons
 
-    # ✅ Явный лог успешного прохода
     log(f"[SignalCheck] ✅ Passed {symbol} | direction={direction} qty={qty:.4f}", level="INFO")
     return (direction, qty, is_reentry, breakdown), []
 
@@ -366,6 +395,9 @@ def calculate_tp_targets():
     """
     Возвращает текущие TP цели по активным сделкам (по tp1_price, fallback = +5%)
     """
+    from core.trade_engine import trade_manager
+    from utils_logging import log
+
     try:
         positions = trade_manager._trades
         results = []
@@ -375,11 +407,19 @@ def calculate_tp_targets():
             if not entry_price or entry_price <= 0:
                 continue
 
-            tp_price = data.get("tp1_price") or entry_price * 1.05
-            if tp_price > 0:
-                result = {"symbol": symbol, "tp_price": round(tp_price, 4), "entry": round(entry_price, 4), "pair_type": data.get("pair_type", "unknown")}
-                results.append(result)
-                log(f"[TP-Target] {symbol} → TP1: {tp_price:.4f}", level="DEBUG")
+            tp_raw = data.get("tp1_price")
+            tp_price = round(tp_raw if tp_raw else entry_price * 1.05, 4)
+            entry_rounded = round(entry_price, 4)
+
+            result = {
+                "symbol": symbol,
+                "tp_price": tp_price,
+                "entry": entry_rounded,
+                "pair_type": data.get("pair_type", "unknown"),
+            }
+            results.append(result)
+
+            log(f"[TP-Target] {symbol} → TP1: {tp_price:.4f}", level="DEBUG")
 
         return results
 
