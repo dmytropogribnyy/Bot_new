@@ -242,10 +242,19 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     breakdown["pair_type"] = pair_type
 
-    min_macd_strength = cfg.get("min_macd_strength", 0.002)
-    min_rsi_strength = cfg.get("min_rsi_strength", 12.0)
+    # === Signal Score (по MACD/RSI/EMA)
+    weights = cfg.get("signal_strength_weighting", {"MACD": 0.4, "RSI": 0.3, "EMA": 0.3})
     macd_strength = breakdown.get("macd_strength", 0.0)
     rsi_strength = breakdown.get("rsi_strength", 0.0)
+    ema_score = float(breakdown.get("EMA_CROSS", 0))  # treat EMA_CROSS as binary
+
+    score = macd_strength * weights.get("MACD", 0.4) + rsi_strength * weights.get("RSI", 0.3) + ema_score * weights.get("EMA", 0.3)
+    signal_score = round(score, 4)
+    breakdown["signal_score"] = signal_score
+    log(f"[Score] {symbol} → signal_score={signal_score:.4f}", level="DEBUG")
+
+    min_macd_strength = cfg.get("min_macd_strength", 0.002)
+    min_rsi_strength = cfg.get("min_rsi_strength", 12.0)
 
     enable_override = cfg.get("enable_strong_signal_override", False)
     macd_override = cfg.get("macd_strength_override", 1.0)

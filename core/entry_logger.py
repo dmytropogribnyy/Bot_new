@@ -1,7 +1,3 @@
-import csv
-import os
-from datetime import datetime
-
 from common.config_loader import TAKER_FEE_RATE
 from constants import ENTRY_LOG_PATH
 from utils_core import extract_symbol, get_cached_balance
@@ -34,6 +30,12 @@ def log_entry(trade: dict, status="SUCCESS"):
             log(f"[entry_logger] Skipping invalid log: entry={trade.get('entry')}, qty={trade.get('qty')}, symbol={trade.get('symbol')}", level="WARNING")
             return
 
+        import csv
+        import os
+        from datetime import datetime
+
+        from utils_core import get_runtime_config
+
         balance = get_cached_balance()
         account_category = "Small" if balance < 120 else "Medium" if balance < 300 else "Standard"
 
@@ -47,9 +49,7 @@ def log_entry(trade: dict, status="SUCCESS"):
         tp_prices = trade.get("tp_prices", [])
         tp1_price = tp_prices[0] if isinstance(tp_prices, list) and len(tp_prices) >= 1 else 0.0
 
-        # === TP1 share (адаптивный)
-        from utils_core import get_runtime_config
-
+        # === TP1 share
         tp1_share = 0.7  # fallback
         try:
             config = get_runtime_config()
@@ -79,6 +79,11 @@ def log_entry(trade: dict, status="SUCCESS"):
 
         exit_reason = trade.get("exit_reason", "-")
 
+        # ✅ Новое: причина отказа при status != SUCCESS
+        fail_reason = trade.get("fail_reason", "-")
+        if status != "SUCCESS":
+            log(f"[entry_logger] ❌ FAIL log for {symbol} → reason: {fail_reason}", level="WARNING")
+
         entry_dict = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "symbol": symbol,
@@ -94,6 +99,8 @@ def log_entry(trade: dict, status="SUCCESS"):
             "priority_pair": priority_flag,
             "account_category": account_category,
             "exit_reason": exit_reason,
+            "fail_reason": fail_reason,
+            "signal_score": round(float(trade.get("signal_score", 0.0)), 4),  # ✅ добавлено
         }
 
         # === Защита от дубликатов (по symbol, direction, price, qty)

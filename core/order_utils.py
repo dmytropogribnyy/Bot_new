@@ -7,19 +7,27 @@ from utils_logging import log
 
 def calculate_order_quantity(entry_price: float, stop_price: float, balance: float, risk_percent: float, symbol: str) -> float:
     """
-    Вычисляет количество контрактов с учётом риска и ограничения по капиталу и плечу.
+    Вычисляет количество контрактов с учётом риска, капитализации, min notional и min trade qty.
     """
-    from common.config_loader import MIN_NOTIONAL_OPEN
+    from common.config_loader import MIN_NOTIONAL_OPEN, get_runtime_config
     from common.leverage_config import get_leverage_for_symbol
+    from utils_core import round_step_size
     from utils_logging import log
 
+    cfg = get_runtime_config()
     risk_amount = balance * risk_percent
     risk_per_contract = abs(entry_price - stop_price)
-    qty = risk_amount / risk_per_contract if risk_per_contract > 0 else 0
+
+    if risk_per_contract <= 0:
+        log(f"[Risk] ❌ Invalid stop distance for {symbol}", level="ERROR")
+        return 0.0
+
+    qty = risk_amount / risk_per_contract
 
     # === Capital Utilization Cap
     leverage = get_leverage_for_symbol(symbol)
-    max_notional = balance * leverage * 0.80
+    capital_pct = cfg.get("max_capital_utilization_pct", 0.7)
+    max_notional = balance * leverage * capital_pct
     max_qty = max_notional / entry_price
 
     if qty * entry_price > max_notional:
@@ -32,7 +40,15 @@ def calculate_order_quantity(entry_price: float, stop_price: float, balance: flo
         qty = MIN_NOTIONAL_OPEN / entry_price
         log(f"⚠️ Adjusted qty to {qty:.6f} to meet min notional ${MIN_NOTIONAL_OPEN}", level="WARNING")
 
-    return round(qty, 3)
+    # === Oкругление и проверка min_trade_qty
+    qty = round_step_size(symbol, qty)
+    min_qty = cfg.get("min_trade_qty", 0.001)
+
+    if qty < min_qty:
+        log(f"[Risk] ❌ qty={qty:.6f} < min_trade_qty={min_qty} → blocked", level="WARNING")
+        return 0.0
+
+    return qty
 
 
 def create_post_only_limit_order(symbol, side, amount, price):

@@ -43,6 +43,47 @@ DRY_RUN_FALLBACK_SYMBOLS = USDT_SYMBOLS if USE_TESTNET else USDC_SYMBOLS
 
 _last_logged_hour = None
 
+BLOCKED_SYMBOLS_FILE = "data/blocked_symbols.json"
+LOW_VOLUME_FILE = "data/low_volume_hits.json"
+
+
+def load_blocked_symbols():
+    try:
+        if os.path.exists(BLOCKED_SYMBOLS_FILE):
+            with open(BLOCKED_SYMBOLS_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        log(f"[Blocked] Failed to load blocked symbols: {e}", level="WARNING")
+    return {}
+
+
+def save_blocked_symbols(data):
+    try:
+        os.makedirs(os.path.dirname(BLOCKED_SYMBOLS_FILE), exist_ok=True)
+        with open(BLOCKED_SYMBOLS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log(f"[Blocked] Failed to save blocked symbols: {e}", level="ERROR")
+
+
+def load_low_volume_hits():
+    try:
+        if os.path.exists(LOW_VOLUME_FILE):
+            with open(LOW_VOLUME_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        log(f"[LowVolume] Failed to load low_volume_hits: {e}", level="WARNING")
+    return {}
+
+
+def save_low_volume_hits(data):
+    try:
+        os.makedirs(os.path.dirname(LOW_VOLUME_FILE), exist_ok=True)
+        with open(LOW_VOLUME_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log(f"[LowVolume] Failed to save low_volume_hits: {e}", level="ERROR")
+
 
 def auto_update_valid_pairs_if_needed():
     """
@@ -234,10 +275,18 @@ def select_active_symbols():
     fixed = FIXED_PAIRS
     priority_pairs = get_priority_small_balance_pairs() if balance < 300 else []
 
+    # Загружаем список qty_blocked
+    blocked_symbols = load_blocked_symbols()
+    blocked_list = [s for s, count in blocked_symbols.items() if count >= 3]
+    if blocked_list:
+        log(f"[Selector] ❌ Excluding {len(blocked_list)} blocked symbols: {', '.join(blocked_list)}", level="WARNING")
+
     # Собираем данные (ATR/volume/risk_factor) для dynamic
     sym_data = {}
     for sym in all_symbols:
         if sym in fixed:
+            continue
+        if sym in blocked_list:
             continue
         df = fetch_data_multiframe(sym)
         if df is None:
@@ -258,8 +307,37 @@ def select_active_symbols():
             "risk_factor": r_factor,
         }
 
-    # Фильтруем multi-tier
+    # Обновляем low_volume_hits
+    low_volume_hits = load_low_volume_hits()
+    current_time = time.time()
+    keep_duration = 6 * 3600
     tiers = get_filter_tiers()
+
+    for s in list(sym_data.keys()):
+        vol = sym_data[s]["volume"]
+        atr = sym_data[s]["atr"]
+        passed = any(vol >= t["volume"] and atr >= t["atr"] for t in tiers)
+
+        if not passed:
+            if s not in low_volume_hits:
+                low_volume_hits[s] = {"count": 1, "last": current_time}
+            else:
+                low_volume_hits[s]["count"] += 1
+                low_volume_hits[s]["last"] = current_time
+        else:
+            if s in low_volume_hits:
+                del low_volume_hits[s]
+
+    low_volume_hits = {k: v for k, v in low_volume_hits.items() if current_time - v.get("last", 0) < keep_duration}
+    save_low_volume_hits(low_volume_hits)
+
+    excluded_lv = [s for s, v in low_volume_hits.items() if v["count"] >= 4]
+    if excluded_lv:
+        log(f"[LowVolume] ❌ Excluding {len(excluded_lv)} low-volume repeat offenders: {', '.join(excluded_lv)}", level="WARNING")
+        for s in excluded_lv:
+            sym_data.pop(s, None)
+
+    # Фильтруем multi-tier
     filtered_data = {}
     for tier in tiers:
         filtered_data = {s: info for s, info in sym_data.items() if info["atr"] >= tier["atr"] and info["volume"] >= tier["volume"]}

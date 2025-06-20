@@ -1,286 +1,356 @@
-Analysis of Issues and Solutions for BinanceBot Trade Execution
-Overview of Identified Problems
-The BinanceBot’s trade execution and risk management were experiencing several issues leading to unexpected behavior. After analyzing the codebase (core modules and logs), five key problems were confirmed:
-Market orders often returning zero fills: Trades would open but the executed quantity (filled*qty) remained 0.0, especially for market orders.
-Frequent “Margin is insufficient” errors: Binance API would reject orders due to insufficient margin, indicating possible miscalculations in position size or capital usage.
-Take-Profit/Stop-Loss orders not being placed correctly: In many cases TP/SL orders were not submitted at all or were calculated with incorrect quantities.
-No enforcement of the max capital utilization limit (50%): The bot could exceed the intended max_capital_utilization_pct of 50% of account balance, risking over-exposure.
-Hidden logic bugs in risk management and trade management methods: Inconsistencies in how risk limits and trade signals were handled (e.g. re-entry logic, risk factor checks, trade logging) could lead to unpredictable losses or missed exits.
-The goal is to refactor and fix the entire trade entry chain – from signal generation to order placement – to ensure stable, predictable behavior. Below we discuss each issue, its root cause, and the proposed solution.
-Issue 1: Market Orders with filled_qty = 0.0
-Cause: The bot frequently encounters situations where a market order is placed but no volume is filled. This typically occurs with very small order sizes or illiquid pairs (especially in testnet mode or with USDC pairs). The code does detect this scenario and aborts the trade if the filled quantity is zero
-file-am23ugntgoih1y6kdjhqgn
-. In create_safe_market_order, the implementation even retries once after a short delay if the initial fill is 0
-file-bz5mhhbzhxkpefqguhpn6t
-. However, if the second attempt also returns 0 filled quantity, the function still returns success=True (with filled_qty=0), causing the trade entry function to log a warning and halt the trade
-file-am23ugntgoih1y6kdjhqgn
-. This was happening often, indicating the quantity calculated might be below the exchange’s minimum or that the market had no available liquidity at that moment. Solution: Ensure that the order quantity never falls below the exchange minimum and avoid triggering trades on pairs that likely won’t fill. Steps to address this:
-Improve minimum quantity enforcement: The bot already validates order size via validate_order_size before sending the order. If the amount or notional is below Binance’s minimum, it returns an error
-file-bz5mhhbzhxkpefqguhpn6t
-file-bz5mhhbzhxkpefqguhpn6t
-. We should double-check that MIN_NOTIONAL_OPEN (currently $20) is sufficiently above Binance’s actual minimums. Increasing this value or dynamically fetching the symbol’s min notional (market["limits"]["cost"]["min"]) can add a safety margin.
-Avoid extremely illiquid signals: If a symbol’s recent volume is very low, consider filtering it out to prevent 0-fill orders. (The strategy already applies a volume threshold filter; ensure volume_threshold_usdc is configured appropriately).
-Dry-run/test mode handling: In test mode (no real fills), consider treating an immediate 0 fill as filled for simulation purposes. Alternatively, skip sending trades in testnet if we know certain markets won’t fill.
-By enforcing a higher minimum notional and only trading liquid pairs, the occurrence of filled_qty=0.0 should drop dramatically. The retry logic in create_safe_market_order will still catch any transient issues (like momentary spread issues) by attempting the order twice
-file-bz5mhhbzhxkpefqguhpn6t
-. If even after these changes a market order returns zero fill, the trade will be safely aborted (and not recorded) as it does now
-file-am23ugntgoih1y6kdjhqgn
-, preventing ghost positions.
-Issue 2: “Margin is insufficient” Errors
-Cause: This error indicates the bot tried to open a position larger than the available margin. Two factors contribute to this:
-The calculation of position size didn’t fully account for existing positions’ margin usage. The bot’s calculate_position_size function limits each position to a percentage of balance * leverage (max*margin_percent), but the default is quite high (75%)
-file-am23ugntgoih1y6kdjhqgn
-. With multiple trades, this could exceed total margin. For example, one open trade uses ~75% margin; a second trade might still attempt another ~75%, pushing total usage >100%. Binance’s API then rejects the order with insufficient margin.
-The bot’s capital utilization check (check_entry_allowed) was using a higher threshold by default (80% of balance)
-file-ddvdsxjgjleycmiqxzzrhp
-. If not explicitly set to 50%, the bot was allowing trades up to 80% utilization. This mismatch (80% overall vs. 75% per trade) meant two large trades could slip through the entry check but still sum to >100% usage.
-Solution: Tighten margin usage limits and ensure consistency between per-trade and total thresholds:
-Lower the global capital utilization limit to 50%: Update the runtime config or default so that max_capital_utilization_pct is 0.50 (50%). This means check_entry_allowed will reject any new trade if currently used capital ≥50% of balance
-file-ddvdsxjgjleycmiqxzzrhp
-. All trades in sum will then use at most half the account balance.
-Align per-trade margin limit: The config MAX_MARGIN_PERCENT should also be 0.5 (50%) to match. Currently it’s 20% in config_loader (which may have been ignored) and 75% default in code
-file-am23ugntgoih1y6kdjhqgn
-– this discrepancy must be resolved. Setting max_margin_percent=0.5 in runtime_config.json will cause calculate_position_size to cap each trade at 50% of balance (at the given leverage). With leverage (e.g. 5x), 50% of balance usage corresponds to a reasonable portion of margin. The code will log and truncate any requested size above this cap
-file-am23ugntgoih1y6kdjhqgn
-.
-Consider available margin: Optionally, incorporate a check using Binance’s reported available margin. The code already logs avail_margin before placing orders
-file-bz5mhhbzhxkpefqguhpn6t
-. We could explicitly compare the required initial margin for the new order against avail_margin and abort if it’s insufficient. This would provide an extra safeguard beyond the percentage limits.
-After these changes, the bot should no longer attempt orders that exceed available funds. If it does (due to some miscalculation), create_safe_market_order will catch the Binance error and return a failure with "Margin is insufficient"
-file-bz5mhhbzhxkpefqguhpn6t
-, and the trade will be skipped with an error log. Overall, maintaining a 50% cap on used capital will ensure a healthy buffer to avoid margin errors.
-Issue 3: Take-Profit/Stop-Loss Orders Not Placed Correctly
-Cause: We discovered a logical bug that prevented TP/SL orders from being placed in many cases. The trade data structure did not pass the TP share percentages in a way that the order-placement function expected. Specifically:
-When a trade is opened, the code calculates two take-profit targets (TP1 and TP2) and their share of the position (e.g. 80% for TP1, 20% for TP2 by default). These shares are stored in trade_data as share1 and share2
-file-am23ugntgoih1y6kdjhqgn
-. However, the function responsible for placing TP/SL orders (place_take_profit_and_stop_loss_orders) looks for keys named tp1_share, tp2_share, and tp3_share in the trade data
-file-fflbkxxsxdumvsclmtdm4m
-. Because trade_data used a different naming convention (share1/2 instead of tp1_share/tp2_share), the TP/SL placement logic was effectively seeing all shares as 0.0.
-As a result, the code believed each TP order quantity was below the minimum and skipped placing all TP orders. It would then log warnings about “TP coverage incomplete” and “Skipped TP levels: TP1, TP2, TP3”
-file-fflbkxxsxdumvsclmtdm4m
-. The stop-loss might still be placed (unless it was deemed too close), but having no TP limit orders means the position had no defined profit-taking exits. This matches the observed behavior of TP/SL not being set.
-Solution: Fix the inconsistency in share keys and ensure partial TP orders are submitted:
-Pass correct TP share values to the order placement: We will include tp1_share, tp2_share, and tp3_share in the trade_data when creating a trade. For example, set trade_data["tp1_share"] = share1 and tp2_share = share2. The third share can be the remainder (1 – share1 – share2, which is 0 in the default 80/20 case). This way, inside place_take_profit_and_stop_loss_orders, the loop will retrieve the proper share percentages instead of defaulting to 0
-file-fflbkxxsxdumvsclmtdm4m
-.
-Verify TP order sizing logic: With correct shares, the function will calculate qty_i = qty * share for each TP level. Any level with qty_i above the exchange min will be placed as a limit order at the target price
-file-fflbkxxsxdumvsclmtdm4m
-. If a portion is too small (e.g. a very tiny TP2), the code will merge that portion into TP1 as a fallback
-file-fflbkxxsxdumvsclmtdm4m
-. This ensures no part of the position is left without a TP.
-Immediate placement after entry: We must confirm that the TP/SL placement function is invoked right after a market entry. In the code, this call is present immediately after a successful market order
-file-am23ugntgoih1y6kdjhqgn
-. With the shares bug fixed, that call will actually place the orders. On failure, it logs an error and sends a Telegram alert
-file-am23ugntgoih1y6kdjhqgn
-. We should maintain that error handling – if TP/SL placement ever returns False, the bot logs a warning
-file-am23ugntgoih1y6kdjhqgn
-so we can investigate (it should not happen in normal operation after the fix).
-After implementing these fixes, each new position will immediately have its Take-Profit and Stop-Loss orders working as intended. For example, if we buy 100 units, it will place a TP limit sell for ~80 units at TP1 and ~20 units at TP2, and a STOP_MARKET sell for 100 at the SL price. All these orders are reduce-only (for futures) and tied to the position. This guarantees that profits are taken at the right levels and losses are cut at the stop, yielding predictable trade exits.
-Issue 4: Missing Capital Utilization Protection (50% Limit)
-Cause: The bot was supposed to restrict total capital at risk to a percentage of the account (50% was desired), but in practice this protection was not active. The default configuration allowed up to 80% utilization
-file-ddvdsxjgjleycmiqxzzrhp
-, and no additional guard was implemented to enforce a 50% cap. In test scenarios, it was possible for the bot to enter more trades than intended, exceeding 50% of balance in use. This not only led to the margin errors discussed, but also increased risk beyond the user’s comfort. Solution: Activate a strict 50% capital utilization guard and ensure it’s never exceeded:
-Set max_capital_utilization_pct = 0.50 in the runtime config (or code default). With this, the check_entry_allowed function will return False for any new entry if more than half the balance is already committed to open positions
-file-ddvdsxjgjleycmiqxzzrhp
-. We should test that scenario – e.g. if one trade is using ~50% and another signal comes, the log should show “❌ Capital usage too high” and the trade will be skipped
-file-ddvdsxjgjleycmiqxzzrhp
-.
-Double-check calculation of used capital: The function get_total_position_value() sums the notional value of all open positions by fetching them from the exchange
-file-fx8xuqjdzgtyb6sszgoaiz
-file-fx8xuqjdzgtyb6sszgoaiz
-. This is reliable for total usage. Additionally, the check_capital_utilization() in risk_utils can simulate the post-trade utilization including the candidate trade
-file-lexcpogse47ypmtymybmzn
-file-lexcpogse47ypmtymybmzn
-. We can incorporate that as an extra precaution: before finalizing an entry, call check_capital_utilization(symbol, qty, entry_price, threshold=0.5). If it returns False (meaning the new trade would push usage >50%), then abort the entry. This is a redundancy, but it helps catch edge cases (for example, if balance changed between the initial check and order execution).
-Apply to test mode as well: The 50% cap should be honored even in dry-run or testnet mode. The same checks apply since the code uses cached balance and active trade values regardless of environment. This ensures our testing mirrors live constraints – no unrealistic over-leverage in simulation.
-With these measures, the bot will never put more than half of the account equity at risk at any given time. This significantly caps potential drawdown. If needed, this cap can be adjusted via config, but the default will remain 50% as requested. Any attempt to violate this (by manual config error or bug) would result in the trade being blocked with a clear log message (“Capital usage too high…”)
-file-ddvdsxjgjleycmiqxzzrhp
-.
-Issue 5: Other Risk & Trade Management Logic Bugs
-During the audit, we examined auxiliary methods for risk management, signal generation, and trade lifecycle to catch any subtle errors:
-TP/SL parameter validation: We verified that if for some reason the TP/SL calculation yields invalid values (None or NaN), the bot will abort entering the trade. This is handled in should_enter_trade (for signal phase) and double-checked in enter_trade before placing the order. For instance, if tp1 came out as 0 or NaN, the code logs an “invalid TP/SL” and skips that trade
-file-16f6pf2wtpa4murczuu7tn
-file-16f6pf2wtpa4murczuu7tn
-. This ensures we never enter a position without predetermined exit levels.
-Risk factor and re-entry checks: The system has logic to prevent re-entry into the same symbol too quickly and to avoid symbols with accumulating losses. The function pause_symbol in risk_guard will block a symbol after 3 consecutive stop-losses. We confirmed that this is invoked in record_trade_result – on a third SL in a row, it pauses the symbol for 15 minutes
-file-am23ugntgoih1y6kdjhqgn
-. Additionally, is_symbol_paused() is consulted before new signals are acted on
-file-16f6pf2wtpa4murczuu7tn
-. These mechanisms were working as intended; no code change needed except possibly tuning the pause duration.
-Logging and tracking: All trade entries and exits are logged to CSV and JSON files. The log_entry and log_trade_result calls wrap these operations. There were some warnings about failing to log in the past, but those appear handled with try/except now
-file-16f6pf2wtpa4murczuu7tn
-file-am23ugntgoih1y6kdjhqgn
-. We should still monitor the entry_log.csv and tp_performance.csv outputs during testing to ensure data is recorded properly. The ensure_log_exists in tp_logger sets up the CSV header if needed. No obvious bugs were found here.
-Concurrency and state: The bot uses locks around critical sections (like modifying the global trade list or open positions count) to prevent race conditions
-file-am23ugntgoih1y6kdjhqgn
-file-am23ugntgoih1y6kdjhqgn
-. We reviewed these and found them adequate. One thing to note is that open_positions_count and dry_run_positions_count are incremented before placing TP/SL and decremented in a finally block
-file-am23ugntgoih1y6kdjhqgn
-file-am23ugntgoih1y6kdjhqgn
-. This is done to track positions even during the few milliseconds when orders are being placed. It’s a minor detail but it means if TP/SL placement fails, the count might decrement even though no position was recorded – however, since in that failure case we also do not add the trade to trade_manager, the count decrement simply balances the earlier increment. In testing, these counters should remain accurate.
-Additional hidden issue fixed: The mismatch of share keys for TP orders (discussed in Issue 3) was one such hidden bug affecting trade management. After fixing that, we expect the partial take-profit logic to behave correctly, including the fallback that routes small portions to the first TP. We will keep an eye on Telegram notifications like “All TP routed to TP1 due to low qty” or “TP coverage incomplete” to ensure they make sense for edge cases. These messages, when they occur, will confirm the TP splitting logic is actively adjusting to small position sizes
-file-fflbkxxsxdumvsclmtdm4m
-file-fflbkxxsxdumvsclmtdm4m
-. Overall, aside from the TP share bug and capital utilization setting, the core risk management and signal flow appear sound. The strategy filters (RSI, volume, ATR filters) and cooldown timers are functioning as coded, and trade closure logic (including break-even or soft-exit placeholders) can be extended in the future if needed. We did not find other critical errors, but after implementing the above fixes, we will proceed with thorough testing (both backtest and forward test in dry-run) to observe the bot’s behavior under various scenarios.
-Conclusion and Next Steps
-By addressing the issues above, the BinanceBot’s trade execution pipeline should become much more robust and predictable. In summary, we have:
-Ensured that every new trade has corresponding TP and SL orders placed immediately, with correct proportional quantities (eliminating cases of unprotected positions).
-Enforced a stricter capital utilization limit (50% of balance in use) to prevent overallocation and margin errors.
-Improved order sizing logic to avoid both under-minimum orders and over-margin orders, thereby reducing “no fill” and “insufficient margin” errors.
-Verified that risk guardrails (pause after loss streaks, global daily loss pause, signal cooldowns) are functioning, adding confidence in the bot’s safety mechanisms.
-These changes aim for stable behavior: entries occur only under valid conditions, orders execute correctly, expected profit targets and stop-losses are in place, and losses remain bounded by risk settings. The next step is to rigorously test these fixes in a controlled environment (e.g. paper trading or testnet) to ensure that all issues are resolved. We will pay attention to log outputs and Telegram alerts during testing. Once confirmed, the bot can be run live for final validation, knowing that it should now handle trades consistently and safely.
-
-Sources
-
-You said:
-Напиши мне еще раз в короткое самое, какие основные проблемы ты нашел, и ниже список всех методов или файлов, которые нужно пофиксить.
+Проанализируй всю логику, добейся того, чтобы не было непонятных ошибок, чтобы было больше открытых пар и не было непонятно, почему invalid position size, чтобы максимальное количество символов были доступны, как валидные, и не было ошибок.
 
 ChatGPT said:
-Вот краткая сводка:
+Хорошо. Я проведу полный аудит логики BinanceBot по цепочке сигналов, включая фильтрацию, расчёт позиции, вход в сделку и сохранение логов. Цель — устранить все случаи, когда символы пропускаются по причине qty=0.0 или неочевидных ограничений.
 
-❌ Основные проблемы, выявленные в Deep Research:
-Ордеры исполняются с filled_qty = 0.0
-– Не выставляются TP/SL, позиция "пустая", требует ручного закрытия.
+Я проверю:
 
-Ошибка Binance: "Margin is insufficient"
-– Позиции превышают доступную маржу, особенно при депозите < $250.
+Где и почему qty становится равным 0.0 (включая min_notional, округление, капитал);
 
-TP/SL не ставятся из-за неправильных долей (share1/share2)
-– place_take_profit_and_stop_loss_orders(...) ожидал tp1_share, а не share1.
+Почему valid=1, но сделка не создаётся;
 
-Нет жёсткой проверки лимита капитала (50%)
-– Позиции открываются, даже если уже используется > 80% баланса.
+Как влияет конфиг и текущий баланс;
 
-Неконсистентное поведение в пограничных условиях
-– Отсутствие TP, перепутанные ключи, market order с avg_price=0.
+Какие фильтры блокируют потенциально валидные сделки;
 
-🔧 Методы / файлы, которые нужно дофиксить:
-Файл / Метод Что исправить / добавить
-✅ calculate_position_size(...) ❗ Проверка: если qty \* price > 50% капитала → return 0.0
-✅ create_safe_market_order(...) ❗ Если filled_qty == 0 или avg_price == 0 → success = False
-✅ place_take_profit_and_stop_loss_orders(...) ❗ Использовать tp1_share, tp2_share, tp3_share из trade_data
-✅ enter_trade(...) ✔️ Передавать tp1_share, tp2_share, tp3_share в trade_data
-✅ should_enter_trade(...) ✔️ Проверка tp1, sl на None; передача долей TP
-✅ check_entry_allowed(...) ✔️ Убедиться, что 50% capital_utilization применим
-✅ runtime_config.json ✔️ max_capital_utilization_pct: 0.5, max_margin_percent: 0.5
+Где улучшить логику и логи, чтобы исключить ошибки без объяснения;
 
-Готов сразу сформировать фикс-патч по каждому методу — хочешь начать с calculate_position_size и create_safe_market_order?
+Что конкретно и как надо исправить в enter_trade, calculate_position_size, логах и фильтрах.
 
-## Just fixed
+Я доложу по итогам с предложениями исправлений, чтобы повысить стабильность и количество открытых сделок.
 
-✅ OptiFlow v3.2 – Финальный FixPack (Core Trade Chain & Risk Control)
-⚙️ 1. Risk & Positioning
-🔧 calculate_position_size(...):
+Research completed in 10m · 9 sources
+Глубокий аудит логики входа и блокировки сделок в BinanceBot
 
-Ограничение по max_margin_percent и max_capital_utilization_pct
+Причины, почему объём сделки становится 0.0 (qty=0.0)
+Основная проблема – вычисление количества контрактов (qty) приводит к нулевому значению из-за ограничений минимального номинала сделки и округления. В коде расчёта calculate*order_quantity после вычисления риска позицию подгоняют под минимальный требуемый номинал MIN_NOTIONAL_OPEN. Если рассчитанный объём даёт стоимость меньше $10 (по конфигу), его повышают до $10, но затем округляют до 3 знаков
+file-4fssukmiwapa4fmzgau2r5
+. Для очень дорогих монет это может привести к нулевому количеству: например, при цене BTC ~$30k минимальный объём ≈0.00033, который округляется до 0.000 (т.е. 0.0)
+file-4fssukmiwapa4fmzgau2r5
+. Аналогичная ситуация возникает при большой дистанции стоп-лосса (risk_per_contract): расчётный qty получается крошечным и после округления становится 0.0. Кроме того, код жёстко округляет до 3 десятичных – это не учитывает требования step_size биржи для разных пар. В итоге в некоторых случаях бот пытается поставить ордер с количеством 0.0, что приводит к ошибке Binance “invalid position size”. Другой фактор – минимальный лот 0.001. В конфигурации задан min_trade_qty: 0.001
+file-gyip6zgyvvcytnqn1kmjst
+(например, 0.001 BTC), но в коде это ограничение явно не применяется при расчёте. Вместо этого сейчас используется только проверка на $10. Если после округления qty < 0.001, фактически ордер недопустим. Например, BTC/USDC при расчёте может дать qty=0.000, что меньше минимального лота 0.001 – такой ордер отклонится биржей. Таким образом, сочетание жёсткого округления и отсутствия учёта min_trade_qty приводит к qty=0.0 или слишком малому объёму.
+Ситуация, когда лог показывает valid=1, но позиция не открывается
+Логика работы такова, что Valid=1 означает, что сигнал прошёл все проверки стратегии (т.е. process_symbol вернул данные сделки). Однако это ещё не гарантирует открытие позиции – дальше происходит попытка выставить ордер через enter_trade. Если ордер не исполнен (например, из-за недопустимого объёма), позиция не появляется, хотя в статистике попытка засчитана как валидная. В коде трейдинг-цикла счётчик entry_successes увеличивается сразу после получения trade_data, до выставления ордера
+file-fzguvdfnsvoahjrjukdjtp
+file-fzguvdfnsvoahjrjukdjtp
+. Если при enter_trade случается ошибка (qty=0, ошибка API и т.п.), она ловится в блоке except и цикл переходит к следующему инструменту
+file-fzguvdfnsvoahjrjukdjtp
+. В логах при этом может быть сообщение об ошибке ордера (например, “Failed to place order: invalid position size”), но Entry Stats всё равно покажет Valid=1. Таким образом, Valid=1, но нет позиции – признак того, что сигнал был корректный, но сделка сорвалась на этапе исполнения. Чаще всего причина – именно вычисление объёма 0.0 или ниже минимального лота, из-за чего биржа отвергла ордер. Бот учитывает попытку как валидную, но фактически ордер не открыт.
+Влияние настроек runtime_config.json и баланса на вход в сделку
+Параметры в конфиге напрямую влияют на фильтры и расчёты размера позиции:
+MIN_NOTIONAL_OPEN = 10.0 – минимальный номинал для открытия позиции ($10)
+file-gyip6zgyvvcytnqn1kmjst
+. В коде этот порог применён: если рассчитанный объем даёт меньший номинал, qty повышается до $10/price
+file-4fssukmiwapa4fmzgau2r5
+. Это защищает от слишком мелких позиций, но, как описано выше, после округления может остаться 0.0. Также есть MIN_NOTIONAL_ORDER = 10.0 (аналогичный порог для ордеров), он равен MIN_NOTIONAL_OPEN, поэтому фактически требование $10 действует везде.
+max_capital_utilization_pct = 0.7 (70%) – максимальная доля капитала, задействованная в марже открытых позиций
+file-gyip6zgyvvcytnqn1kmjst
+. Однако в коде обнаружено несоответствие: при расчёте размера позиции ограничение поставлено жестко 80% (*0.80) вместо использования значения из конфигурации
+file-4fssukmiwapa4fmzgau2r5
+. То есть бот ограничивает позицию, чтобы notional <= 80% от баланса*леverage, хотя по конфигу должен <= 70%. В текущей версии это рассогласование – фильтр капитализации не учитывает значение из runtime_config. Тем не менее, при небольшом балансе (в логах баланс 224 USDC) это ограничение редко срабатывало, так как позиции сами по себе малы ($20 каждая).
+Текущий баланс и риск-процент. Базовый риск base_risk_pct = 0.012 (1.2%) и множитель risk_multiplier = 1.5 в конфиге задают долю баланса на риск. При балансе ~224 USDC риск на сделку ~$2.7–4 (при включённом множителе). С такой низкой суммой риск-менеджер часто рассчитывает очень маленький объём. Например, риск $3 при стоп-лоссе 1.5% от цены ETH ($2500) даёт позицию около $200 (что выше $10). Но для некоторых монет с большим стопом или очень высокой ценой рассчитанный объём может быть <$10. В таких случаях MIN_NOTIONAL_OPEN увеличивает позицию до $10, немного увеличивая фактический риск (но это всё ещё небольшая сумма относительно баланса). Иначе говоря, при малом балансе конфиг заставляет брать минимум $10, даже если 1.2% от баланса меньше. Это повышает процент риска на таких сделках, но без этого сделки бы не открывались вообще.
+min_profit_threshold = 0.05 (5%) – минимальный предполагаемый профит. Бот вычисляет ожидаемое соотношение profit/entry и требует, чтобы оно превышало 5%. Если потенциальный профит ниже, вход не выполняется. В логах expected_profit для успешных входов обычно чуть больше 0.05 (5-13% и выше), что подтверждает действие фильтра. Эта проверка выполняется в функции (предположительно) check_min_profit перед подтверждением сигнала. В целом, порог 5% предотвращает входы с малым потенциалом прибыли. При этом короткие позиции имеют отрицательный expected_profit (т.к. цена цели ниже входа), но по модулю он часто >5%. Судя по тому, что шортовые сделки (например BCH с -23.8% в логе) открывались, логика учитывает модуль или правильную интерпретацию прибыли на шорт. Здесь несоответствий не выявлено.
+В итоге, настройки runtime_config определяют ограничения, но некоторые из них не синхронизированы с кодом (напр. 70% vs 80% капитала). Также малый баланс в сочетании с MIN_NOTIONAL_OPEN приводит к тому, что бот вынужден выбирать минимальный объём $10, иначе сигналы игнорируются. Это влияет на количество входов: при большом количестве сигналов и маленьком балансе многие из них могут отсеиваться из-за $10 порога и округления.
+Несогласованности в логике фильтрации и входа (should_enter_trade, фильтры, и т.д.)
+В процессе принятия решения есть несколько этапов фильтрации – иногда они работают не согласованно, что ведёт к пропущенным сделкам:
+Дублирование фильтров списка пар vs. фильтры входа. Бот формирует список dynamic_symbols исходя из объемов и волатильности. Однако даже после отбора, некоторые пары на момент входа не соответствуют требованиям. Например, NEO/USDC была включена в список (динамические пары), но её объём к 20:00 сильно упал (~3.4k USDC/мин) – ниже порога. В результате на этапе входа она отфильтровывается (причины: low_volume, qty_blocked)
+file-s4yyzza4exj7tbuwv7y7gm
+. Такая ситуация означает, что пара присутствует в списке, но почти гарантированно каждый цикл будет пропускаться. Логика dynamic_pairs могла бы исключать такие инструменты заранее или обновляться, чтобы не таскать “мертвые” пары. Сейчас же фильтр объёма срабатывает дважды: при формировании списка и при каждом входе, что избыточно.
+Отсутствие учёта min_trade_qty. Как отмечено, конфиг содержит min_trade_qty=0.001, но ни в функции расчёта qty, ни в проверках перед ордером этот порог не используется. Фактически проверка на минимальный лот сейчас разрознена: минимальный номинал $10 частично покрывает эту проблему, но не всегда (на очень дорогих монетах $10 может быть меньше минимального лота в штуках монеты). Это несоответствие: фильтрация should_enter_trade не смотрит на min_trade_qty, и только биржа “ругнётся” на этапе enter_trade. Нужно добавить явную проверку: если qty после округления < 0.001 – не входить (или повысить qty до 0.001, если позволяет риск).
+Различие настроек и кодовых констант. Как упомянуто, max_capital_utilization_pct задаётся 0.7, а в коде захардкожено 0.8
+file-gyip6zgyvvcytnqn1kmjst
+file-4fssukmiwapa4fmzgau2r5
+. Это явная несогласованность: часть логики риск-менеджмента работает по старому значению. В результате, бот мог бы случайно превысить желаемый лимит использования капитала (хотя в текущих условиях этого не происходило, так как позиции мелкие). Необходимо синхронизировать эти значения, иначе фильтр срабатывает не там, где ожидается.
+Логгирование причин отказа. Сейчас информация о том, почему сигнал отклонён, разбросана по разным логам. В основном debug_monitoring_summary.json и missed_signals.json фиксируют причины (low_volume, qty_blocked, и т.д.). В консольных логах или entry_log.csv этого прямо не видно – там записываются только успешные входы. Например, для AAVE/USDC в отладочном отчёте видно filtered: true по причинам low_volume и qty_blocked
+file-s4yyzza4exj7tbuwv7y7gm
+, однако нигде в основном логе не было строки “Пропуск AAVE – низкий объём”. Такая разобщенность затрудняет анализ работы бота. Это тоже несогласованность: should_enter_trade/process_symbol знают причину отказа, но она не всегда явно сообщается пользователю (кроме как в debug JSON). Было бы полезно делать единообразный лог: при любом отказе по фильтру писать предупреждение с причиной.
+Поведение повторного входа (re-entry). Бот поддерживает стратегию “1+1” – на сильный сигнал открываются две позиции. В логах второй вход помечен типом unknown вместо dynamic/fixed, что указывает на недостаток передачи параметров при повторном вызове enter_trade. Хотя на работу это сильно не влияет, это мелкая непоследовательность. Более серьёзно то, что логика повторного входа использует те же фильтры не полностью: например, возможно, что при первом входе сигнал считался достаточно сильным, чтобы игнорировать объём (override), а при втором – критерии могут быть интерпретированы иначе. В коде enter_trade вызывается дважды почти подряд для одного символа, и если между ними баланс или доступный капитал изменились, второй вход может получить чуть иной qty (в логах видно BCH: 20.0 и 19.99 USDC – второму чуть не хватило до 20.0)
+file-dutkhhqzdeolj5wd3fubjv
+. Это означает, что фильтр max_capital_pct сработал посередине цикла или накопленная ошибка округления. В идеале, правила должны применяться консистентно: либо рассчитывать оба входа вместе, либо блокировать второй, если он нарушит лимиты. Сейчас же второй вход прошёл, но с урезанной долей. Это нюанс, но показывает потенциал несогласованности при быстром повторном входе.
+В целом, основная несогласованность – обработка минимального объёма на разных этапах. На стадии выбора сигнала бот может посчитать сигнал годным (valid=1), но при выставлении ордера реальная проверка объёма происходит поздно. Следует ранжировать фильтры так, чтобы неподходящие по объёму/номиналу сделки отсеялись до попытки торговать, и все части системы оперировали одними и теми же порогами.
+Отказы по символам в последнем запуске (2025-06-19 20:00)
+В финальном цикле торгов (около 20:00 UTC) ряд сигналов не привёл к открытию сделок. Ниже перечислены эти инструменты и точные причины отказа согласно данным отладки:
+BTC/USDC – сигнал не исполнен: низкий объём торгов и минимальный лот. В отчёте filtered: true, причины: low_volume и qty_blocked (после расчёта получилось entry_notional = 0.0)
+file-s4yyzza4exj7tbuwv7y7gm
+. То есть, USDC-фьючерс на BTC имел недостаточный объём рынка, а рассчитанное количество BTC оказалось меньше минимально допустимого – ордер не был размещён.
+NEO/USDC – отказано из-за недостаточного объёма и минимального номинала. Объём (~$3.3k/мин) сильно ниже порога, что пометило сигнал как low_volume. Дополнительно qty после расчёта оказался нулевым (entry_notional = 0) – признак фильтра qty_blocked
+file-s4yyzza4exj7tbuwv7y7gm
+. В итоге NEO/USDC пропущен несмотря на потенциальный сигнал, так как не прошёл лимиты.
+AAVE/USDC – не открыт из-за крайне низкой ликвидности. Объём торгов (~$11.9k, что в ~50 раз ниже требуемого) вызвал фильтр low_volume. Количество тоже скорректировалось до 0 (entry_notional = 0.0), активировав qty_blocked
+file-s4yyzza4exj7tbuwv7y7gm
+. Таким образом, даже если стратегия давала сигнал, AAVE был отброшен по причинам рынка.
+TRUMP/USDC – сигнал отклонён по причине qty_blocked. Судя по логам, объём у этой пары был чуть выше минимума (объём ~1.27k, фильтр low_volume не сработал), но расчёт позиции всё равно вернул 0.0 (вероятно из-за специфики цены/контракта). В отчёте статус skipped с причиной qty_blocked
+file-s4yyzza4exj7tbuwv7y7gm
+. То есть бот не смог рассчитать лот больше нуля для TRUMP, и вход не состоялся.
+LTC/USDC – возможный сигнал не реализован: причина low_volume (объём около $43k/мин против требуемых ~500k) и связанная с ним qty_blocked. В 18:01 LTC уже отмечался как отфильтрованный
+file-s4yyzza4exj7tbuwv7y7gm
+, к 20:00 ситуация не улучшилась – торгов мало, минимальная позиция не набралась.
+Кроме перечисленных, были и другие пропущенные входы. Например, BNB/USDC ранее помечался причинами low_atr + low_volume + qty_blocked
+file-s4yyzza4exj7tbuwv7y7gm
+– низкая волатильность и ликвидность не удовлетворяли фильтры. SOL/USDC в 20:00 сигналов не давал (RSI высоко, “no_direction”), DOGE/USDC также не входил, так что их пропуск – не из-за ошибок, а из-за отсутствия условий. Таким образом, основными “отказниками” последнего цикла стали пары с недостаточным объёмом и/или слишком маленьким рассчитанным объёмом позиции (практически все случаи были связаны с фильтром qty_blocked, часто совместно с low_volume). По логам 11 из 34 рассматриваемых символов в одном из недавних циклов были отсеяны именно по причине qty_blocked
+file-njxkvxnvzs6ro4px5jt8jr
+.
+Символы, у которых сигналы были, но сделка не открылась
+На основе логов можно выделить список инструментов, чьи торговые сигналы были валидными, но бот пропустил вход из-за вышеперечисленных фильтров и ограничений:
+WIF/USDC – сильный сигнал был зафиксирован, но не реализован. В логе missed_signals причина указана как notional_too_small
+file-hfggyatyytbsoewwy5tyul
+. Это означает, что стратегия дала нужные подтверждения (MACD=1, RSI=1 и др. компоненты), однако рассчитанный объём не достиг минимального $10. Первая попытка (около 17:50) по WIF сорвалась по этой причине.
+XRP/USDC – пропущен вход по сигналу из-за малого объёма позиции. В отладочном журнале есть запись с reason: "notional_too_small" для XRP
+file-hfggyatyytbsoewwy5tyul
+– то есть условия для сделки выполнялись (например, RSI и MACD указывали на вход), но рассчитанный объём USDC оказался ниже допустимого. Бот не открыл позицию, хотя сигнал был (в данном случае, вероятно, на шорт, т.к. RSI был высоковат).
+SUI/USDC – сигнал был сгенерирован (комбинация индикаторов набрала минимальные суммы), но позиция не открылась. Причина – notional_too_small
+file-hfggyatyytbsoewwy5tyul
+. SUI/USDC имел приличный объём торгов, но, видимо, стоп-лосс расстояние было велико, и рассчитанная по риску доля капитала дала <$10. Этот кейс похож на предыдущие: бот посчитал сделку потенциально прибыльной, однако размер позиции вышел слишком маленьким, и она была отвергнута.
+AAVE/USDC – хотя в последнем цикле AAVE уже не рассматривался активно, ранее по нему были сигналы, которые не доводились до сделки. Причины – очень низкий объём торгов и минимальный размер (см. выше). Таким образом, AAVE тоже можно отнести к “пропущенным” при наличии сигналов.
+NEO/USDC – похожим образом, по NEO несколько раз появлялись все условия для входа (его добавили в динамические пары из-за изначального объёма и волатильности). Однако в реальности практически каждый раз NEO не проходил фильтр: сначала из-за снижения объёма ниже порога, а затем и из-за минимального размера лота (подтверждается qty_blocked в логах). Поэтому сигналы по NEO не реализовывались в сделки.
+В целом, большинство пропущенных входов – это монеты с валидным торговым сигналом, но низкой ликвидностью либо высоким ценовым порогом, из-за чего бот не мог выставить минимально необходимую позицию. В событиях последнего часа работы мы видим, что такие символы, как WIF, XRP, SUI (ещё ранее), а также NEO, AAVE, LTC, TRUMP и др., подавали сигналы, но были проигнорированы ботом вследствие упомянутых ограничителей (миннотIONAL, объём и пр.). Этот список указывает на узкие места стратегии – там, где логика фильтрации блокирует потенциально прибыльные сделки.
+Необходимые исправления в коде и конфигурации
+Проанализировав цепочку обработки сигнала, можно выделить конкретные моменты, требующие исправления, чтобы устранить ошибки “qty=0.0”, “invalid position size” и похожие случаи неоткрытых позиций:
+Исправить вычисление количества и округление. Необходимо скорректировать функцию расчёта calculate_order_quantity в order_utils.py. Вместо жёсткого round(qty, 3) стоит учитывать точность шага ордера для конкретного символа. Минимум – увеличить точность округления (например, до 4–5 знаков) для дорогих монет, или использовать функцию биржи для форматирования количества. Также после округления нужно проверять результат: если qty == 0.0, принимать меры. Например, можно установить qty = min_trade_qty (0.001) как минимум, если это не превышает разумный риск. Либо, если даже минимальный лот даст слишком большую позицию, тогда явно пропускать сигнал, но с понятной причиной. Главное – не допускать попытки отправить ордер с 0.0. Сейчас код уже делает предупреждение и повышает qty до $10
+file-4fssukmiwapa4fmzgau2r5
+, но из-за округления этого недостаточно – нужно либо округлять “вверх” до ближайшего шага, либо применять минимальный лот. В конфиге задан min_trade_qty=0.001 – стоит воспользоваться этим параметром, добавив логику: qty = max(qty, 0.001) после основных расчётов. Это гарантирует, что размер не будет нулевым.
+Синхронизировать ограничение использования капитала. Внести правку в расчёт max_notional. Вместо коэффициента 0.8 нужно читать значение MAX_CAPITAL_UTILIZATION_PCT из runtime_config (0.7)
+file-gyip6zgyvvcytnqn1kmjst
+. Это потребует передать этот параметр в функцию или импортировать его, аналогично тому, как импортируется MIN_NOTIONAL_OPEN
+file-4fssukmiwapa4fmzgau2r5
+. Исправление уберёт несоответствие между настройками и фактическим поведением. Например, строку max_notional = balance * leverage _ 0.80 заменить на _ 0.70 или, лучше, на переменную из конфига.
+Учитывать min*trade_qty при фильтрации. Помимо упомянутого изменения в расчёте qty, следует на уровне логики входа (например, в process_symbol или аналогичной функции, которая решает, выполнять вход или нет) добавить проверку: если рассчитанный qty < min_trade_qty, то отклонять сигнал (или увеличивать qty до min_trade_qty, что в данном случае эквивалентно повышению до минимального номинала, уже рассматривается выше). В идеале, бот должен отфильтровывать такие случаи до попытки открыть сделку. Сейчас подобное происходит, но неявно – через комбинацию MIN_NOTIONAL и округления. Явная проверка сделает поведение более надёжным и понятным. Например, можно установить флаг qty_blocked раньше и логировать причину.
+Обновить логику объемных фильтров. Пара low_volume + qty_blocked всплывает очень часто (11 случаев за цикл
+file-njxkvxnvzs6ro4px5jt8jr
+). Нужно решить, действительно ли все они должны быть в списке наблюдения. Если динамический выбор пар не успевает убрать низколиквидные инструменты, можно: (а) снизить порог volume_threshold_usdc немного, чтобы не отсеивать “середнячков” слишком агрессивно (это в рекомендациях ниже), либо (б) реализовать автоснятие пары из мониторинга, если она несколько раз подряд дала low_volume. Сейчас такие пары просто “шумят” в логах. Исправление: например, в модуле, где формируется dynamic_symbols, при каждом обновлении списка исключать те, у кого стабильный флаг low_volume N раз подряд. Это повысит эффективность – список будет состоять из реально торгуемых монет.
+Повысить информативность логирования отказов. Стоит улучшить сообщения в основной лог или entry_log.csv для неоткрытых сделок. Например, вызывать log_entry(..., status="FAIL", reason=...) или хотя бы utils_logging.log(...) с предупреждением, когда сигнал отвергнут. Сейчас много информации уходит только в debug JSON. Добавление явных логов типа “[Entry] Пропуск {symbol}: qty=0 (меньше минимума)” или “[Filter] {symbol} не прошёл по объёму ({vol} < порога)” сильно поможет в отладке и эксплуатации бота. Это изменение не затрагивает торговую логику, но повысит прозрачность – пользователь сразу увидит, почему конкретная сделка не состоялась.
+Исправить тип повторной сделки (pair_type). Маленькое исправление: при вызове enter_trade для второй сделки (1+1) передавать корректный pair_type (например, такой же, как у первой, или помечать как reentry). В коде уже отмечен “🔧 Fix: передаём все аргументы по именам”
+file-fzguvdfnsvoahjrjukdjtp
+– вероятно, эту проблему осознают. Решение предотвратит появление unknown в логах и позволит отслеживать статистику повторных входов.
+Безопасное обращение с ордерами при ошибке. Хотя ошибка invalid position size ловится, можно предусмотреть доп. защиту: если всё же до exchange.create_order дошло qty=0, перехватить это до запроса к API. Возможно, имеет смысл в order_utils.create_post_only_limit_order (и аналогичных методах) проверять if amount == 0: return None сразу, с логом ошибки. Но при реализации вышеуказанных мер (не доводить qty до 0) это станет редундантно. Тем не менее, такая проверка – лишний уровень страховки, исключающий отправку откровенно некорректных заявок.
+Пересмотр параметров MIN_NOTIONAL_OPEN/MIN_NOTIONAL_ORDER. Текущие $10 взяты с запасом. На Binance минимальный номинал ордера часто $5. Если бот рассчитает $7, сейчас он всё равно поднимет до $10 (и потом округлит). Это немного снижает гибкость. Можно сделать эти параметры зависящими от символа или рынка (например, для крупных пар оставить $10, для мелких – $5). Либо хотя бы документировать, почему выбрано $10 (возможно, учитывается комиссия, чтобы профит покрывал fee). В рамках исправлений можно проверить актуальные минимумы биржи и при необходимости снизить до $5 – тогда меньше сигналов будет отсеиваться. Но это уже решение на усмотрение владельца стратегии.
+После внесения этих правок бот не будет генерировать qty=0 и ошибки “invalid size” исчезнут. Кроме того, фильтры объёма и размера лота будут более согласованно работать на стадии проверки сигнала, а не постфактум.
+Рекомендации для повышения количества успешных входов (без потери безопасности)
+Чтобы бот открывал больше валидных позиций, нужно смягчить некоторые ограничения, не жертвуя при этом управлением риском. Рекомендуемые меры:
+Слегка снизить порог ликвидности. Текущий фильтр volume_threshold_usdc довольно строгий – многие монеты с объёмом чуть ниже 500k в единицу времени отсеиваются, хотя на небольшие позиции $10–20 этого объёма могло бы хватить. Можно уменьшить порог, например до 300–400 (если 500 означает $500k/час, то до $300k). Также, пересмотреть FILTER_TIERS: сейчас для ATR<0.0009 допускается объём >350
+file-gyip6zgyvvcytnqn1kmjst
+, возможно, расширить эти диапазоны. Это позволит некоторым среднеликим монетам (как AAVE, LTC, ENA) пройти фильтр и дать больше сделок. Важно не опускать слишком сильно, чтобы не залезть в совсем неликвидные активы – но небольшой шаг вниз в пороге существенно увеличит количество доступных сигналов.
+Динамически адаптировать список торговых пар. Обеспечить, чтобы динамические пары обновлялись чаще или реагировали на падение объёма. Например, если NEO несколько циклов подряд имеет low_volume, заменить её на следующую по объёму монету из списка доступных. Увеличение параметра min_dynamic_pairs или прямое управление составом списка повысит долю “активных” инструментов. Сейчас max_dynamic_pairs=18
+file-gyip6zgyvvcytnqn1kmjst
+, total_symbols=34 – то есть есть ещё 16 пар, которые не в работе. Возможно, среди тех резервных есть более ликвидные, чем, скажем, NEO или AAVE в текущее время. Используя максимум доступных слотов и своевременную рокировку, бот сможет ловить больше сигналов на актуальных рынках. Это повысит количество входов без снижения качественных критериев – просто за счёт лучшей выборки символов.
+Увеличить размер позиции на малом балансе. Парадоксально, но чтобы задействовать риск-капитал эффективнее, можно немного повысить долю риска или минимальный номинал, пока баланс невелик. Например, временно установить base_risk_pct = 0.02 (2%) или risk_multiplier = 2.0. Тогда расчетный объём будет чаще превышать $10 и сделки не будут блокироваться фильтром минимального номинала. В приведённых логах видно, что почти все сделки были около $20, что 9% от баланса – довольно консервативно. Бот мог бы одновременно держать до 12 позиций по $20 ($240 суммарно), что использует лишь ~50% баланса по марже (при левередже x10 маржа $24). Это меньше лимита 70%. Есть запас для увеличения. Например, повысив каждую позицию до $30, многие сигналы, которые сейчас “еле-еле” набирают $10, станут безусловно выполнимыми. При стопе 1.5% риск на $30 = $0.45, что ~0.2% от баланса – всё ещё намного ниже целевого 1.2%. Таким образом, слегка агрессивнее торговля на мелком счёте не повредит безопасности (риски останутся низкими), зато устранит проблему недобора минимального лота. По мере роста баланса эти параметры можно вернуть к консервативным.
+Использовать фактические биржевые минимумы. Убедиться, что значения MIN_NOTIONAL_OPEN и шаг qty соответствуют требованиям Binance. Если, скажем, Binance позволяет $5, можно смело ставить 5 – тогда ни один сигнал не отсеется по этой причине (во всех проблемных случаях у нас были расчетные номиналы $7–$9, которые сейчас зря повышаются до $10 и из-за округления теряются). Также, узнать минимальный шаг количества для каждой пары (через API exchange.fetch_markets). В код можно интегрировать эти параметры: хранить для каждого symbol его min_qty и min_notional. Тогда вместо грубого округления можно делать qty = floor(qty / step) * step и сравнивать qty\*price с min_notional биржи. Это сложнее реализовать, но даст максимально точное соответствие ограничениям биржи, что позволит избежать отказов по техническим причинам. Например, если для какой-то пары минимальный шаг 0.01, бот не будет пытаться торговать 0.001 и получать ошибку. Такой подход повышает надёжность входов.
+Переработать стратегию работы с минимальным лотом. В случаях, когда сигнал есть, а рассчитанная позиция слишком мала, вместо полного отказа можно рассмотреть альтернативные действия. Один вариант – объединение позиций: если на нескольких парах одновременно приходят сигналы с малым объёмом, возможно, стоит открыть хотя бы одну из них на минимальный лот, чем проигнорировать все. Это сложная модификация (требует приоритетов сигналов), но суть в том, чтобы не терять торговые возможности полностью. Другой вариант – временное отключение фильтра объёма для очень сильных сигналов (уже частично есть enable_strong_signal_override=true
+file-gyip6zgyvvcytnqn1kmjst
+). Например, если суммарный скоринг сигнала намного превышает пороги, позволить вход даже при низком объёме, но уменьшенным размером. Безопасность не пострадает, т.к. размер всё равно лимитирован $10, но бот получит шанс извлечь прибыль из уникальной ситуации. Такие редкие исключения могут повысить P&L, хотя их надо применять осторожно.
+Улучшить мониторинг и отладку. Для оператора бота важно видеть, что каждый пропущенный вход – осознанное решение стратегии. Сейчас некоторые решения (например, не прошёл min_profit, или был недавний трейд по символу) могут быть неявны. Рекомендуется расширить уведомления: например, если valid signal skipped, послать сообщение (в телеграм, лог) с причиной. Это не прямо увеличит число входов, но позволит быстро заметить систематические упущения и подкорректировать параметры. В контексте задачи, улучшенный мониторинг бы сразу подсветил проблему qty=0.0 на BTC/USDC, и её можно было бы устранить заранее.
+Выполнение перечисленных рекомендаций поможет ботуу открывать больше позиций по валидным сигналам, особенно на небольшом депозите и на низколиквидных рынках, при этом риски останутся под контролем. Мы не снимаем ограничений, а тонко их настраиваем: учитываем реальные минимумы биржи, чуть ослабляем фильтр объёма, рациональнее распределяем капитал. Таким образом, повышается эффективность использования торговых возможностей стратегии без компромисса по безопасности.
 
-Поддержка MIN_NOTIONAL_OPEN и fallback qty
+## Fixed
 
-Округление через round_step_size(...) по step_size пары
+✅ Реализованные правки (статус: завершено)
+🔧 Расчёт позиции и qty
+Исправлено округление qty по step_size, учёт min_trade_qty, исключена генерация qty=0.0
 
-🔧 check_entry_allowed(...):
+В методе calculate_position_size(...) добавлены:
 
-Проверка: общее количество позиций (max_concurrent_positions)
+проверка qty < min_trade_qty
 
-Проверка: общий capital usage (get_total_position_value() / balance)
+защита от notional < MIN_NOTIONAL_OPEN после округления
 
-Защита от нулевого баланса
+синхронизация с max_capital_utilization_pct из runtime_config
 
-Гибкий лимит по входам в час (hourly_limit_check_mode)
+🛡 Защита от входа с ошибкой
+В enter_trade(...) добавлена защита:
 
-💰 2. Entry & TP Logic
-🔧 should_enter_trade(...):
+если qty <= 0.0 или None → отказ с логом
 
-Фильтрация по TP1, SL, min_profit_threshold
+Telegram и лог-фильтр по ошибкам создания ордера
 
-TP-доли (tp1_share, tp2_share, tp3_share) добавлены в breakdown
+⚠️ Исключение “мертвых” символов
+Добавлены:
 
-Проверка fallback qty, отбрасывание по маленькому notional
+blocked_symbols.json — исключает пары при qty_blocked ≥ 3
 
-check_min_profit(...) + логгирование причин отказа
+low_volume_hits.json — временно исключает при low_volume ≥ 4 циклов
 
-🔧 enter_trade(...):
+Реализация в select_active_symbols(...):
 
-TP/SL рассчитываются ДО входа
+фильтрация sym_data до применения FILTER_TIERS
 
-Используются доли TP1/TP2/TP3 при передаче в trade_data
+Telegram-уведомления о заблокированных парах
 
-Обработка filled_qty == 0, notional < MIN_NOTIONAL
+📊 Улучшение фильтров и отбора
+Расширен FILTER_TIERS, добавлены мягкие уровни ATR/volume
 
-Telegram логика + статистика, TP/SL log и try/fail block
+Уменьшен volume_threshold_usdc с 500 → 450 (в runtime_config)
 
-🔧 create_safe_market_order(...):
+Поддержка priority_pairs, учёт в отборе при балансе < $300
 
-Повторная попытка market order при filled_qty == 0
+Адаптация логики ротации с учётом risk_factor и корреляции
 
-Жёсткая защита: filled_qty == 0 или avg_price == 0 → success=False
+💬 Логирование и отладка
+В log_entry(...):
 
-Комиссия, логгирование и fallback
+добавлено поле fail_reason
 
-🎯 3. Take-Profit System
-🔧 place_take_profit_and_stop_loss_orders(...):
+логируются expected_profit, commission, account_category
 
-Использует tp1_share, tp2_share, tp3_share из trade_data
+В log_missed_signal(...):
 
-Fallback малых TP2/TP3 в TP1
+оценка упущенной прибыли (tp1 - entry)
 
-Проверка min_qty, Telegram уведомления при частичном TP
+Telegram-уведомление при missed_profit_total > $1
 
-SL защитный skip, если слишком близок к entry
+В process_symbol(...):
 
-📈 4. Logging & Post-Trade
-🔧 record_trade_result(...):
+сохранение symbol_blocked_count через save_blocked_symbols(...)
 
-Расчёт Net PnL, комиссия, TP1/TP2/SL флаги
+сброс счётчика при успешном проходе
 
-Логика exit_reason, final_result_type
+⚙️ Runtime-конфигурация
+Установлено:
 
-Telegram уведомление с PnL и результатом
+min_trade_qty = 0.001
 
-SL-стрик + авто-пауза на 15 мин
+min_profit_threshold = 0.05
 
-Обновление min_profit_threshold на успехе/провале
+max_capital_utilization_pct = 0.7
 
-🔧 log_trade_result(...):
+Используется адаптация по волатильности, балансу, времени суток в ротации
 
-Запись tp_performance.csv + EXPORT_PATH
+🧠 Мониторинг и структура
+Файл last_symbol_rotation.json хранит:
 
-Предотвращение дублирования, logged_trades_lock
+список активных символов
 
-Округление, защита от NaN, дневная статистика
+тайминг следующей проверки
 
-🔧 calculate_tp_targets(...):
+Добавлена защита от некорректного OHLCV, пустых символов, плохих данных
 
-Возвращает список TP1-целей для всех активных сделок
+Стратегия теперь предсказуемо объясняет, почему символ не прошёл
 
-Fallback: entry_price \* 1.05 при отсутствии tp1_price
+## SUMMARY
 
-⚙️ 5. Configs & Runtime
-✅ runtime_config.json:
+✅ Финальный блок: Завершённые задачи по архитектуре ядра (v3.3)
+🔧 1. calculate_position_size(...)
+Цель: устранение qty=0.0, ошибок размера, учёт лимитов.
 
-"max_margin_percent": 0.5, "max_capital_utilization_pct": 0.5
+✅ Реализовано:
 
-"min_profit_threshold": 0.06
+округление по round_step_size(...);
 
-"step_tp_levels", "step_tp_sizes", "soft_exit_allow_at_zero": true
+учёт min_trade_qty из runtime_config;
 
-✅ .env + config_loader.py:
+проверка qty <= 0.0 после округления;
 
-DRY_RUN, TELEGRAM, SYMBOLS, SL/TP % и комиссии
+защита от notional < MIN_NOTIONAL_OPEN;
 
-Все параметры согласованы с runtime logic
+внедрение auto_reduce_entry_if_risk_exceeds: если капитал превышен, qty уменьшается, а не отбрасывается полностью.
 
-✅ leverage_config.py:
+🧠 2. should_enter_trade(...)
+Цель: расчёт силы сигнала (signal_score), улучшение отладки.
 
-Символы имеют дифференцированное плечо (DOGE/XRP: 12x, ETH/BTC: 5x и т.д.)
+✅ Реализовано:
 
-Метод get_leverage_for_symbol(...) используется в risk-логике
+расчёт signal_score = macd _ 0.4 + rsi _ 0.3 + ema \* 0.3;
 
-🧠 Общий эффект:
-📉 Устранены ошибки filled_qty=0, TP не ставится, SL пропускается
+вставка signal_score в breakdown;
 
-✅ Вся цепочка сигнала → входа → TP/SL → фиксации — стабильна
+лог log(f"[Score] ...");
 
-🛡 Риск ограничен по капиталу, плечу и min profit
+передача breakdown с score в log_entry(...) и missed_signal_logger(...).
 
-📊 Чистая структура логов, отчётов и Telegram-уведомлений
+🔁 3. process_symbol(...)
+Цель: передача полного сигнала + score во входную цепочку.
+
+✅ Реализовано:
+
+return {..., "breakdown": breakdown, "signal_score": ...};
+
+лог Telegram/console с данными сигнала;
+
+отслеживание qty_blocked, сохранение/сброс счётчиков;
+
+улучшение отладочного логирования.
+
+📓 4. log_entry(...)
+Цель: логирование signal_score и всех параметров сделки.
+
+✅ Реализовано:
+
+добавлено поле signal_score в entry_dict;
+
+запись в entry_log.csv;
+
+добавлен fail_reason при status != SUCCESS;
+
+лог Telegram при ошибках записи.
+
+🚫 5. log_missed_signal(...)
+Цель: объяснение пропущенных сигналов.
+
+✅ Реализовано:
+
+signal_score в log_entry;
+
+Telegram-уведомление при score >= 0.85;
+
+оценка missed_profit по TP1;
+
+суммирование missed_profit_total и Telegram при > $1.
+
+📊 6. record_trade_result(...)
+Цель: лог результата сделки и score.
+
+✅ Реализовано:
+
+лог signal_score в Telegram-резюме;
+
+score логируется через breakdown и передаётся далее;
+
+передача в log_trade_result(...).
+
+📁 7. log_trade_result(...) (tp_logger)
+Цель: запись итогов сделки в tp_performance.csv.
+
+✅ Реализовано:
+
+добавлено поле Signal Score;
+
+вывод в CSV (header, row);
+
+лог Score=... в INFO при успешной сделке.
+
+🧱 8. engine_controller.py / main.py
+Цель: связка всех блоков, защита от повторов/ошибок.
+
+✅ Реализовано:
+
+enter_trade(...) вызывается с breakdown;
+
+log_entry(...) вызывается после входа;
+
+DRY_RUN также логирует входы;
+
+Telegram логгирование структуры сделки.
+
+📦 Конфигурация: runtime_config.json
+✅ Включено:
+
+json
+Copy
+Edit
+"min_trade_qty": 0.001,
+"min_profit_threshold": 0.05,
+"max_capital_utilization_pct": 0.7,
+"auto_reduce_entry_if_risk_exceeds": true,
+"signal_strength_weighting": {
+"MACD": 0.4,
+"RSI": 0.3,
+"EMA": 0.3
+}
+🟢 Итог: BinanceBot Core v3.3 ✅ ГОТОВ
+Компонент Статус
+Signal Score логика ✅ Внедрено
+Qty-ошибки устранены ✅ Да
+TP/SL логика ✅ Да
+Telegram-отчёты ✅ Да
+Missed логика ✅ Да
+Конфигурация ✅ Да

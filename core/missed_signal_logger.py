@@ -2,22 +2,33 @@
 
 import json
 import os
-from datetime import datetime
 
 from constants import MISSED_SIGNALS_LOG_FILE
-from utils_core import extract_symbol
 from utils_logging import log
 
 
 def log_missed_signal(symbol, breakdown, reason=""):
     """
-    Log missed trading signals for analysis (without score).
+    Log missed trading signals for analysis (without score) + estimate missed TP1 profit.
 
     Args:
         symbol (str): Trading pair symbol
         breakdown (dict): Components breakdown
         reason (str): Reason for signal rejection
     """
+    import json
+    import os
+    from datetime import datetime
+
+    from common.config_loader import TAKER_FEE_RATE
+    from telegram.telegram_utils import send_telegram_message
+    from utils_core import extract_symbol
+    from utils_logging import log
+
+    global missed_profit_total
+    if "missed_profit_total" not in globals():
+        missed_profit_total = 0.0
+
     symbol = extract_symbol(symbol)
     timestamp = datetime.utcnow().isoformat()
 
@@ -37,6 +48,10 @@ def log_missed_signal(symbol, breakdown, reason=""):
         ]
     )
 
+    signal_score = breakdown.get("signal_score", 0.0)
+    if signal_score >= 0.85:
+        send_telegram_message(f"📛 Missed strong signal {symbol} (score={signal_score:.2f})", force=True)
+
     log_entry = {
         "timestamp": timestamp,
         "symbol": symbol,
@@ -49,13 +64,42 @@ def log_missed_signal(symbol, breakdown, reason=""):
         "passes_1plus1": breakdown.get("passes_1plus1", False),
         "primary_sum": primary_sum,
         "secondary_sum": secondary_sum,
+        "signal_score": round(signal_score, 4),
         "components": breakdown,
     }
 
-    os.makedirs("data", exist_ok=True)
-    filepath = MISSED_SIGNALS_LOG_FILE
-
+    # ✅ Попытка рассчитать упущенную прибыль TP1
     try:
+        entry = breakdown.get("entry")
+        tp1 = breakdown.get("tp1")
+        qty = breakdown.get("qty")
+        direction = breakdown.get("side", "buy")
+
+        if entry and tp1 and qty:
+            share_tp1 = 0.7  # можно вытянуть из конфигурации при желании
+            gross = (tp1 - entry) * qty * share_tp1 if direction == "buy" else (entry - tp1) * qty * share_tp1
+            commission = 2 * qty * entry * TAKER_FEE_RATE
+            net_profit = round(gross - commission, 2)
+
+            missed_profit_total += net_profit
+            log(f"[MISSED PROFIT] {symbol} → ~${net_profit:.2f} missed TP1", level="WARNING")
+
+            # Уведомление, если накопилось
+            if missed_profit_total >= 1.0:
+                send_telegram_message(f"📉 Упущено потенциальной прибыли: ${missed_profit_total:.2f}")
+                missed_profit_total = 0.0  # сброс
+
+            # Можно записать в лог-файл отдельный missed_profits.json — при желании
+            log_entry["missed_profit"] = net_profit
+
+    except Exception as e:
+        log(f"[MISSED PROFIT] Failed to estimate for {symbol}: {e}", level="ERROR")
+
+    # ✅ Логируем сигнал в JSON
+    try:
+        os.makedirs("data", exist_ok=True)
+        filepath = MISSED_SIGNALS_LOG_FILE
+
         if os.path.exists(filepath):
             with open(filepath, "r") as f:
                 try:
@@ -71,6 +115,7 @@ def log_missed_signal(symbol, breakdown, reason=""):
             json.dump(data, f, indent=2)
 
         log(f"{symbol} Logged missed signal: {reason}", level="DEBUG")
+
     except Exception as e:
         log(f"Error logging missed signal: {e}", level="ERROR")
 

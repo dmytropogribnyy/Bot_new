@@ -71,6 +71,7 @@ def log_trade_result(
     commission: float = 0.0,
     net_pnl: float = 0.0,
     absolute_profit: float = 0.0,
+    signal_score: float = 0.0,
 ):
     """
     Запись сделки в tp_performance.csv (и EXPORT_PATH).
@@ -108,6 +109,7 @@ def log_trade_result(
         net_pnl = 0.0 if math.isnan(net_pnl) else net_pnl
         absolute_profit = 0.0 if math.isnan(absolute_profit) else absolute_profit
         commission = 0.0 if math.isnan(commission) else commission
+        signal_score = 0.0 if math.isnan(signal_score) else signal_score
 
         pnl_usd = round(absolute_profit, 2)
 
@@ -130,6 +132,7 @@ def log_trade_result(
             pair_type,
             round(atr, 5),
             exit_reason,
+            round(signal_score, 4),  # ✅ добавлено
         ]
 
         header = [
@@ -151,6 +154,7 @@ def log_trade_result(
             "Type",
             "ATR",
             "Exit Reason",
+            "Signal Score",  # ✅ добавлено
         ]
 
         for path in [TP_LOG_FILE, EXPORT_PATH]:
@@ -166,7 +170,9 @@ def log_trade_result(
                 log(f"[TP Logger] ❌ Error writing to {path}: {io_err}", level="ERROR")
 
         log(
-            f"[REAL_RUN] {symbol} {result_label}: PnL={pnl_percent:.2f}%, " f"Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, ATR={atr:.3f}, " f"Type={pair_type}, Reason={exit_reason}",
+            f"[REAL_RUN] {symbol} {result_label}: "
+            f"PnL={pnl_percent:.2f}%, Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, "
+            f"ATR={atr:.3f}, Type={pair_type}, Reason={exit_reason}, Score={signal_score:.4f}",
             level="INFO",
         )
 

@@ -234,7 +234,7 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     - риск-процента
     - max_margin_percent на сделку
     - max_capital_utilization_pct на все сделки
-    - минимального нотионала
+    - минимального нотионала и min_trade_qty
     Возвращает (qty, risk_amount)
     """
     from common.config_loader import MIN_NOTIONAL_OPEN
@@ -246,9 +246,11 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
         runtime_config = get_runtime_config()
 
     base_risk_pct = runtime_config.get("base_risk_pct", 0.01)
-    max_capital_utilization_pct = runtime_config.get("max_capital_utilization_pct", 0.5)
+    max_capital_utilization_pct = runtime_config.get("max_capital_utilization_pct", 0.7)
     max_margin_percent = runtime_config.get("max_margin_percent", 0.5)
     min_notional_open = runtime_config.get("MIN_NOTIONAL_OPEN", MIN_NOTIONAL_OPEN)
+    min_trade_qty = runtime_config.get("min_trade_qty", 0.001)
+    auto_reduce = runtime_config.get("auto_reduce_entry_if_risk_exceeds", False)
 
     risk_amount = balance * base_risk_pct
     max_trade_value = balance * max_margin_percent
@@ -257,7 +259,7 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
         log(f"[ERROR] Invalid entry price {entry_price} for {symbol}", level="ERROR")
         return 0.0, 0.0
 
-    # Расчет позиции
+    # Предварительный расчет
     qty = (risk_amount * leverage) / entry_price
     notional = qty * entry_price
 
@@ -272,18 +274,39 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     max_total = balance * max_capital_utilization_pct
 
     if projected_total > max_total:
-        log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
-        return 0.0, 0.0
+        if auto_reduce:
+            allowed_notional = max_total - total_used
+            qty = allowed_notional / entry_price
+            qty = round_step_size(symbol, qty)
+            log(f"[AUTO REDUCE] {symbol}: reduced qty to {qty:.6f} to fit capital usage limit", level="WARNING")
+            notional = qty * entry_price
+        else:
+            log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
+            return 0.0, 0.0
 
-    # Минимальный нотионал
+    # Проверка минимального нотионала
     if notional < min_notional_open:
         log(f"[SKIPPED] {symbol}: notional {notional:.2f} < MIN_NOTIONAL_OPEN {min_notional_open}", level="WARNING")
         return 0.0, 0.0
 
-    # Округление
+    # Округление по step size
     qty = round_step_size(symbol, qty)
-    log(f"[QTY OK] {symbol} → qty={qty:.6f}, notional={qty * entry_price:.2f}, risk={risk_amount:.2f}", level="DEBUG")
 
+    # ✅ Дополнительные защиты после округления
+    if qty <= 0.0:
+        log(f"[REJECTED] {symbol}: qty rounded to 0.0 — invalid position", level="WARNING")
+        return 0.0, 0.0
+
+    if qty < min_trade_qty:
+        log(f"[REJECTED] {symbol}: qty {qty:.6f} < min_trade_qty {min_trade_qty}", level="WARNING")
+        return 0.0, 0.0
+
+    notional = qty * entry_price
+    if notional < min_notional_open:
+        log(f"[REJECTED] {symbol}: final notional {notional:.2f} < MIN_NOTIONAL_OPEN {min_notional_open}", level="WARNING")
+        return 0.0, 0.0
+
+    log(f"[QTY OK] {symbol} → qty={qty:.6f}, notional={notional:.2f}, risk={risk_amount:.2f}", level="DEBUG")
     return qty, risk_amount
 
 
@@ -409,7 +432,7 @@ def save_active_trades():
 
 def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unknown"):
     """
-    Финальная версия метода входа в сделку (v3.2 FIXED):
+    Финальная версия метода входа в сделку (v3.3 FIXED):
     - Проверяет лимиты, торговые часы, сигналы
     - Вызывает market order → проверяет filled_qty
     - Генерирует TP/SL уровни ДО log_entry(...) и TP-установки
@@ -417,7 +440,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     """
     import numpy as np
 
-    from common.config_loader import DRY_RUN, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, get_priority_small_balance_pairs
+    from common.config_loader import DRY_RUN, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, get_priority_small_balance_pairs, get_runtime_config
     from common.leverage_config import get_leverage_for_symbol
     from core.binance_api import convert_symbol, create_safe_market_order
     from core.component_tracker import log_component_data
@@ -430,7 +453,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     from core.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
     from core.trade_engine import dry_run_positions_count, get_position_size, open_positions_count, open_positions_lock, save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import extract_symbol, get_cached_balance, get_runtime_config, is_optimal_trading_hour, load_state, safe_call_retry
+    from utils_core import extract_symbol, get_cached_balance, is_optimal_trading_hour, load_state, safe_call_retry
     from utils_logging import log, now
 
     symbol = extract_symbol(symbol)
@@ -504,15 +527,19 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         leverage = get_leverage_for_symbol(symbol)
         qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
 
+        cfg = get_runtime_config()
+        min_qty = cfg.get("min_trade_qty", 0.001)
+
         if not isinstance(qty, (float, int)) or qty <= 0:
-            log(f"[Risk] Invalid position size for {symbol}: {qty}", level="ERROR")
+            log(f"[ENTER] ❌ Invalid qty computed for {symbol}: {qty}", level="ERROR")
+            send_telegram_message(f"⚠️ {symbol} blocked — qty={qty} is invalid", force=True)
             return False
 
-        precision = exchange.markets[api_symbol]["precision"]["amount"]
-        min_qty = exchange.markets[api_symbol]["limits"]["amount"]["min"]
-        qty = round(qty, precision)
-        if qty < min_qty or qty <= 0:
-            qty = min_qty
+        qty = round(qty, 6)
+        if qty < min_qty:
+            log(f"[ENTER] ❌ qty={qty:.6f} < min_trade_qty={min_qty} → skipping {symbol}", level="WARNING")
+            send_telegram_message(f"⚠️ Skipping {symbol}: qty={qty:.4f} < min_trade_qty={min_qty}", force=True)
+            return False
 
         notional = qty * entry_price
         if notional < MIN_NOTIONAL_OPEN:
@@ -671,7 +698,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     - Вычисляет PnL, комиссию, чистую прибыль
     - Логирует в tp_performance.csv
     - Обновляет статистику компонентов и SL-стрик
-    - Уведомляет в Telegram
+    - Уведомляет в Telegram (включая TP1/TP2-hit отдельно)
     - Удаляет позицию из активных
     - Возвращает dict с итогами
     """
@@ -683,29 +710,11 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
 
     from core.component_tracker import log_component_data
     from core.exchange_init import exchange
-    from core.runtime_state import (
-        get_loss_streak,
-        increment_loss_streak,
-        pause_symbol,
-        reset_loss_streak,
-    )
-    from core.trade_engine import (
-        DRY_RUN,
-        dry_run_positions_count,
-        logged_trades,
-        logged_trades_lock,
-        open_positions_count,
-        open_positions_lock,
-        trade_manager,
-    )
+    from core.runtime_state import get_loss_streak, increment_loss_streak, pause_symbol, reset_loss_streak
+    from core.trade_engine import DRY_RUN, dry_run_positions_count, logged_trades, logged_trades_lock, open_positions_count, open_positions_lock, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from tp_logger import log_trade_result as low_level_csv_writer
-    from utils_core import (
-        get_min_net_profit,
-        normalize_symbol,
-        save_active_trades,
-        update_runtime_config,
-    )
+    from utils_core import get_min_net_profit, normalize_symbol, save_active_trades, update_runtime_config
     from utils_logging import log
 
     symbol = normalize_symbol(symbol)
@@ -726,15 +735,11 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
             open_positions_count -= 1
 
     trade = trade_manager.get_trade(symbol)
-    if not trade:
-        log(f"⚠️ No trade info for {symbol} — cannot record result", level="WARNING")
-        return
-    if trade.get("closed_logged"):
-        log(f"[DEBUG] {symbol} already recorded — skipping", level="DEBUG")
+    if not trade or trade.get("closed_logged"):
+        log(f"[DEBUG] {symbol} already recorded or not found", level="DEBUG")
         return
     trade["closed_logged"] = True
 
-    # Определение причины выхода
     exit_reason = (
         "post_hold"
         if trade.get("post_hold_hit")
@@ -763,7 +768,6 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         else result_type
     )
 
-    # Расчёт
     duration = int((time.time() - trade["start_time"].timestamp()) / 60)
     pnl = ((exit_price - entry_price) / entry_price) * 100
     if side.lower() == "sell":
@@ -774,6 +778,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     atr = float(trade.get("atr", 0.0))
     pair_type = trade.get("pair_type", "unknown")
     breakdown = trade.get("breakdown", {})
+    signal_score = breakdown.get("signal_score", 0.0)
 
     if qty <= 0:
         log(f"[Record] ⚠️ Zero qty for {symbol}, skipping record", level="ERROR")
@@ -793,12 +798,16 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         log(f"[Anomaly] {symbol} → Profit eaten by commission: gross={absolute_profit:.2f}, commission={commission:.2f}", level="WARNING")
 
     log(f"[PnL] {symbol} entry={entry_price}, exit={exit_price}, qty={qty}, gross={absolute_profit:.2f}, net={net_absolute_profit:.2f}, fee={commission:.2f}", level="DEBUG")
-    log(f"[FinalResult] {symbol} exit={exit_reason}, final={final_result_type}, pnl={pnl:.2f}%", level="INFO")
+    log(f"[FinalResult] {symbol} exit={exit_reason}, final={final_result_type}, pnl={pnl:.4f}%, score={signal_score:.4f}", level="INFO")
 
     is_successful = (exit_reason.startswith("tp") or final_result_type == "trailing_tp") and net_absolute_profit > 0
     log_component_data(symbol, breakdown, is_successful=is_successful)
 
-    # CSV лог
+    if trade.get("tp1_hit") and not trade.get("tp2_hit"):
+        send_telegram_message(f"✅ *TP1 HIT*: {symbol} — partial target reached", force=True)
+    if trade.get("tp2_hit"):
+        send_telegram_message(f"✅ *TP2 HIT*: {symbol} — major target reached", force=True)
+
     try:
         low_level_csv_writer(
             symbol=symbol,
@@ -809,14 +818,14 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
             tp1_hit=trade.get("tp1_hit", False),
             tp2_hit=trade.get("tp2_hit", False),
             sl_hit=trade.get("sl_hit", False),
-            pnl_percent=round(pnl, 2),
+            pnl_percent=round(pnl, 4),
             duration_minutes=duration,
             result_type=final_result_type,
             exit_reason=exit_reason,
             atr=atr,
             pair_type=pair_type,
             commission=commission,
-            net_pnl=round(net_pnl_percent, 2),
+            net_pnl=round(net_pnl_percent, 4),
             absolute_profit=round(net_absolute_profit, 2),
             entry_time=trade["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
             exit_time=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -824,7 +833,6 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     except Exception as e:
         log(f"[ERROR] Failed to log trade to CSV: {e}", level="ERROR")
 
-    # Адаптация min_profit_threshold
     if is_successful:
         prev = get_min_net_profit()
         if prev < 0.30:
@@ -835,7 +843,6 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         update_runtime_config({"min_profit_threshold": 0.10})
         log("[ProfitAdapt] Reset min_profit_threshold to 0.10 after SL", level="WARNING")
 
-    # SL-стрик
     if result_type == "sl" or trade.get("sl_hit"):
         increment_loss_streak(symbol)
         streak = get_loss_streak(symbol)
@@ -854,8 +861,9 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         f"{icon} *Trade Closed* [{final_result_type.upper()} / {exit_reason.upper()}]\n"
         f"• {symbol} — {side.upper()}\n"
         f"• Entry: {round(entry_price, 4)} → Exit: {round(exit_price, 4)}\n"
-        f"• PnL: {round(pnl, 2)}% | Gross: ${round(absolute_profit, 2)} | Net: ${round(net_absolute_profit, 2)}\n"
-        f"• Held: {duration} min | Time: {pd.Timestamp.now().strftime('%H:%M:%S')}"
+        f"• PnL: {round(pnl, 4)}% | Gross: ${round(absolute_profit, 2)} | Net: ${round(net_absolute_profit, 2)}\n"
+        f"• Held: {duration} min | Time: {pd.Timestamp.now().strftime('%H:%M:%S')}\n"
+        f"• Score: {signal_score:.4f}"
     )
     send_telegram_message(msg, force=True)
 
@@ -875,7 +883,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         "exit_reason": exit_reason,
         "result_type": final_result_type,
         "net_usd": round(net_absolute_profit, 2),
-        "pnl_percent": round(pnl, 2),
+        "pnl_percent": round(pnl, 4),
         "duration_min": duration,
     }
 

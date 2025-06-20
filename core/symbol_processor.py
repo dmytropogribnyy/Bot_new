@@ -6,6 +6,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     - возвращает параметры сделки или None
     """
     import traceback
+    from collections import defaultdict
 
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
     from core.binance_api import convert_symbol
@@ -17,6 +18,11 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     from telegram.telegram_utils import send_telegram_message
     from utils_core import MARGIN_SAFETY_BUFFER, get_min_net_profit, get_runtime_config, normalize_symbol
     from utils_logging import log
+
+    # Глобальный счётчик qty_blocked
+    global symbol_blocked_count
+    if "symbol_blocked_count" not in globals():
+        symbol_blocked_count = defaultdict(int)
 
     symbol = normalize_symbol(symbol)
 
@@ -99,7 +105,15 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 notional = qty * entry
             else:
                 log(f"⚠️ Skipping {symbol} — insufficient margin after notional adjust", level="WARNING")
+
+                # ✅ Увеличиваем счётчик qty_blocked
+                symbol_blocked_count[symbol] += 1
+                if symbol_blocked_count[symbol] >= 3:
+                    send_telegram_message(f"⚠️ {symbol} заблокирован 3+ раз подряд (qty_blocked). Удаляется из списка.")
                 return None
+
+        # ✅ Всё прошло — сброс счётчика
+        symbol_blocked_count[symbol] = 0
 
         try:
             enough_profit, net_profit_tp1 = check_min_profit(entry, tp1, qty, share_tp1, direction, TAKER_FEE_RATE, get_min_net_profit(balance))
@@ -107,7 +121,6 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 log(f"⚠️ Skipping {symbol} — profit ~{net_profit_tp1:.2f} USDC below threshold", level="WARNING")
                 return None
 
-            # ✅ Гибкая проверка min_profit из runtime_config
             min_profit_required = get_runtime_config().get("min_profit_threshold", 0.06)
             if net_profit_tp1 < min_profit_required:
                 log(f"⚠️ Skipping {symbol} — profit {net_profit_tp1:.2f} < min {min_profit_required:.2f}", level="WARNING")
@@ -131,6 +144,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             "sl": sl_price,
             "is_reentry": is_reentry,
             "breakdown": breakdown,
+            "signal_score": breakdown.get("signal_score", 0.0),
             "tp_prices": [tp1, tp2, tp2 * 1.5],
         }
 
