@@ -43,12 +43,16 @@ def ensure_log_exists():
                     "TP1 Hit",
                     "TP2 Hit",
                     "SL Hit",
-                    "PnL (%)",  # До комиссий (грубый процент)
+                    "PnL (%)",
                     "Result",
                     "Held (min)",
                     "Commission",
-                    "Net PnL (%)",  # После учёта комиссии
-                    "Absolute Profit",  # USDC
+                    "Net PnL (%)",
+                    "Absolute Profit",
+                    "Type",
+                    "ATR",
+                    "Exit Reason",
+                    "Signal Score",
                 ]
             )
 
@@ -72,6 +76,7 @@ def log_trade_result(
     net_pnl: float = 0.0,
     absolute_profit: float = 0.0,
     signal_score: float = 0.0,
+    tp_sl_success: bool = False,
 ):
     """
     Запись сделки в tp_performance.csv (и EXPORT_PATH).
@@ -132,7 +137,8 @@ def log_trade_result(
             pair_type,
             round(atr, 5),
             exit_reason,
-            round(signal_score, 4),  # ✅ добавлено
+            round(signal_score, 4),
+            tp_sl_success,
         ]
 
         header = [
@@ -154,7 +160,8 @@ def log_trade_result(
             "Type",
             "ATR",
             "Exit Reason",
-            "Signal Score",  # ✅ добавлено
+            "Signal Score",
+            "TP/SL Set",  # Новое поле
         ]
 
         for path in [TP_LOG_FILE, EXPORT_PATH]:
@@ -172,7 +179,7 @@ def log_trade_result(
         log(
             f"[REAL_RUN] {symbol} {result_label}: "
             f"PnL={pnl_percent:.2f}%, Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, "
-            f"ATR={atr:.3f}, Type={pair_type}, Reason={exit_reason}, Score={signal_score:.4f}",
+            f"ATR={atr:.3f}, Type={pair_type}, Reason={exit_reason}, Score={signal_score:.4f}, TP/SL={tp_sl_success}",
             level="INFO",
         )
 

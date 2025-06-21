@@ -17,7 +17,9 @@ FIELDNAMES = [
     "expected_profit",
     "priority_pair",
     "account_category",
-    "exit_reason",  # ✅ Новое поле
+    "exit_reason",
+    "fail_reason",
+    "signal_score",
 ]
 
 

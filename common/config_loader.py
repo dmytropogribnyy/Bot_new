@@ -134,8 +134,8 @@ PAIR_ROTATION_MIN_INTERVAL = int(get_config("PAIR_ROTATION_MIN_INTERVAL", 600))
 # ========== Risk Management ==========
 MAX_OPEN_ORDERS = int(get_config("MAX_OPEN_ORDERS", 5))
 MAX_MARGIN_PERCENT = float(get_config("MAX_MARGIN_PERCENT", 0.2))
-MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 20))
-MIN_NOTIONAL_ORDER = float(get_config("MIN_NOTIONAL_ORDER", 20))
+MIN_NOTIONAL_OPEN = float(get_config("MIN_NOTIONAL_OPEN", 7))
+MIN_NOTIONAL_ORDER = float(get_config("MIN_NOTIONAL_ORDER", 7))
 
 # ========== Strategy Mode Settings ==========
 GLOBAL_SCALPING_TEST = False

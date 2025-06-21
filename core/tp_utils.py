@@ -201,14 +201,15 @@ def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit
 def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_prices, sl_price):
     """
     Ставит TP1/TP2/TP3 и SL ордера с адаптацией под малые qty.
-    Остатки TP2/TP3 добавляются к TP1, если не проходят лимит.
-    Telegram-уведомление при неполном TP покрытии или fallback в TP1.
+    Использует округление по step_size. Если TP не выставлены — SL не ставится.
+    Логирует каждую попытку в tp_sl_debug.csv через log_tp_sl_event.
     """
-    from core.binance_api import convert_symbol
+    from core.binance_api import convert_symbol, round_step_size
     from core.exchange_init import exchange
+    from core.tp_sl_logger import log_tp_sl_event
     from core.trade_engine import trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import safe_call_retry
+    from utils_core import get_runtime_config, safe_call_retry
     from utils_logging import log
 
     if not tp_prices or not isinstance(tp_prices, (list, tuple)) or len(tp_prices) < 3 or sl_price is None:
@@ -218,6 +219,9 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         return False
 
     try:
+        cfg = get_runtime_config()
+        min_total_qty = cfg.get("min_total_qty_for_tp_full", 0.0035)
+
         api_symbol = convert_symbol(symbol)
         market_info = exchange.markets.get(api_symbol, {})
         if not market_info:
@@ -226,6 +230,60 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
 
         min_qty = market_info.get("limits", {}).get("amount", {}).get("min", 0.001)
 
+        if qty < min_total_qty:
+            log(f"[TP-Fallback] {symbol}: qty {qty:.4f} < {min_total_qty}, fallback to TP1-only logic", level="WARNING")
+            send_telegram_message(f"⚠️ {symbol}: qty too low for full TP setup. Routing all to TP1.")
+            tp_price = tp_prices[0]
+            tp_qty = round_step_size(symbol, qty)
+
+            if tp_qty >= min_qty:
+                order = safe_call_retry(
+                    lambda: exchange.create_limit_sell_order(api_symbol, tp_qty, tp_price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, tp_qty, tp_price),
+                    label=f"tp1_fallback_{symbol}",
+                )
+                if order:
+                    trade_manager.update_trade(symbol, "tp1_price", tp_price)
+                    trade_manager.update_trade(symbol, "tp1_qty", tp_qty)
+                    log_tp_sl_event(symbol, "TP1", tp_qty, tp_price, "success", reason="fallback_only_tp1")
+                    log(f"[TP-Fallback] {symbol}: Executed TP1-only fallback with qty={tp_qty}, price={tp_price}", level="INFO")
+                else:
+                    log_tp_sl_event(symbol, "TP1", tp_qty, tp_price, "failure", reason="order_rejected")
+                    return False
+            else:
+                log_tp_sl_event(symbol, "TP1", tp_qty, tp_price, "skipped", reason="qty_too_small")
+                return False
+
+            # SL
+            skip_sl = False
+            min_gap = entry_price * 0.001
+            if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):
+                log(f"[SL-Skip] {symbol}: SL too close to entry → skipped", level="WARNING")
+                send_telegram_message(f"⚠️ {symbol}: SL skipped — too close to entry")
+                log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="too_close")
+                skip_sl = True
+
+            if not skip_sl:
+                sl_order = safe_call_retry(
+                    lambda: exchange.create_order(
+                        api_symbol,
+                        type="STOP_MARKET",
+                        side="sell" if side == "buy" else "buy",
+                        amount=qty,
+                        params={"stopPrice": sl_price, "reduceOnly": True},
+                    ),
+                    label=f"sl_stop_market_{symbol}",
+                )
+                if sl_order:
+                    trade_manager.update_trade(symbol, "sl_price", sl_price)
+                    log_tp_sl_event(symbol, "SL", qty, sl_price, "success", reason="fallback_mode")
+                else:
+                    log_tp_sl_event(symbol, "SL", qty, sl_price, "failure", reason="order_rejected")
+                    return False
+
+            trade_manager.update_trade(symbol, "tp_sl_success", True)
+            return True
+
+        # === Обычная логика ===
         shares = ["tp1", "tp2", "tp3"]
         usable_levels = []
         tp_adjusted = [0.0, 0.0, 0.0]
@@ -242,7 +300,9 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             except Exception:
                 share = 0.0
 
-            qty_i = round(qty * share, 8)
+            raw_qty = qty * share
+            qty_i = round_step_size(symbol, raw_qty)
+
             if not isinstance(qty_i, float) or qty_i <= 0:
                 continue
 
@@ -250,19 +310,18 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             if qty_i >= min_qty:
                 usable_levels.append(i)
 
-        # Fallback: если TP2/TP3 слишком малы — добавляем их к TP1
         fallback_qty = sum(tp_adjusted[i] for i in [1, 2] if i not in usable_levels)
         if fallback_qty > 0:
             log(f"[TP-Fallback] {symbol}: redirecting {fallback_qty:.4f} from TP2/3 to TP1", level="DEBUG")
-            tp_adjusted[0] = round(tp_adjusted[0] + fallback_qty, 8)
+            tp_adjusted[0] = round_step_size(symbol, tp_adjusted[0] + fallback_qty)
 
-        # TP Orders
         for i in range(3):
             level = shares[i]
             qty_i = tp_adjusted[i]
             price = tp_prices[i]
             if qty_i < min_qty:
                 failed_levels.append(level.upper())
+                log_tp_sl_event(symbol, level.upper(), qty_i, price, "skipped", reason="qty_too_small")
                 continue
 
             order = safe_call_retry(
@@ -275,18 +334,26 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                 tp_total_placed += qty_i
                 trade_manager.update_trade(symbol, f"{level}_price", price)
                 trade_manager.update_trade(symbol, f"{level}_qty", qty_i)
+                log_tp_sl_event(symbol, level.upper(), qty_i, price, "success")
             else:
                 failed_levels.append(level.upper())
+                log_tp_sl_event(symbol, level.upper(), qty_i, price, "failure", reason="order_rejected")
 
-        # === Проверка SL до размещения
-        min_gap = entry_price * 0.001  # 0.1%
+        if tp_total_placed == 0:
+            log(f"[TP/SL] {symbol}: ❌ No TP orders were placed — skipping SL", level="ERROR")
+            send_telegram_message(f"❌ {symbol}: No TP levels could be placed — SL not set")
+            log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="no_tp")
+            trade_manager.update_trade(symbol, "tp_sl_success", False)
+            return False
+
+        min_gap = entry_price * 0.001
         skip_sl = False
         if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):
-            log(f"[SL-Skip] {symbol}: SL too close to entry → skipped (SL={sl_price:.4f}, Entry={entry_price:.4f})", level="WARNING")
+            log(f"[SL-Skip] {symbol}: SL too close to entry → skipped", level="WARNING")
             send_telegram_message(f"⚠️ {symbol}: SL skipped — too close to entry")
+            log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="too_close")
             skip_sl = True
 
-        # SL Order
         if not skip_sl:
             sl_order = safe_call_retry(
                 lambda: exchange.create_order(
@@ -299,33 +366,13 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                 label=f"sl_stop_market_{symbol}",
             )
             if sl_order:
-                orders.append(sl_order)
                 trade_manager.update_trade(symbol, "sl_price", sl_price)
+                log_tp_sl_event(symbol, "SL", qty, sl_price, "success")
             else:
-                log(f"[SL-Fail] {symbol} Failed to place SL at {sl_price}", level="ERROR")
-                send_telegram_message(f"⚠️ {symbol} failed to place SL at {sl_price}")
+                log_tp_sl_event(symbol, "SL", qty, sl_price, "failure", reason="order_rejected")
                 return False
 
-        # === TP-покрытие логика и Telegram уведомления
-        coverage_pct = (tp_total_placed / qty) * 100 if qty > 0 else 0
-        tp1_qty = trade_manager.get_trade(symbol, "tp1_qty") or 0
-        tp2_qty = trade_manager.get_trade(symbol, "tp2_qty") or 0
-        tp3_qty = trade_manager.get_trade(symbol, "tp3_qty") or 0
-
-        log(f"[TP-COVERAGE] {symbol}: TP1={tp1_qty:.4f}, TP2={tp2_qty:.4f}, TP3={tp3_qty:.4f} | Total={tp_total_placed:.4f}/{qty:.4f} ({coverage_pct:.2f}%)", level="DEBUG")
-
-        if tp2_qty == 0 and tp3_qty == 0 and tp1_qty >= qty * 0.99:
-            send_telegram_message(f"ℹ️ {symbol}: All TP routed to TP1 due to low qty")
-
-        if tp_total_placed < qty:
-            msg = f"⚠️ {symbol}: TP coverage incomplete: {tp_total_placed:.4f} of {qty:.4f}"
-            log(msg, level="WARNING")
-            send_telegram_message(msg)
-
-        if failed_levels:
-            msg = f"⚠️ {symbol}: Skipped TP levels or merged to TP1: {', '.join(failed_levels)}"
-            send_telegram_message(msg)
-
+        trade_manager.update_trade(symbol, "tp_sl_success", True)
         return True
 
     except Exception as e:

@@ -249,7 +249,7 @@ max_capital_utilization_pct = 0.7
 
 ✅ Реализовано:
 
-расчёт signal_score = macd _ 0.4 + rsi _ 0.3 + ema \* 0.3;
+расчёт signal*score = macd * 0.4 + rsi \_ 0.3 + ema \* 0.3;
 
 вставка signal_score в breakdown;
 
@@ -354,3 +354,32 @@ TP/SL логика ✅ Да
 Telegram-отчёты ✅ Да
 Missed логика ✅ Да
 Конфигурация ✅ Да
+
+---
+
+Скажи, какая "новая черта" — это будет:
+
+TradingView-интеграция?
+
+WebSocket / real-time TP-touch?
+
+OptiScalp / TP-Sniper?
+
+Расширенные Telegram-команды?
+
+## Funding-rate сигналы?
+
+На будущее (если решишь адаптировать rsi_threshold):
+Можешь позже добавить это в initialize_runtime_adaptive_config():
+
+python
+Copy
+Edit
+from datetime import datetime
+
+hour = datetime.utcnow().hour
+if hour < 6:
+config["rsi_threshold"] = 20
+else:
+config["rsi_threshold"] = 25
+Но на данный момент это не критично. Всё отлично сбалансировано!

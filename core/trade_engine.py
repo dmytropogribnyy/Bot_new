@@ -284,22 +284,20 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
             log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
             return 0.0, 0.0
 
-    # Проверка минимального нотионала
-    if notional < min_notional_open:
-        log(f"[SKIPPED] {symbol}: notional {notional:.2f} < MIN_NOTIONAL_OPEN {min_notional_open}", level="WARNING")
-        return 0.0, 0.0
-
     # Округление по step size
     qty = round_step_size(symbol, qty)
 
-    # ✅ Дополнительные защиты после округления
-    if qty <= 0.0:
-        log(f"[REJECTED] {symbol}: qty rounded to 0.0 — invalid position", level="WARNING")
-        return 0.0, 0.0
-
+    # ✅ Fallback: если qty обнулился — пробуем поставить min_trade_qty
     if qty < min_trade_qty:
-        log(f"[REJECTED] {symbol}: qty {qty:.6f} < min_trade_qty {min_trade_qty}", level="WARNING")
-        return 0.0, 0.0
+        boosted_qty = min_trade_qty
+        boosted_notional = boosted_qty * entry_price
+        if boosted_notional >= min_notional_open and projected_total + boosted_notional <= max_total:
+            log(f"[QTY_FIX] Boosted qty to minimum: {boosted_qty} for {symbol}", level="WARNING")
+            # send_telegram_message(f"⚠️ Boosted qty to minimal valid level for {symbol}: {boosted_qty:.6f}", force=True)
+            return boosted_qty, boosted_qty * entry_price / leverage  # пересчитываем риск
+        else:
+            log(f"[REJECTED] {symbol}: qty {qty:.6f} < min_trade_qty {min_trade_qty} and can't boost safely", level="WARNING")
+            return 0.0, 0.0
 
     notional = qty * entry_price
     if notional < min_notional_open:
@@ -470,7 +468,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         log(f"[Breakdown] {symbol} entry breakdown: {breakdown}", level="DEBUG")
         if not passes_1plus1(breakdown):
             log(f"❌ Signal rejected by passes_1plus1() for {symbol}", level="WARNING")
-            send_telegram_message(f"🧱 Skipping {symbol}: failed passes_1plus1 check", force=True)
+            send_telegram_message(f"🚱 Skipping {symbol}: failed passes_1plus1 check", force=True)
             return False
         log_component_data(symbol, breakdown, is_successful=True)
 
@@ -531,18 +529,40 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         min_qty = cfg.get("min_trade_qty", 0.001)
 
         if not isinstance(qty, (float, int)) or qty <= 0:
+            fail_data = {"symbol": symbol, "side": side, "entry": round(entry_price, 4), "qty": qty, "breakdown": breakdown or {}, "pair_type": pair_type, "fail_reason": "qty=0.0"}
+            log_entry(fail_data, status="FAIL")
             log(f"[ENTER] ❌ Invalid qty computed for {symbol}: {qty}", level="ERROR")
             send_telegram_message(f"⚠️ {symbol} blocked — qty={qty} is invalid", force=True)
             return False
 
         qty = round(qty, 6)
         if qty < min_qty:
+            fail_data = {
+                "symbol": symbol,
+                "side": side,
+                "entry": round(entry_price, 4),
+                "qty": qty,
+                "breakdown": breakdown or {},
+                "pair_type": pair_type,
+                "fail_reason": "qty < min_trade_qty",
+            }
+            log_entry(fail_data, status="FAIL")
             log(f"[ENTER] ❌ qty={qty:.6f} < min_trade_qty={min_qty} → skipping {symbol}", level="WARNING")
             send_telegram_message(f"⚠️ Skipping {symbol}: qty={qty:.4f} < min_trade_qty={min_qty}", force=True)
             return False
 
         notional = qty * entry_price
         if notional < MIN_NOTIONAL_OPEN:
+            fail_data = {
+                "symbol": symbol,
+                "side": side,
+                "entry": round(entry_price, 4),
+                "qty": qty,
+                "breakdown": breakdown or {},
+                "pair_type": pair_type,
+                "fail_reason": "notional < MIN_NOTIONAL_OPEN",
+            }
+            log_entry(fail_data, status="FAIL")
             log(f"[Notional] {symbol} too small: ${notional:.2f}", level="WARNING")
             send_telegram_message(f"⚠️ Skipping {symbol}: notional too small (${notional:.2f})", force=True)
             return False
@@ -584,6 +604,10 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             send_telegram_message(f"⚠️ 0 filled qty for {symbol}. Trade will not be recorded.", force=True)
             return False
 
+        # ✅ Обновление entry_price, если avg_price от Binance отличается
+        entry_price = result.get("avg_price", entry_price)
+        order_id = result.get("result", {}).get("id")
+
         opened_position = True
         with open_positions_lock:
             if DRY_RUN:
@@ -595,11 +619,15 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
 
         try:
             success = place_take_profit_and_stop_loss_orders(api_symbol, side, entry_price, qty, tp_prices, sl_price)
-            if not success:
-                log(f"[TP/SL] TP/SL were not placed for {symbol}", level="WARNING")
+            trade_manager.update_trade(symbol, "tp_sl_success", success)
+            if success:
+                send_telegram_message(f"✅ {symbol}: TP/SL orders placed successfully.")
+            else:
+                send_telegram_message(f"❌ {symbol}: TP/SL not placed after market entry!")
         except Exception as e:
             log(f"[TP/SL] Error placing TP/SL: {e}", level="ERROR")
             send_telegram_message(f"⚠️ TP/SL placement failed for {symbol}: {e}", force=True)
+            success = False
 
         trade_data = {
             "symbol": symbol,
@@ -623,6 +651,8 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             "tp1_share": share1,
             "tp2_share": share2,
             "tp3_share": 0.0,
+            "tp_sl_success": success,
+            "order_id": order_id,
         }
 
         trade_manager.add_trade(symbol, trade_data)
@@ -645,20 +675,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
                     dry_run_positions_count -= 1
                 else:
                     open_positions_count -= 1
-
-
-def track_stop_loss(symbol, side, entry_price, qty, opened_at):
-    from utils_logging import log
-
-    with monitored_stops_lock:
-        monitored_stops[symbol] = {
-            "side": side,
-            "entry": entry_price,
-            "qty": qty,
-            "opened_at": opened_at,
-        }
-
-    log(f"[SL-Track] Monitoring SL for {symbol} → {side} qty={qty} @ {entry_price}, opened_at={opened_at}", level="DEBUG")
 
 
 ###############################################################################
@@ -739,6 +755,9 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         log(f"[DEBUG] {symbol} already recorded or not found", level="DEBUG")
         return
     trade["closed_logged"] = True
+
+    tp_sl_success = trade.get("tp_sl_success", False)
+    log(f"[Record] {symbol} → tp_sl_success = {tp_sl_success}", level="DEBUG")
 
     exit_reason = (
         "post_hold"
@@ -1188,6 +1207,19 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                 log(f"{symbol} => trade removed, stop dynamic monitoring", level="DEBUG")
                 break
 
+            if not trade.get("tp_sl_success", False):
+                log(f"[Monitor] ⚠️ Skipping {symbol}: TP/SL were not set — unsafe to monitor", level="WARNING")
+                return
+
+            log(f"[Monitor] {symbol}: tp_sl_success = {trade.get('tp_sl_success')}", level="DEBUG")
+
+            tp1_qty = trade.get("tp1_qty", 0)
+            tp2_qty = trade.get("tp2_qty", 0)
+            tp_total = tp1_qty + tp2_qty
+            if tp_total <= 0:
+                log(f"[Monitor] ❌ No TP qty set for {symbol}, skipping monitoring", level="WARNING")
+                return
+
             tp_prices = trade.get("tp_prices", [])
             sl_price = trade.get("sl_price")
 
@@ -1275,12 +1307,14 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                 safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", current_position, None, {"stopPrice": new_sl, "reduceOnly": True})
                 trade_manager.update_trade(symbol, "break_even_set", True)
                 trade_manager.update_trade(symbol, "sl_price", new_sl)
+                log(f"[SL-BE] SL moved to break-even for {symbol} → new SL: {new_sl}", level="INFO")
                 send_telegram_message(f"🔒 SL moved to break-even for {symbol}")
 
             if not trailing_tp_active and not trade.get("tp1_hit") and profit_percent > 2.5:
                 ohlcv = fetch_ohlcv(symbol, timeframe="5m", limit=12)
                 closes = [c[4] for c in ohlcv[-6:]]
                 momentum = closes[-1] > closes[-2] > closes[-3] if is_buy else closes[-1] < closes[-2] < closes[-3]
+                log(f"[Trailing Check] {symbol}: momentum confirmed = {momentum}", level="DEBUG")
                 if momentum:
                     tp1 = current_price * 1.004 if is_buy else current_price * 0.996
                     tp2 = current_price * 1.007 if is_buy else current_price * 0.993
@@ -1291,6 +1325,8 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     safe_call_retry(exchange.create_limit_order, symbol, "sell" if is_buy else "buy", current_position, tp1, {"reduceOnly": True, "postOnly": True})
                     safe_call_retry(exchange.create_limit_order, symbol, "sell" if is_buy else "buy", current_position * 0.2, tp2, {"reduceOnly": True, "postOnly": True})
                     trade_manager.update_trade(symbol, "trailing_tp_active", True)
+                    trade["tp_prices"] = [tp1, tp2, tp2 * 1.5]
+                    trade_manager.update_trade(symbol, "tp_prices", trade["tp_prices"])
                     send_telegram_message(f"🚀 Trailing TP moved higher for {symbol}")
 
             if elapsed > 600 and not any(step_hits):

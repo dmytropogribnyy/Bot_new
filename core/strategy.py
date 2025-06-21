@@ -315,7 +315,9 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
 
     if not qty or qty <= 0:
-        fallback_qty = MIN_NOTIONAL_OPEN / entry_price
+        min_notional_open = cfg.get("MIN_NOTIONAL_OPEN", MIN_NOTIONAL_OPEN)
+        fallback_qty = min_notional_open / entry_price
+
         log(f"[Fallback] {symbol} qty fallback: {fallback_qty:.4f}", level="DEBUG")
         qty = fallback_qty
 
