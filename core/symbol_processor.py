@@ -19,7 +19,6 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     from utils_core import MARGIN_SAFETY_BUFFER, get_min_net_profit, get_runtime_config, normalize_symbol
     from utils_logging import log
 
-    # Глобальный счётчик qty_blocked
     global symbol_blocked_count
     if "symbol_blocked_count" not in globals():
         symbol_blocked_count = defaultdict(int)
@@ -79,7 +78,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             return None
 
         regime = get_market_regime(symbol)
-        tp1, tp2, sl_price, share_tp1, share_tp2 = calculate_tp_levels(entry, direction, regime=regime)
+        tp1, tp2, sl_price, share_tp1, share_tp2, tp_total_qty = calculate_tp_levels(entry, direction, regime=regime)
 
         if tp1 is None or tp1 <= 0:
             log(f"⚠️ Skipping {symbol} — tp1={tp1} is invalid", level="WARNING")
@@ -105,14 +104,11 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 notional = qty * entry
             else:
                 log(f"⚠️ Skipping {symbol} — insufficient margin after notional adjust", level="WARNING")
-
-                # ✅ Увеличиваем счётчик qty_blocked
                 symbol_blocked_count[symbol] += 1
                 if symbol_blocked_count[symbol] >= 3:
                     send_telegram_message(f"⚠️ {symbol} заблокирован 3+ раз подряд (qty_blocked). Удаляется из списка.")
                 return None
 
-        # ✅ Всё прошло — сброс счётчика
         symbol_blocked_count[symbol] = 0
 
         try:
@@ -146,6 +142,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             "breakdown": breakdown,
             "signal_score": breakdown.get("signal_score", 0.0),
             "tp_prices": [tp1, tp2, tp2 * 1.5],
+            "tp_total_qty": tp_total_qty,  # ✅ Добавлено
         }
 
     except Exception as e:

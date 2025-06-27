@@ -114,7 +114,7 @@ SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMB
 
 
 raw_fixed_pairs = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
-FIXED_PAIRS = [f"{pair[:-4]}/USDC:USDC" if pair.endswith("USDC") and "/" not in pair else pair for pair in raw_fixed_pairs]
+FIXED_PAIRS = [f"{pair.strip()[:-4]}/USDC:USDC" if pair.strip().endswith("USDC") and "/" not in pair.strip() else pair.strip() for pair in raw_fixed_pairs]
 
 
 MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 15))
@@ -148,7 +148,7 @@ TP1_SHARE = float(get_config("TP1_SHARE", 0.8))
 TP2_SHARE = float(get_config("TP2_SHARE", 0.2))
 
 # ========== Auto-Profit Settings ==========
-cfg = get_runtime_config()
+cfg = get_runtime_config() or {}
 AUTO_CLOSE_PROFIT_THRESHOLD = cfg.get("auto_profit_threshold", 3.0)
 BONUS_PROFIT_THRESHOLD = cfg.get("bonus_profit_threshold", 5.0)
 AUTO_PROFIT_ENABLED = cfg.get("auto_profit_enabled", True)
@@ -182,6 +182,11 @@ ROUTER_REBOOT_MODE_TIMEOUT_MINUTES = int(get_config("ROUTER_REBOOT_MODE_TIMEOUT_
 TP_ML_MIN_TRADES_INITIAL = int(get_config("TP_ML_MIN_TRADES_INITIAL", 12))
 TP_ML_MIN_TRADES_FULL = int(get_config("TP_ML_MIN_TRADES_FULL", 20))
 TP_ML_SWITCH_THRESHOLD = float(get_config("TP_ML_SWITCH_THRESHOLD", 0.05))
+
+# === TP/SL аварийные настройки ===
+ABORT_IF_NO_TP = get_config("ABORT_IF_NO_TP", "True") == "True"  # закроет позицию, если TP/SL не выставлены
+FORCE_SL_ALWAYS = get_config("FORCE_SL_ALWAYS", "False") == "True"  # SL будет ставиться даже при отсутствии TP
+
 
 # ========== Safety and Margin Buffer ==========
 MARGIN_SAFETY_BUFFER = float(get_config("MARGIN_SAFETY_BUFFER", 0.92))

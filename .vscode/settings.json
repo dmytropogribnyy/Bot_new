@@ -8,28 +8,16 @@
     "files.insertFinalNewline": true,
     "files.autoSave": "onFocusChange",
 
-    // Ruff
-    "ruff.linting.enabled": true,
-    "ruff.formatOnSave": true,
-    "ruff.lint.fixable": ["I001"],
-
-    // Python
-    "python.analysis.extraPaths": ["./core", "./telegram"],
-    "python.terminal.activateEnvironment": true,
-    "python.terminal.executeInFileDir": true,
-
-    // Для Python файлов
     "[python]": {
         "editor.formatOnType": true,
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "charliermarsh.ruff"
     },
 
-    // Проверка орфографии
     "cSpell.enabled": false,
 
-    // Авто-действия при сохранении
     "editor.codeActionsOnSave": {
+        "source.fixAll": "explicit",
         "source.fixAll.ruff": "explicit",
         "source.organizeImports": "explicit"
     }

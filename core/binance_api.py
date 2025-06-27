@@ -185,6 +185,14 @@ def validate_order_size(symbol, side, amount, price=None):
 def create_safe_market_order(symbol, side, amount):
     """
     Создает безопасный market-ордер с логами и fallback на лимитный ордер при отказе.
+    Возвращает:
+        {
+            "success": True/False,
+            "result": raw Binance object,
+            "filled_qty": float,
+            "avg_price": float,
+            "status": "market_success" | "post_fetch_success" | "submitted_fallback"
+        }
     """
     import time
 
@@ -208,9 +216,9 @@ def create_safe_market_order(symbol, side, amount):
         return {"success": False, "error": "qty_zero_or_invalid"}
 
     if not exchange.markets or api_symbol not in exchange.markets:
-        log(f"[MarketOrder] [MARKET INFO] Reloading markets for {api_symbol}", level="DEBUG")
         try:
             exchange.load_markets()
+            log(f"[MarketOrder] Reloaded markets for {api_symbol}", level="DEBUG")
         except Exception as e:
             log(f"[MarketOrder] Failed to reload markets: {e}", level="ERROR")
 
@@ -219,10 +227,9 @@ def create_safe_market_order(symbol, side, amount):
     cost_limits = market_info.get("limits", {}).get("cost", {})
     precision = market_info.get("precision", {}).get("amount", "N/A")
 
-    log(f"[MARKET ORDER DEBUG] {symbol} | qty={amount}, step_size={precision}, min_qty={limits.get('min')}", level="WARNING")
-    log(f"[MARKET INFO] Notional limits: {cost_limits}", level="WARNING")
+    log(f"[MarketOrder] DEBUG {symbol} | qty={amount}, step={precision}, min_qty={limits.get('min')}, min_notional={cost_limits.get('min')}", level="DEBUG")
 
-    # 1️⃣ Валидация
+    # === Валидация
     is_valid, error = validate_order_size(symbol, side, amount)
     price = get_current_price(symbol)
     notional = round((amount * price), 4) if price else 0
@@ -232,71 +239,76 @@ def create_safe_market_order(symbol, side, amount):
         log(f"[MarketOrder] ❌ Validation failed: {error} | notional={notional}", level="ERROR")
         send_telegram_message(f"❌ *Order Failed:* `{symbol}`\nReason: `{error}`\nQty: `{amount}`", force=True)
         return {"success": False, "error": error}
-    else:
-        log(f"[MarketOrder] ✅ Validated: amount={amount}, price={price}, notional={notional}", level="DEBUG")
 
-    # 2️⃣ Комиссия
-    fee = 0.0
-    if price:
-        fee = calculate_commission(amount, price, is_maker=False)
-        log(f"[MarketOrder] Estimated fee: {fee:.6f} USDC", level="DEBUG")
+    fee = calculate_commission(amount, price, is_maker=False) if price else 0.0
+    log(f"[MarketOrder] ✅ Validation passed → notional={notional}, fee={fee:.6f}", level="DEBUG")
 
-    # 3️⃣ Попытка создать market-ордер
+    # === Попытка MARKET
     try:
         params = {"newOrderRespType": "RESULT"}
-        result = exchange.create_market_buy_order(api_symbol, amount, params=params) if side == "buy" else exchange.create_market_sell_order(api_symbol, amount, params=params)
-        log(f"[BINANCE RESPONSE] {symbol} => raw: {result}", level="DEBUG")
+        order = exchange.create_market_buy_order(api_symbol, amount, params=params) if side == "buy" else exchange.create_market_sell_order(api_symbol, amount, params=params)
+        log(f"[BINANCE] Market response: {order}", level="DEBUG")
 
-        order_id = result.get("id")
-        filled_qty = float(result.get("executedQty", 0) or 0)
-        avg_price = float(result.get("avgPrice", 0) or 0)
-        status = result.get("status", "unknown")
+        order_id = order.get("id")
+        filled_qty = float(order.get("executedQty", 0) or 0)
+        avg_price = float(order.get("avgPrice", 0) or 0)
 
-        # 🔄 Пост-проверка через fetch_order, если filled == 0
-        if filled_qty == 0 or avg_price == 0:
-            log(f"[MarketOrder] ⚠️ filled=0 — doing post-check for {symbol}", level="WARNING")
-            if order_id:
-                time.sleep(2.0)
-                try:
-                    order_info = exchange.fetch_order(order_id, api_symbol)
-                    filled_qty = float(order_info.get("filled", 0) or 0)
-                    avg_price = float(order_info.get("average", 0) or 0)
-                    status = order_info.get("status", "unknown")
+        if filled_qty > 0 and avg_price > 0:
+            return {
+                "success": True,
+                "result": order,
+                "filled_qty": filled_qty,
+                "avg_price": avg_price,
+                "status": "market_success",
+            }
 
-                    if filled_qty > 0:
-                        log(f"[MarketOrder] ✅ Post-check success: filled={filled_qty}, avg_price={avg_price}", level="INFO")
-                        log(f"[MarketOrder] ✅ Final result: filled_qty={filled_qty}, avg_price={avg_price}, commission={fee:.6f}", level="INFO")
-                        return {
-                            "success": True,
-                            "result": order_info,
-                            "filled_qty": filled_qty,
-                            "avg_price": avg_price,
-                            "status": status,
-                        }
-                except Exception as e:
-                    log(f"[MarketOrder] ⚠️ Post-check fetch_order failed: {e}", level="WARNING")
-
-        # ❌ fallback
-        if filled_qty == 0 or avg_price == 0:
-            log("[MarketOrder] ❌ STILL zero fill — attempting fallback LIMIT order", level="ERROR")
-            limit_price = price * (1.0005 if side == "buy" else 0.9995)
+        # === Post-fetch попытка уточнить исполнение
+        if order_id:
+            time.sleep(2.0)
             try:
-                fallback = exchange.create_order(api_symbol, type="limit", side=side, amount=amount, price=round(limit_price, 6), params={"postOnly": True})
-                send_telegram_message(f"📥 *Fallback Limit Order*\n{symbol} → `{side.upper()}`\nQty: `{amount}` @ `{limit_price:.6f}`", force=True)
-                log(f"[Fallback] {symbol} limit order placed: {fallback}", level="WARNING")
-                log(f"[MarketOrder] ✅ Final result: filled_qty={amount}, avg_price={limit_price:.6f}, commission={fee:.6f}", level="INFO")
-                return {"success": True, "result": fallback, "filled_qty": amount, "avg_price": round(limit_price, 6), "status": "submitted_fallback"}
-            except Exception as fallback_error:
-                log(f"[Fallback] ❌ Fallback failed: {fallback_error}", level="ERROR")
-                send_telegram_message(f"❌ Fallback failed for `{symbol}` → {fallback_error}", force=True)
-                return {"success": False, "error": str(fallback_error)}
+                post_order = exchange.fetch_order(order_id, api_symbol)
+                filled_qty = float(post_order.get("filled", 0) or 0)
+                avg_price = float(post_order.get("average", 0) or 0)
+                if filled_qty > 0:
+                    return {
+                        "success": True,
+                        "result": post_order,
+                        "filled_qty": filled_qty,
+                        "avg_price": avg_price,
+                        "status": "post_fetch_success",
+                    }
+            except Exception as e:
+                log(f"[MarketOrder] ⚠️ Post-fetch failed for {symbol}: {e}", level="WARNING")
 
-        # ✅ Всё хорошо
-        log(f"[MarketOrder] ✅ Final result: filled_qty={filled_qty}, avg_price={avg_price}, commission={fee:.6f}", level="INFO")
-        return {"success": True, "result": result, "filled_qty": filled_qty, "avg_price": avg_price, "status": status}
+        # === Fallback: LIMIT order
+        limit_price = round(price * (1.0005 if side == "buy" else 0.9995), 6)
+        try:
+            fallback = exchange.create_order(
+                api_symbol,
+                type="limit",
+                side=side,
+                amount=amount,
+                price=limit_price,
+                params={"postOnly": True},
+            )
+            send_telegram_message(
+                f"📥 *Fallback Limit Order Placed*\n{symbol} → `{side.upper()}`\nQty: `{amount}` @ `{limit_price}`",
+                force=True,
+            )
+            return {
+                "success": True,
+                "result": fallback,
+                "filled_qty": amount,
+                "avg_price": limit_price,
+                "status": "submitted_fallback",
+            }
+        except Exception as fb_err:
+            log(f"[Fallback] ❌ Fallback limit order failed for {symbol}: {fb_err}", level="ERROR")
+            send_telegram_message(f"❌ Fallback failed for `{symbol}` → {fb_err}", force=True)
+            return {"success": False, "error": str(fb_err)}
 
     except Exception as e:
-        log(f"[MarketOrder] ❌ Exception during order: {e}", level="ERROR")
+        log(f"[MarketOrder] ❌ Unexpected error: {e}", level="ERROR")
         send_telegram_message(f"❌ *Order Failed:* `{symbol}`\nReason: `{e}`", force=True)
         return {"success": False, "error": str(e)}
 
@@ -341,11 +353,15 @@ def round_step_size(symbol, qty):
     """
     Округляет qty до допустимого step_size символа Binance.
     """
+    from core.binance_api import get_symbol_info
+    from utils_logging import log
+
     market = get_symbol_info(symbol)
     step_size = market.get("precision", {}).get("amount", 0.001)
 
     if not step_size or step_size <= 0:
-        step_size = 0.001  # fallback
+        log(f"[step_size] Fallback: using 0.001 for {symbol} (was={step_size})", level="WARNING")
+        step_size = 0.001
 
     rounded_qty = qty - (qty % step_size)
     return round(rounded_qty, 8)

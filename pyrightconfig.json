@@ -1,0 +1,9 @@
+{
+  "typeCheckingMode": "off",
+  "reportMissingImports": true,
+  "extraPaths": [
+    "./core",
+    "./telegram",
+    "./venv/Lib/site-packages"
+  ]
+}

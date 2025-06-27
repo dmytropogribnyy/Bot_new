@@ -242,11 +242,11 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     breakdown["pair_type"] = pair_type
 
-    # === Signal Score (по MACD/RSI/EMA)
+    # === Signal Score
     weights = cfg.get("signal_strength_weighting", {"MACD": 0.4, "RSI": 0.3, "EMA": 0.3})
     macd_strength = breakdown.get("macd_strength", 0.0)
     rsi_strength = breakdown.get("rsi_strength", 0.0)
-    ema_score = float(breakdown.get("EMA_CROSS", 0))  # treat EMA_CROSS as binary
+    ema_score = float(breakdown.get("EMA_CROSS", 0))
 
     score = macd_strength * weights.get("MACD", 0.4) + rsi_strength * weights.get("RSI", 0.3) + ema_score * weights.get("EMA", 0.3)
     signal_score = round(score, 4)
@@ -317,9 +317,14 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     if not qty or qty <= 0:
         min_notional_open = cfg.get("MIN_NOTIONAL_OPEN", MIN_NOTIONAL_OPEN)
         fallback_qty = min_notional_open / entry_price
+        log(f"[Fallback] {symbol}: calculated qty={qty:.6f} → using fallback qty={fallback_qty:.6f}", level="WARNING")
+        qty = round(fallback_qty, 6)
+        breakdown["fallback_used"] = True
 
-        log(f"[Fallback] {symbol} qty fallback: {fallback_qty:.4f}", level="DEBUG")
-        qty = fallback_qty
+        if qty <= 0:
+            failure_reasons.append("qty_zero_after_fallback")
+            log_missed_signal(symbol, breakdown, reason="qty_zero_after_fallback")
+            return None, failure_reasons
 
     notional = qty * entry_price
     if notional < MIN_NOTIONAL_OPEN:
@@ -328,7 +333,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         return None, failure_reasons
 
     try:
-        tp1, tp2, sl_price, share1, share2 = calculate_tp_levels(entry_price, direction, df=df)
+        tp1, tp2, sl_price, share1, share2, tp3_share = calculate_tp_levels(entry_price, direction, df=df)
         if any(x is None or (isinstance(x, float) and np.isnan(x)) for x in (tp1, sl_price, share1)):
             raise ValueError("TP/SL invalid")
 
@@ -338,8 +343,12 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         breakdown["sl_price"] = sl_price
         breakdown["tp1_share"] = share1
         breakdown["tp2_share"] = share2
-        breakdown["tp3_share"] = 0.0
+        breakdown["tp3_share"] = tp3_share
         breakdown["tp_prices"] = tp_prices
+
+        # Суммарное распределение TP-долей (для логов и анализа)
+        tp_total_qty = share1 + share2 + breakdown["tp3_share"]
+        breakdown["tp_total_qty"] = round(tp_total_qty, 3)
 
         min_profit_required = cfg.get("min_profit_threshold", 0.06)
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
@@ -406,33 +415,46 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
 def calculate_tp_targets():
     """
-    Возвращает текущие TP цели по активным сделкам (по tp1_price, fallback = +5%)
+    Возвращает текущие TP/SL цели по активным сделкам:
+    - tp1_price, tp2_price, sl_price
+    - fallback при отсутствии TP
+    - добавлены tp_total_qty и tp_fallback_used
     """
     from core.trade_engine import trade_manager
     from utils_logging import log
 
     try:
-        positions = trade_manager._trades
+        positions = trade_manager.get_all_trades()
         results = []
 
         for symbol, data in positions.items():
+            if data.get("closed_logged"):
+                continue  # Пропустить уже зафиксированные
+
             entry_price = data.get("entry", 0)
             if not entry_price or entry_price <= 0:
                 continue
 
-            tp_raw = data.get("tp1_price")
-            tp_price = round(tp_raw if tp_raw else entry_price * 1.05, 4)
-            entry_rounded = round(entry_price, 4)
+            tp1 = data.get("tp1_price") or round(entry_price * 1.05, 4)
+            tp2 = data.get("tp2_price") or round(entry_price * 1.10, 4)
+            sl_price = data.get("sl_price") or round(entry_price * 0.985, 4)
+
+            tp_total_qty = round(data.get("tp_total_qty", 0.0), 6)
+            fallback_used = bool(data.get("tp_fallback_used", False))
 
             result = {
                 "symbol": symbol,
-                "tp_price": tp_price,
-                "entry": entry_rounded,
+                "entry": round(entry_price, 4),
+                "tp1": round(tp1, 4),
+                "tp2": round(tp2, 4),
+                "sl": round(sl_price, 4),
+                "tp_total_qty": tp_total_qty,
+                "fallback": fallback_used,
                 "pair_type": data.get("pair_type", "unknown"),
             }
             results.append(result)
 
-            log(f"[TP-Target] {symbol} → TP1: {tp_price:.4f}", level="DEBUG")
+            log(f"[TP-Target] {symbol} → TP1={tp1:.4f}, TP2={tp2:.4f}, SL={sl_price:.4f}, fallback={fallback_used}", level="DEBUG")
 
         return results
 

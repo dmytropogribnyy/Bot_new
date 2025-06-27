@@ -77,19 +77,23 @@ def log_trade_result(
     absolute_profit: float = 0.0,
     signal_score: float = 0.0,
     tp_sl_success: bool = False,
+    tp_total_qty: float = 0.0,
+    tp_fallback_used: bool = False,
 ):
     """
     Запись сделки в tp_performance.csv (и EXPORT_PATH).
     - Предотвращает дубли
     - Обновляет дневную статистику
     - Логирует результат (Net, ATR, Exit Reason)
+    - Сохраняет TP распределение и fallback статус
     """
     import csv
     import math
     import os
 
+    from constants import TP_LOG_FILE
     from core.trade_engine import DRY_RUN, logged_trades, logged_trades_lock
-    from stats import EXPORT_PATH, TP_LOG_FILE, daily_stats_lock, daily_trade_stats, now_with_timezone
+    from stats import EXPORT_PATH, now_with_timezone
     from utils_core import extract_symbol
     from utils_logging import log
 
@@ -110,11 +114,11 @@ def log_trade_result(
                 return False
             logged_trades.add(trade_key)
 
-        # Защита от NaN
-        net_pnl = 0.0 if math.isnan(net_pnl) else net_pnl
-        absolute_profit = 0.0 if math.isnan(absolute_profit) else absolute_profit
-        commission = 0.0 if math.isnan(commission) else commission
-        signal_score = 0.0 if math.isnan(signal_score) else signal_score
+        # ✅ Безопасная проверка NaN и None
+        net_pnl = 0.0 if net_pnl is None or math.isnan(net_pnl) else net_pnl
+        absolute_profit = 0.0 if absolute_profit is None or math.isnan(absolute_profit) else absolute_profit
+        commission = 0.0 if commission is None or math.isnan(commission) else commission
+        signal_score = 0.0 if signal_score is None or math.isnan(signal_score) else signal_score
 
         pnl_usd = round(absolute_profit, 2)
 
@@ -139,6 +143,8 @@ def log_trade_result(
             exit_reason,
             round(signal_score, 4),
             tp_sl_success,
+            round(tp_total_qty, 6),
+            tp_fallback_used,
         ]
 
         header = [
@@ -161,16 +167,21 @@ def log_trade_result(
             "ATR",
             "Exit Reason",
             "Signal Score",
-            "TP/SL Set",  # Новое поле
+            "TP/SL Set",
+            "TP Total Qty",
+            "TP Fallback Used",
         ]
 
         for path in [TP_LOG_FILE, EXPORT_PATH]:
             try:
-                exists = os.path.isfile(path)
-                os.makedirs(os.path.dirname(path), exist_ok=True)
+                dir_path = os.path.dirname(path)
+                if dir_path:
+                    os.makedirs(dir_path, exist_ok=True)
+
+                file_exists = os.path.isfile(path)
                 with open(path, "a", newline="") as f:
                     writer = csv.writer(f)
-                    if not exists:
+                    if not file_exists:
                         writer.writerow(header)
                     writer.writerow(row)
             except Exception as io_err:
@@ -179,11 +190,11 @@ def log_trade_result(
         log(
             f"[REAL_RUN] {symbol} {result_label}: "
             f"PnL={pnl_percent:.2f}%, Net={net_pnl:.2f}%, Abs=${absolute_profit:.2f}, "
-            f"ATR={atr:.3f}, Type={pair_type}, Reason={exit_reason}, Score={signal_score:.4f}, TP/SL={tp_sl_success}",
+            f"ATR={atr:.3f}, Type={pair_type}, Reason={exit_reason}, Score={signal_score:.4f}, TP/SL={tp_sl_success}, "
+            f"TP_Total={tp_total_qty:.3f}, Fallback={tp_fallback_used}",
             level="INFO",
         )
 
-        # Статистика дня
         with daily_stats_lock:
             daily_trade_stats["count"] += 1
             daily_trade_stats["commission_total"] += commission
