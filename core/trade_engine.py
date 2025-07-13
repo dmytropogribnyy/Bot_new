@@ -353,6 +353,10 @@ def get_position_size(symbol):
                 continue
 
             raw_value = pos.get("contracts") or pos.get("positionAmt") or pos.get("amount")
+            if raw_value is None:
+                log(f"[get_position_size] Missing position size key (contracts / positionAmt / amount) for {symbol}", level="WARNING")
+                continue
+
             try:
                 amount = float(raw_value)
                 abs_amount = abs(amount)
@@ -1322,19 +1326,18 @@ def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check
 
 def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     """
-    OctoMonitor v3.6 FINAL — Динамическое управление позицией:
+    OctoMonitor v3.7 FINAL — безопасный мониторинг позиции:
     - Stepwise TP, fallback, break-even, trailing TP, soft exit, SL restore
-    - Контроль max_hold, tp3_hit, Telegram-уведомления
-    - ✅ Новое: защита от проскальзывания (max_slippage_pct)
+    - Новое: если ордеров нет после входа — восстанавливаем SL + Telegram alert
     """
     import time
 
     from core.binance_api import fetch_ohlcv
     from core.exchange_init import exchange
-    from core.tp_utils import adjust_microprofit_exit  # Добавлено: импорт для soft-exit улучшения
+    from core.tp_utils import adjust_microprofit_exit
     from core.trade_engine import get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import get_cached_balance, get_runtime_config, safe_call_retry  # Добавлено: get_cached_balance для soft-exit
+    from utils_core import get_cached_balance, get_runtime_config, safe_call_retry
     from utils_logging import log
 
     config = get_runtime_config()
@@ -1343,9 +1346,9 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     allow_soft_exit_at_zero = config.get("soft_exit_allow_at_zero", False)
     _min_step_hit_required = config.get("minimum_step_profit_hit_required", False)
     _max_slippage_pct = config.get("max_slippage_pct", 0.04)
-    _soft_exit_delay_sec = config.get("soft_exit_delay_minutes", 10) * 60  # Улучшение: configurable delay (default 10 min)
-    _min_soft_profit_pct = config.get("min_soft_profit_pct", 0.3)  # Улучшение: min % для soft (e.g., >0.3%)
-    _atr_threshold_for_soft = config.get("atr_threshold_for_soft", 0.005)  # Улучшение: ATR low → allow soft
+    _soft_exit_delay_sec = config.get("soft_exit_delay_minutes", 10) * 60
+    _min_soft_profit_pct = config.get("min_soft_profit_pct", 0.3)
+    _atr_threshold_for_soft = config.get("atr_threshold_for_soft", 0.005)
 
     step_levels = config.get("step_tp_levels", [0.10, 0.20, 0.30])
     step_sizes = config.get("step_tp_sizes", [0.1] * len(step_levels))
@@ -1357,13 +1360,14 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     break_even_set = False
     trailing_tp_active = False
     last_fetched_price = entry_price
-    sl_restored_once = False  # Улучшение: anti-spam для Telegram на SL restore (only once)
+    sl_restored_once = False
+    sl_recover_alert_sent = False
 
     while True:
         try:
             trade = trade_manager.get_trade(symbol)
-            if not trade or not trade.get("tp_sl_success"):
-                log(f"[Monitor] {symbol} ➤ trade gone or no TP/SL — stopping", level="WARNING")
+            if not trade:
+                log(f"[Monitor] {symbol} ➤ trade not found — stopping", level="WARNING")
                 return
 
             current_qty = get_position_size(symbol)
@@ -1385,14 +1389,24 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
             profit_usd = abs(current_price - entry_price) * current_qty
             elapsed = time.time() - start_time.timestamp()
 
-            # === SL-priority (опционально)
+            open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)
+            if current_qty > 0 and not open_orders and not sl_recover_alert_sent:
+                send_telegram_message(f"⚠️ {symbol}: No open orders after entry. Attempting SL recovery...")
+                log(f"[Monitor] {symbol}: Position exists but no open orders — attempting SL restore", level="ERROR")
+                sl_recover_alert_sent = True
+
             sl_price = trade.get("sl_price")
             if SL_PRIORITY and sl_price:
                 if (is_buy and current_price < sl_price) or (not is_buy and current_price > sl_price):
                     time.sleep(1)
                     continue
 
-            # === Step TP
+            if sl_price and not any(o["type"].upper() == "STOP_MARKET" for o in open_orders):
+                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", current_qty, None, {"stopPrice": sl_price, "reduceOnly": True})
+                if not sl_restored_once:
+                    send_telegram_message(f"🛡 Restored SL for {symbol}")
+                    sl_restored_once = True
+
             for i, level in enumerate(step_levels):
                 tp_price = entry_price * (1 + level) if is_buy else entry_price * (1 - level)
                 if not step_hits[i] and profit_pct >= level * 100:
@@ -1417,15 +1431,6 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     send_telegram_message(f"✅ Fallback TP{i+1} → {symbol} qty={qty:.3f}")
                     step_hits[i] = True
 
-            # === SL fallback restore
-            open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)  # Улучшение: retry на fetch_open_orders (Binance sometimes None)
-            if sl_price and not any(o["type"].upper() == "STOP_MARKET" for o in open_orders):
-                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", current_qty, None, {"stopPrice": sl_price, "reduceOnly": True})
-                if not sl_restored_once:  # Улучшение: Telegram only once (anti-spam)
-                    send_telegram_message(f"🛡 Restored SL for {symbol}")
-                    sl_restored_once = True
-
-            # === Break-even SL
             if not break_even_set and (profit_pct >= 1.5 or trade.get("tp1_hit")):
                 new_sl = round(entry_price * 1.001, 6) if is_buy else round(entry_price * 0.999, 6)
                 for o in open_orders:
@@ -1436,7 +1441,6 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                 trade_manager.update_trade(symbol, "break_even_set", True)
                 send_telegram_message(f"🔒 SL moved to break-even for {symbol}")
 
-            # === Trailing TP
             if not trailing_tp_active and not trade.get("tp1_hit") and profit_pct > 2.5:
                 ohlcv = fetch_ohlcv(symbol, timeframe="5m", limit=12)
                 closes = [c[4] for c in ohlcv[-6:]]
@@ -1453,10 +1457,8 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     trade_manager.update_trade(symbol, "tp_prices", [tp1, tp2, tp2 * 1.5])
                     send_telegram_message(f"🚀 Trailing TP adjusted for {symbol}")
                 else:
-                    # Улучшение: Log trailing momentum result (для аналитики)
                     log(f"[Trailing] Skipped for {symbol}: no momentum (closes={closes[-3:]})", level="DEBUG")
 
-            # === Soft exit после 10 мин
             if elapsed > _soft_exit_delay_sec and not any(step_hits):
                 if tp_touch_flags[0]:
                     log(f"[SoftExit] Skipped for {symbol}: TP1 touched but not hit yet", level="INFO")
@@ -1470,16 +1472,13 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     continue
 
                 if profit_usd >= 0.10 or (allow_soft_exit_at_zero and profit_usd >= 0):
-                    # Улучшение: Вставляем adjust_microprofit_exit(...) как дополнительный фильтр
                     if not adjust_microprofit_exit(profit_pct, balance=get_cached_balance(), duration_minutes=elapsed / 60, position_percentage=current_qty / get_cached_balance()):
                         log(f"[SoftExit] Skipped for {symbol}: below adaptive microprofit target", level="DEBUG")
                         continue
 
-                    # Улучшение: Log skipped if potential growth (e.g., profit_pct >0 but no close due to other checks)
                     if profit_pct > 0 and not (slippage < _max_slippage_pct):
                         log(f"[SoftExit] Skipped for {symbol}: potential growth (profit_pct={profit_pct:.2f}% >0)", level="DEBUG")
 
-                    slippage = abs(current_price - entry_price) / entry_price
                     if slippage < _max_slippage_pct:
                         safe_call_retry(exchange.create_market_order, symbol, "sell" if is_buy else "buy", current_qty, {"reduceOnly": True})
                         trade_manager.update_trade(symbol, "soft_exit_hit", True)
@@ -1492,7 +1491,6 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     else:
                         log(f"[SoftExit] Blocked due to slippage: {slippage:.3%}", level="WARNING")
 
-            # === Post-hold recovery
             if elapsed > (_MAX_HOLD_MINUTES * 60) and profit_pct < 0:
                 recovery_start = time.time()
                 while time.time() - recovery_start < 300:

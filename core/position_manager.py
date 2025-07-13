@@ -6,25 +6,7 @@ Controls position limits, size calculations, and validates new position requests
 
 # Import from project modules
 from core.risk_utils import get_max_positions
-from utils_core import extract_symbol, safe_call_retry
-from utils_logging import log
-
-
-def get_open_positions_count():
-    """
-    Get the current number of open positions
-    Returns: int - Number of open positions
-    """
-    from core.exchange_init import exchange
-
-    try:
-        positions = safe_call_retry(exchange.fetch_positions)
-        open_positions = [p for p in positions if float(p.get("positionAmt", 0)) != 0]
-        return len(open_positions)
-    except Exception as e:
-        log(f"Error in get_open_positions_count: {e}", level="ERROR")
-        # Default to a safe value if we can't get actual count
-        return get_max_positions()
+from utils_core import extract_symbol
 
 
 def check_entry_allowed(balance):
@@ -36,7 +18,6 @@ def check_entry_allowed(balance):
     """
     from datetime import datetime, timedelta
 
-    from core.risk_utils import get_max_positions
     from core.trade_engine import trade_manager
     from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log

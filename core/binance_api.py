@@ -308,31 +308,41 @@ def create_safe_market_order(symbol, side, amount):
         return {"success": False, "error": str(e)}
 
 
-def get_open_positions_count():
-    import decimal
-
-    from core.exchange_init import exchange
+def get_open_positions():
+    """
+    Возвращает список только активных позиций (с ненулевым объёмом positionAmt).
+    """
     from utils_logging import log
 
     try:
-        positions = exchange.fetch_positions()
-        return sum(1 for p in positions if float(p.get("positionAmt", 0)) != 0)
-    except (decimal.InvalidOperation, decimal.ConversionSyntax) as e:
-        log(f"[Decimal Fix] Caught {e} — falling back", level="WARNING")
-        try:
-            raw = exchange.futures_get_position()
-            if not raw:
-                log("[Fallback] Raw positions empty", level="WARNING")
-                return 0
-            open_count = sum(1 for p in raw if abs(float(p.get("positionAmt", "0"))) > 0)
-            log(f"[Decimal Fix] Fallback raw position count = {open_count}", level="INFO")
-            return open_count
-        except Exception as fallback_e:
-            log(f"[Fallback Error] {fallback_e}", level="ERROR")
-            return 0
+        positions = fetch_positions()
+        if not isinstance(positions, list):
+            log(f"[get_open_positions] Invalid result: {type(positions)}", level="ERROR")
+            return []
+        active = [p for p in positions if float(p.get("positionAmt", 0)) != 0]
+        log(f"[get_open_positions] Found {len(active)} active positions", level="DEBUG")
+        return active
     except Exception as e:
-        log(f"[Error] get_open_positions_count: {e}", level="ERROR")
-        return 0
+        log(f"[get_open_positions] Error: {e}", level="ERROR")
+        return []
+
+
+def get_open_positions_count():
+    """
+    Возвращает количество активных позиций (где positionAmt ≠ 0).
+    """
+    from core.exchange_init import exchange
+    from core.risk_utils import get_max_positions
+    from utils_core import safe_call_retry
+    from utils_logging import log
+
+    try:
+        positions = safe_call_retry(exchange.fetch_positions)
+        open_positions = [p for p in positions if float(p.get("positionAmt", 0)) != 0]
+        return len(open_positions)
+    except Exception as e:
+        log(f"[get_open_positions_count] Error: {e}", level="ERROR")
+        return get_max_positions()  # fail-safe fallback
 
 
 def get_ticker_data(symbol):

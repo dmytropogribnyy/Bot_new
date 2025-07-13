@@ -159,7 +159,7 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
     Плавно закрывает позицию по symbol. Если ошибка — помечает как pending_exit.
     Не вызывает record_trade_result при reason='error'.
     """
-    from core.trade_engine import close_real_trade, trade_manager
+    from core.trade_engine import close_real_trade, record_trade_result, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_logging import log
 
@@ -178,9 +178,12 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
             send_telegram_message(f"⚠️ Soft exit error for {symbol}. Marked as pending_exit.")
             return
 
-        # Иначе — обычное закрытие
+        # Обычное закрытие позиции
         close_real_trade(symbol)
         log(f"[SoftExit] Completed soft exit for {symbol}", level="INFO")
+
+        # Финализация через record_trade_result
+        record_trade_result(symbol, trade.get("side"), trade.get("entry_price"), trade.get("exit_price", 0.0), reason)
 
     except Exception as e:
         log(f"[SoftExit] ❌ Failed to close {symbol}: {e}", level="ERROR")
@@ -192,9 +195,8 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
 def sync_open_positions():
     from datetime import datetime
 
-    from trade_engine import save_active_trades, trade_manager
-
     from core.exchange_init import exchange
+    from core.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import normalize_symbol
     from utils_logging import log

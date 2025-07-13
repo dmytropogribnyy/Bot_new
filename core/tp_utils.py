@@ -249,7 +249,6 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         return False
 
     min_qty = market_info["limits"]["amount"]["min"]
-
     trade_data = trade_manager.get_trade(symbol) or {}
     success_sl = False
     success_tp = 0
@@ -263,76 +262,87 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         log(f"[PreCheck] Failed to fetch ticker for {symbol}: {e} — using entry_price", level="WARNING")
         current_price = entry_price
 
-    if (side == "buy" and sl_price >= current_price) or (side == "sell" and sl_price <= current_price):
+    # === Защита: SL слишком близко к рыночной цене (trigger error prevention)
+    sl_gap = abs(current_price - sl_price) / current_price
+    if sl_gap < 0.0005:
+        log(f"[SL PROTECTION] {symbol}: SL too close to price (Δ={sl_gap:.5%}) — skipping SL", level="WARNING")
+        log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="too_close_to_price")
+        send_telegram_message(f"⚠️ {symbol}: SL слишком близко к текущей цене → пропуск SL\nSL={sl_price:.4f}, Цена={current_price:.4f}")
+        sl_price = None
+
+    if sl_price is not None and ((side == "buy" and sl_price >= current_price) or (side == "sell" and sl_price <= current_price)):
         log(f"[SL] {symbol}: would trigger (current={current_price:.4f}, SL={sl_price:.4f}) — closing", level="WARNING")
         log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger_now")
         close_real_trade(symbol)
         return False
 
     # === SL first ===
-    min_gap = entry_price * 0.001
-    if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):
-        log(f"[SL] {symbol}: too close to entry — skipped", level="WARNING")
-        log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="too_close")
-    else:
-        try:
-            sl_order = safe_call_retry(
-                lambda: exchange.create_order(
-                    api_symbol,
-                    type="STOP_MARKET",
-                    side="sell" if side == "buy" else "buy",
-                    amount=qty,
-                    params={"stopPrice": sl_price, "reduceOnly": True},
-                ),
-                label=f"sl_{symbol}",
-            )
-            if sl_order:
-                trade_manager.update_trade(symbol, "sl_price", sl_price)
-                log_tp_sl_event(symbol, "SL", qty, sl_price, "success")
-                log(f"[SL] Success: ID={sl_order.get('id', 'n/a')}", level="DEBUG")
-                success_sl = True
-        except Exception as e:
-            log(f"[SL] Error for {symbol}: {e}", level="ERROR")
-            if "trigger" in str(e).lower():
-                send_telegram_message(f"❌ {symbol}: SL rejected (would trigger) → closing position")
-                log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger")
-                close_real_trade(symbol)
-                return False
-            elif force_sl:
-                for retry in range(sl_retry_limit):
-                    try:
-                        _widen = 1 + (retry + 1) * 0.002
-                        widened_sl = sl_price * (1 - 0.002 * (retry + 1)) if side == "buy" else sl_price * (1 + 0.002 * (retry + 1))
-                        log(f"[Retry {retry+1}] Widened SL to {widened_sl:.6f}", level="INFO")
-                        sl_order = safe_call_retry(
-                            lambda: exchange.create_order(
-                                api_symbol,
-                                type="STOP_MARKET",
-                                side="sell" if side == "buy" else "buy",
-                                amount=qty,
-                                params={"stopPrice": widened_sl, "reduceOnly": True},
-                            ),
-                            label=f"sl_retry_{symbol}_{retry}",
-                        )
-                        if sl_order:
-                            trade_manager.update_trade(symbol, "sl_price", widened_sl)
-                            log_tp_sl_event(symbol, "SL", qty, widened_sl, "success", reason="force_retry")
-                            success_sl = True
-                            break
-                    except Exception:
-                        time.sleep(1)
-                if not success_sl:
-                    send_telegram_message(f"❌ {symbol}: SL retry failed — closing position")
+    if sl_price is not None:
+        min_gap = entry_price * 0.001
+        if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):
+            log(f"[SL] {symbol}: too close to entry — skipped", level="WARNING")
+            log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="too_close")
+        else:
+            try:
+                sl_order = safe_call_retry(
+                    lambda: exchange.create_order(
+                        api_symbol,
+                        type="STOP_MARKET",
+                        side="sell" if side == "buy" else "buy",
+                        amount=qty,
+                        params={"stopPrice": sl_price, "reduceOnly": True},
+                    ),
+                    label=f"sl_{symbol}",
+                )
+                if sl_order:
+                    trade_manager.update_trade(symbol, "sl_price", sl_price)
+                    log_tp_sl_event(symbol, "SL", qty, sl_price, "success")
+                    log(f"[SL] Success: ID={sl_order.get('id', 'n/a')}", level="DEBUG")
+                    success_sl = True
+            except Exception as e:
+                log(f"[SL] Error for {symbol}: {e}", level="ERROR")
+                if "trigger" in str(e).lower():
+                    send_telegram_message(f"❌ {symbol}: SL rejected (would trigger) → closing position")
+                    log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger")
                     close_real_trade(symbol)
                     return False
-            else:
-                return False
+                elif force_sl:
+                    for retry in range(sl_retry_limit):
+                        try:
+                            widened_sl = sl_price * (1 - 0.002 * (retry + 1)) if side == "buy" else sl_price * (1 + 0.002 * (retry + 1))
+                            log(f"[Retry {retry+1}] Widened SL to {widened_sl:.6f}", level="INFO")
+                            sl_order = safe_call_retry(
+                                lambda: exchange.create_order(
+                                    api_symbol,
+                                    type="STOP_MARKET",
+                                    side="sell" if side == "buy" else "buy",
+                                    amount=qty,
+                                    params={"stopPrice": widened_sl, "reduceOnly": True},
+                                ),
+                                label=f"sl_retry_{symbol}_{retry}",
+                            )
+                            if sl_order:
+                                trade_manager.update_trade(symbol, "sl_price", widened_sl)
+                                log_tp_sl_event(symbol, "SL", qty, widened_sl, "success", reason="force_retry")
+                                success_sl = True
+                                break
+                        except Exception:
+                            time.sleep(1)
+                    if not success_sl:
+                        send_telegram_message(f"❌ {symbol}: SL retry failed — closing position")
+                        close_real_trade(symbol)
+                        return False
+                else:
+                    return False
+    else:
+        log(f"[SL] {symbol}: SL was skipped due to proximity — continuing with TP only", level="WARNING")
 
-    if not success_sl:
-        send_telegram_message(f"❌ {symbol}: SL not placed — skipping TP")
+    if not success_sl and force_sl:
+        send_telegram_message(f"❌ {symbol}: SL not placed (force mode) — aborting")
         trade_manager.update_trade(symbol, "tp_sl_success", False)
         return False
 
+    # === TP logic ===
     fallback = qty < min_total_qty
     if fallback:
         log(f"[TP-Fallback] {symbol}: qty={qty:.4f} < {min_total_qty}", level="WARNING")
@@ -342,7 +352,9 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         if tp_qty:
             try:
                 order = safe_call_retry(
-                    lambda: exchange.create_limit_sell_order(api_symbol, tp_qty, tp_price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, tp_qty, tp_price),
+                    lambda: exchange.create_limit_sell_order(api_symbol, tp_qty, tp_price, params={"reduceOnly": True})
+                    if side == "buy"
+                    else exchange.create_limit_buy_order(api_symbol, tp_qty, tp_price, params={"reduceOnly": True}),
                     label=f"tp_fallback_{symbol}",
                 )
                 if order:
@@ -368,7 +380,9 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                 continue
             try:
                 order = safe_call_retry(
-                    lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, qty_i, price),
+                    lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price, params={"reduceOnly": True})
+                    if side == "buy"
+                    else exchange.create_limit_buy_order(api_symbol, qty_i, price, params={"reduceOnly": True}),
                     label=f"tp_{symbol}_{i}",
                 )
                 if order:
