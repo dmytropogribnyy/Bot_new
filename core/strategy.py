@@ -56,7 +56,6 @@ def fetch_data_multiframe(symbol):
     Загружаем OHLCV по 3m, 5m, 15m. Считаем RSI, MACD, ATR, volume_spike и т. д.
     Возвращаем общий df или None при ошибке.
     """
-
     try:
         tf_map = {"3m": 300, "5m": 300, "15m": 300}
         frames = {}
@@ -66,6 +65,7 @@ def fetch_data_multiframe(symbol):
             raw = fetch_ohlcv(symbol, timeframe=tf, limit=limit)
             if not raw or len(raw) < 30:
                 log(f"[fetch_data_multiframe] {symbol}: недостаточно данных {tf}", level="WARNING")
+                log(f"[fetch_data_multiframe] {symbol} ❌ returning None due to insufficient TF data", level="WARNING")
                 return None
 
             df_tf = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
@@ -91,18 +91,22 @@ def fetch_data_multiframe(symbol):
         df_15m["atr_15m"] = ta.volatility.AverageTrueRange(df_15m["high"], df_15m["low"], df_15m["close"], 14).average_true_range()
         df_15m["volume_ma_15m"] = df_15m["volume"].rolling(20).mean()
         df_15m["rel_volume_15m"] = df_15m["volume"] / df_15m["volume_ma_15m"]
+        df_15m["volume_usdt_15m"] = df_15m["volume"] * df_15m["close"]
 
-        # Объединяем в один DataFrame
+        # Объединяем
         df = df_3m.join(df_5m, rsuffix="_5m").join(df_15m, rsuffix="_15m").dropna().reset_index()
 
-        # Общая ATR
+        if df.empty:
+            log(f"[fetch_data_multiframe] {symbol} ❌ Final dataframe empty after merge/join", level="WARNING")
+            return None
+
         df["atr"] = df["atr_15m"]
 
-        # Определяем EMA‐пересечение
+        # EMA cross
         has_cross, _dir = detect_ema_crossover(df)
         df["ema_cross"] = has_cross
 
-        # Price Action (крупная свеча)
+        # Price Action
         df["candle_size"] = (df["close"] - df["open"]).abs()
         df["avg_candle_size"] = df["candle_size"].rolling(20).mean()
         df["price_action"] = df["candle_size"] > (df["avg_candle_size"] * 1.5)
@@ -115,7 +119,7 @@ def fetch_data_multiframe(symbol):
 
         fetch_debug[f"{symbol}_final_shape"] = df.shape
 
-        # Сохраняем отладочные данные (опц.)
+        # Отладка
         Path("data").mkdir(exist_ok=True)
         with open("data/fetch_debug.json", "w", encoding="utf-8") as f:
             json.dump(fetch_debug, f, indent=2)
@@ -219,9 +223,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     pair_type = symbol_type_map.get(symbol, "unknown")
     df = fetch_data_multiframe(symbol)
-    if df is None or not isinstance(df, pd.DataFrame):
-        failure_reasons.append("data_fetch_error")
-        log_missed_signal(symbol, {}, reason="data_fetch_error")
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        failure_reasons.append("fetch_data_empty")
+        log(f"[DataFetch] ❌ Empty or invalid dataframe for {symbol}", level="WARNING")
+        log_missed_signal(symbol, {}, reason="fetch_data_empty")
         return None, failure_reasons
 
     cfg = get_runtime_config()
@@ -314,20 +319,15 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     leverage = get_leverage_for_symbol(symbol)
     qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
 
-    if not qty or qty <= 0:
-        min_notional_open = cfg.get("MIN_NOTIONAL_OPEN", MIN_NOTIONAL_OPEN)
-        fallback_qty = min_notional_open / entry_price
-        log(f"[Fallback] {symbol}: calculated qty={qty:.6f} → using fallback qty={fallback_qty:.6f}", level="WARNING")
-        qty = round(fallback_qty, 6)
-        breakdown["fallback_used"] = True
-
-        if qty <= 0:
-            failure_reasons.append("qty_zero_after_fallback")
-            log_missed_signal(symbol, breakdown, reason="qty_zero_after_fallback")
-            return None, failure_reasons
+    if qty is None or qty <= 0:
+        failure_reasons.append("qty_zero_or_invalid")
+        log(f"[REJECTED] {symbol}: qty is {qty}, invalid for entry", level="WARNING")
+        log_missed_signal(symbol, breakdown, reason="qty_zero_or_invalid")
+        return None, failure_reasons
 
     notional = qty * entry_price
     if notional < MIN_NOTIONAL_OPEN:
+        log(f"[NotionalCheck] {symbol}: notional={notional:.4f} < MIN_NOTIONAL_OPEN={MIN_NOTIONAL_OPEN}", level="WARNING")
         failure_reasons.append("notional_too_small")
         log_missed_signal(symbol, breakdown, reason="notional_too_small")
         return None, failure_reasons
@@ -345,10 +345,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         breakdown["tp2_share"] = share2
         breakdown["tp3_share"] = tp3_share
         breakdown["tp_prices"] = tp_prices
-
-        # Суммарное распределение TP-долей (для логов и анализа)
-        tp_total_qty = share1 + share2 + breakdown["tp3_share"]
-        breakdown["tp_total_qty"] = round(tp_total_qty, 3)
+        breakdown["tp_total_qty"] = round(share1 + share2 + tp3_share, 3)
 
         min_profit_required = cfg.get("min_profit_threshold", 0.06)
         enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
@@ -416,7 +413,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 def calculate_tp_targets():
     """
     Возвращает текущие TP/SL цели по активным сделкам:
-    - tp1_price, tp2_price, sl_price
+    - tp1_price, tp2_price, tp3_price, sl_price
     - fallback при отсутствии TP
     - добавлены tp_total_qty и tp_fallback_used
     """
@@ -429,7 +426,7 @@ def calculate_tp_targets():
 
         for symbol, data in positions.items():
             if data.get("closed_logged"):
-                continue  # Пропустить уже зафиксированные
+                continue
 
             entry_price = data.get("entry", 0)
             if not entry_price or entry_price <= 0:
@@ -437,6 +434,7 @@ def calculate_tp_targets():
 
             tp1 = data.get("tp1_price") or round(entry_price * 1.05, 4)
             tp2 = data.get("tp2_price") or round(entry_price * 1.10, 4)
+            tp3 = data.get("tp3_price") or round(tp2 * 1.5, 4)
             sl_price = data.get("sl_price") or round(entry_price * 0.985, 4)
 
             tp_total_qty = round(data.get("tp_total_qty", 0.0), 6)
@@ -447,6 +445,7 @@ def calculate_tp_targets():
                 "entry": round(entry_price, 4),
                 "tp1": round(tp1, 4),
                 "tp2": round(tp2, 4),
+                "tp3": round(tp3, 4),
                 "sl": round(sl_price, 4),
                 "tp_total_qty": tp_total_qty,
                 "fallback": fallback_used,
@@ -454,7 +453,7 @@ def calculate_tp_targets():
             }
             results.append(result)
 
-            log(f"[TP-Target] {symbol} → TP1={tp1:.4f}, TP2={tp2:.4f}, SL={sl_price:.4f}, fallback={fallback_used}", level="DEBUG")
+            log(f"[TP-Target] {symbol} → TP1={tp1:.4f}, TP2={tp2:.4f}, TP3={tp3:.4f}, SL={sl_price:.4f}, fallback={fallback_used}", level="DEBUG")
 
         return results
 

@@ -153,4 +153,51 @@ def run_trading_cycle(symbols, stop_event):
             log(f"[engine_controller] Error in trading cycle for {symbol}: {e}\n{tb}", level="ERROR")
             continue
 
+    # ✅ Desync check (FIX-6) в конец цикла
+    try:
+        binance_positions = exchange.fetch_positions()
+        open_symbols = [p["symbol"] for p in binance_positions if float(p.get("contracts", 0)) > 0]
+
+        for symbol in open_symbols:
+            if symbol not in trade_manager.get_active_trades():
+                log(f"[Desync] Binance open position {symbol} not in trade_manager!", level="ERROR")
+                send_telegram_message(f"🚨 DESYNC: Binance has position {symbol}, but bot does not.")
+    except Exception as e:
+        log(f"[Desync] Failed to check positions: {e}", level="WARNING")
+
     log(f"[Entry Stats] Attempted={entry_attempts}, Valid={entry_successes}, Symbols={len(symbols)}", level="INFO")
+
+
+def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
+    """
+    Плавно закрывает позицию по symbol. Если ошибка — помечает как pending_exit.
+    Не вызывает record_trade_result при reason='error'.
+    """
+    from core.trade_engine import close_real_trade, trade_manager
+    from telegram.telegram_utils import send_telegram_message
+    from utils_logging import log
+
+    trade = trade_manager.get_trade(symbol)
+    if not trade:
+        log(f"[SoftExit] No active trade for {symbol}", level="WARNING")
+        return
+
+    try:
+        log(f"[SoftExit] Attempting soft exit for {symbol}, reason={reason}", level="INFO")
+
+        if reason == "error":
+            log(f"[SoftExit] Error reason for {symbol}, skipping finalization", level="WARNING")
+            trade["pending_exit"] = True
+            trade_manager.update_trade(symbol, trade)
+            send_telegram_message(f"⚠️ Soft exit error for {symbol}. Marked as pending_exit.")
+            return
+
+        # Иначе — обычное закрытие
+        close_real_trade(symbol)
+        log(f"[SoftExit] Completed soft exit for {symbol}", level="INFO")
+
+    except Exception as e:
+        log(f"[SoftExit] ❌ Failed to close {symbol}: {e}", level="ERROR")
+        trade["pending_exit"] = True
+        trade_manager.update_trade(symbol, trade)
+        send_telegram_message(f"⚠️ Soft exit failed for {symbol}. Marked as pending_exit.", force=True)

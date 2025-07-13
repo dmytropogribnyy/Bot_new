@@ -1,4 +1,5 @@
 # binance_api.py
+import time
 
 from common.config_loader import MAKER_FEE_RATE, TAKER_FEE_RATE, USE_TESTNET
 from core.exchange_init import exchange
@@ -51,15 +52,6 @@ def fetch_ohlcv(symbol, timeframe="15m", limit=100):
         log(f"[fetch_ohlcv] Invalid result for {symbol}: {type(result)}", level="ERROR")
         return None
     return result
-
-
-def create_market_order(symbol, side, amount):
-    """Создает рыночный ордер."""
-    api_symbol = convert_symbol(symbol)
-    return safe_call_retry(
-        lambda: exchange.create_market_buy_order(api_symbol, amount) if side == "buy" else exchange.create_market_sell_order(api_symbol, amount),
-        label=f"create_market_order {symbol} {side}",
-    )
 
 
 def cancel_order(order_id, symbol):
@@ -191,7 +183,7 @@ def create_safe_market_order(symbol, side, amount):
             "result": raw Binance object,
             "filled_qty": float,
             "avg_price": float,
-            "status": "market_success" | "post_fetch_success" | "submitted_fallback"
+            "status": "market_success" | "post_fetch_success" | "submitted_fallback_limit"
         }
     """
     import time
@@ -200,6 +192,7 @@ def create_safe_market_order(symbol, side, amount):
         calculate_commission,
         convert_symbol,
         get_current_price,
+        round_step_size,  # ✅ добавлен
         validate_order_size,
     )
     from core.exchange_init import exchange
@@ -227,12 +220,15 @@ def create_safe_market_order(symbol, side, amount):
     cost_limits = market_info.get("limits", {}).get("cost", {})
     precision = market_info.get("precision", {}).get("amount", "N/A")
 
-    log(f"[MarketOrder] DEBUG {symbol} | qty={amount}, step={precision}, min_qty={limits.get('min')}, min_notional={cost_limits.get('min')}", level="DEBUG")
-
-    # === Валидация
-    is_valid, error = validate_order_size(symbol, side, amount)
     price = get_current_price(symbol)
     notional = round((amount * price), 4) if price else 0
+
+    # ✅ округляем количество через round_step_size
+    amount = round_step_size(symbol, amount)
+
+    log(f"[MarketOrder] DEBUG {symbol} | qty={amount}, step={precision}, min_qty={limits.get('min')}, min_notional={cost_limits.get('min')}", level="DEBUG")
+
+    is_valid, error = validate_order_size(symbol, side, amount)
 
     if not is_valid:
         error = error or "validation_failed"
@@ -243,15 +239,14 @@ def create_safe_market_order(symbol, side, amount):
     fee = calculate_commission(amount, price, is_maker=False) if price else 0.0
     log(f"[MarketOrder] ✅ Validation passed → notional={notional}, fee={fee:.6f}", level="DEBUG")
 
-    # === Попытка MARKET
     try:
         params = {"newOrderRespType": "RESULT"}
         order = exchange.create_market_buy_order(api_symbol, amount, params=params) if side == "buy" else exchange.create_market_sell_order(api_symbol, amount, params=params)
         log(f"[BINANCE] Market response: {order}", level="DEBUG")
 
         order_id = order.get("id")
-        filled_qty = float(order.get("executedQty", 0) or 0)
-        avg_price = float(order.get("avgPrice", 0) or 0)
+        filled_qty = float(order.get("filled", 0) or 0)
+        avg_price = float(order.get("average", 0) or 0)
 
         if filled_qty > 0 and avg_price > 0:
             return {
@@ -262,7 +257,7 @@ def create_safe_market_order(symbol, side, amount):
                 "status": "market_success",
             }
 
-        # === Post-fetch попытка уточнить исполнение
+        # retry через fetch_order
         if order_id:
             time.sleep(2.0)
             try:
@@ -280,7 +275,7 @@ def create_safe_market_order(symbol, side, amount):
             except Exception as e:
                 log(f"[MarketOrder] ⚠️ Post-fetch failed for {symbol}: {e}", level="WARNING")
 
-        # === Fallback: LIMIT order
+        # fallback на лимитный
         limit_price = round(price * (1.0005 if side == "buy" else 0.9995), 6)
         try:
             fallback = exchange.create_order(
@@ -298,9 +293,9 @@ def create_safe_market_order(symbol, side, amount):
             return {
                 "success": True,
                 "result": fallback,
-                "filled_qty": amount,
+                "filled_qty": 0.0,
                 "avg_price": limit_price,
-                "status": "submitted_fallback",
+                "status": "submitted_fallback_limit",
             }
         except Exception as fb_err:
             log(f"[Fallback] ❌ Fallback limit order failed for {symbol}: {fb_err}", level="ERROR")
@@ -351,20 +346,21 @@ def get_ticker_data(symbol):
 
 def round_step_size(symbol, qty):
     """
-    Округляет qty до допустимого step_size символа Binance.
+    Округляет qty до допустимого step_size символа Binance,
+    используя exchange.amount_to_precision(...) с fallback.
     """
-    from core.binance_api import get_symbol_info
+    from core.exchange_init import exchange
     from utils_logging import log
 
-    market = get_symbol_info(symbol)
-    step_size = market.get("precision", {}).get("amount", 0.001)
-
-    if not step_size or step_size <= 0:
-        log(f"[step_size] Fallback: using 0.001 for {symbol} (was={step_size})", level="WARNING")
+    try:
+        rounded = exchange.amount_to_precision(symbol, qty)
+        return float(rounded)
+    except Exception as e:
+        log(f"[step_size] Failed to round via exchange for {symbol}: {e}", level="WARNING")
+        # Fallback на шаг 0.001
         step_size = 0.001
-
-    rounded_qty = qty - (qty % step_size)
-    return round(rounded_qty, 8)
+        rounded_qty = qty - (qty % step_size)
+        return round(rounded_qty, 8)
 
 
 def handle_rate_limits(func):
@@ -378,12 +374,11 @@ def handle_rate_limits(func):
             except Exception as e:
                 error_str = str(e).lower()
                 if ("rate limit" in error_str or "too many requests" in error_str) and attempt < max_retries - 1:
-                    delay = 1 * (2**attempt)  # Экспоненциальная задержка: 1, 2, 4 секунды
-                    log(f"Достигнут лимит API, повторная попытка через {delay}с (попытка {attempt+1}/{max_retries})", level="WARNING")
-                    import time
-
+                    delay = 1 * (2**attempt)  # 1, 2, 4 сек
+                    log(f"⏳ Rate limit hit, retrying in {delay}s (attempt {attempt+1}/{max_retries})", level="WARNING")
                     time.sleep(delay)
                 else:
+                    log(f"[RateLimit] ❌ Failed after {attempt+1} attempts: {e}", level="ERROR")
                     raise
 
     return wrapper

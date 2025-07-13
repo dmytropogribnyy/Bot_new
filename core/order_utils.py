@@ -15,6 +15,9 @@ def calculate_order_quantity(entry_price: float, stop_price: float, balance: flo
     from utils_logging import log
 
     cfg = get_runtime_config()
+    min_qty = cfg.get("min_trade_qty", 0.001)
+    capital_pct = cfg.get("max_capital_utilization_pct", 0.7)
+
     risk_amount = balance * risk_percent
     risk_per_contract = abs(entry_price - stop_price)
 
@@ -26,7 +29,6 @@ def calculate_order_quantity(entry_price: float, stop_price: float, balance: flo
 
     # === Capital Utilization Cap
     leverage = get_leverage_for_symbol(symbol)
-    capital_pct = cfg.get("max_capital_utilization_pct", 0.7)
     max_notional = balance * leverage * capital_pct
     max_qty = max_notional / entry_price
 
@@ -40,13 +42,17 @@ def calculate_order_quantity(entry_price: float, stop_price: float, balance: flo
         qty = MIN_NOTIONAL_OPEN / entry_price
         log(f"⚠️ Adjusted qty to {qty:.6f} to meet min notional ${MIN_NOTIONAL_OPEN}", level="WARNING")
 
-    # === Oкругление и проверка min_trade_qty
+    # === Округление и проверка min_trade_qty
     qty = round_step_size(symbol, qty)
-    min_qty = cfg.get("min_trade_qty", 0.001)
 
     if qty < min_qty:
-        log(f"[Risk] ❌ qty={qty:.6f} < min_trade_qty={min_qty} → blocked", level="WARNING")
-        return 0.0
+        fallback_qty = cfg.get("fallback_order_qty", 0.01)
+        if fallback_qty >= min_qty:
+            log(f"[Risk] qty={qty:.6f} < min_trade_qty → using fallback qty={fallback_qty}", level="WARNING")
+            qty = round_step_size(symbol, fallback_qty)
+        else:
+            log(f"[Risk] ❌ qty={qty:.6f} < min_trade_qty={min_qty} → blocked", level="WARNING")
+            return 0.0
 
     return qty
 

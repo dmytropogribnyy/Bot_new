@@ -110,6 +110,34 @@ def get_priority_small_balance_pairs():
         return DEFAULT_PRIORITY_SMALL_BALANCE_PAIRS
 
 
+def get_dynamic_min_notional(symbol: str) -> float:
+    """
+    Возвращает динамический min_notional = max(config.MIN_NOTIONAL_OPEN, min_qty * price).
+    Если info не найдено или структура неполная, возвращает дефолтный floor с логом.
+    """
+    from core.exchange_init import exchange
+    from utils_core import get_runtime_config
+    from utils_logging import log
+
+    cfg = get_runtime_config()
+    min_notional_floor = cfg.get("MIN_NOTIONAL_OPEN", 6.0)
+
+    try:
+        info = exchange.markets.get(symbol)
+        if not info:
+            log(f"[get_dynamic_min_notional] No market info for {symbol}, using floor {min_notional_floor}", level="WARNING")
+            return min_notional_floor
+
+        price = info.get("last", 1.0)
+        min_qty = info.get("limits", {}).get("amount", {}).get("min", 0.001)
+
+        dynamic_value = float(price) * float(min_qty)
+        return max(min_notional_floor, dynamic_value)
+    except Exception as e:
+        log(f"[get_dynamic_min_notional] Error for {symbol}: {e}, fallback to {min_notional_floor}", level="ERROR")
+        return min_notional_floor
+
+
 SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMBOLS_ACTIVE") else USDC_SYMBOLS
 
 

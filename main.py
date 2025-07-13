@@ -259,29 +259,23 @@ def start_trading_loop():
     from core.binance_api import get_open_positions
     from core.engine_controller import run_trading_cycle
     from core.exchange_init import exchange
-
-    # === Force loading market info (for minNotional etc.)
-    from utils_core import get_runtime_config
+    from utils_core import api_cache, get_market_volatility_index, get_runtime_config
 
     exchange.load_markets()
     log("[Startup] exchange.load_markets() completed", level="DEBUG")
 
-    # === Force refresh positions cache
-    from utils_core import api_cache
-
+    # ✅ Сброс кеша позиций
     api_cache["positions"]["timestamp"] = 0
     log("[Startup] positions cache invalidated", level="DEBUG")
 
-    # === Инициализация ===
+    # ✅ Инициализация окружения
     set_bot_status("running")
     initialize_cache()
-
     restore_active_trades()
 
     start_balance = get_cached_balance()
     log(f"[Startup] Start balance: {start_balance:.2f} USDC", level="INFO")
 
-    # === Лог runtime_config ===
     runtime_config = get_runtime_config()
     log(
         f"[Config] Loaded runtime_config: "
@@ -294,13 +288,11 @@ def start_trading_loop():
         level="INFO",
     )
 
-    # === Обнуление флагов состояния ===
     state = load_state()
     state["stopping"] = False
     state["shutdown"] = False
     save_state(state)
 
-    # === Telegram стартовое сообщение ===
     mode = "TESTNET" if USE_TESTNET else "REAL_RUN"
     if DRY_RUN:
         mode += " (DRY_RUN)"
@@ -312,17 +304,15 @@ def start_trading_loop():
         force=True,
     )
 
-    # === Получение символов ===
     auto_update_valid_pairs_if_needed()
     symbols = load_symbols()
-    symbols = [normalize_symbol(s) for s in symbols]  # ✅ Нормализация
+    symbols = [normalize_symbol(s) for s in symbols]
     if not symbols:
         send_telegram_message("⚠️ No symbols loaded for trading. Bot will not run.", force=True)
         return
 
     log(f"[Startup] Loaded {len(symbols)} symbols for trading", level="INFO")
 
-    # === Telegram-лог списка загруженных пар ===
     from common.config_loader import FIXED_PAIRS
 
     fixed_set = set([s.replace("/", "").upper() for s in FIXED_PAIRS])
@@ -331,11 +321,9 @@ def start_trading_loop():
         norm = sym.replace("/", "").upper()
         tag = "🧷F" if norm in fixed_set else "🔁D"
         symbol_log.append(f"{tag} {norm}")
-
     msg = "📊 Active Pairs Loaded:\n" + "\n".join(symbol_log)
     send_telegram_message(msg, force=True)
 
-    # ✅ Очистка cooldown таймеров (важно!)
     from core.runtime_state import last_trade_times, last_trade_times_lock
 
     with last_trade_times_lock:
@@ -344,20 +332,42 @@ def start_trading_loop():
 
     try:
         while RUNNING and not stop_event.is_set():
-            # === Стоп и выход при закрытых всех позициях ===
+            # ✅ Обработка остановки: дожидаемся закрытия всех позиций
             if load_state().get("stopping") or stop_event.is_set():
                 open_pos = get_open_positions()
                 if not open_pos:
                     send_telegram_message("✅ No open positions. Bot exiting.", force=True)
                     return
-                for pos in open_pos:
-                    close_real_trade(pos["symbol"])
-                    time.sleep(1)
-                continue
 
-            # === Запуск торгового цикла ===
+                send_telegram_message(f"⏳ Waiting for {len(open_pos)} position(s) to close...", force=True)
+                for pos in open_pos:
+                    try:
+                        close_real_trade(pos["symbol"])
+                        log(f"[Shutdown] Requested close for {pos['symbol']}", level="INFO")
+                    except Exception as e:
+                        log(f"[Shutdown] Error closing {pos['symbol']}: {e}", level="ERROR")
+                    time.sleep(1)
+
+                # 🔁 Ждём до 90 секунд
+                for _ in range(18):
+                    if not get_open_positions():
+                        send_telegram_message("✅ All positions closed. Exiting bot.", force=True)
+                        return
+                    time.sleep(5)
+
+                send_telegram_message("⚠️ Timeout waiting for positions to close. Forcing exit.", force=True)
+                return
+
             run_trading_cycle(symbols, stop_event)
-            time.sleep(10)
+
+            # ✅ Динамическая пауза между циклами
+            sleep_sec = get_runtime_config().get("cycle_interval_seconds", 10)
+            sleep_sec = max(5, min(sleep_sec, 60))  # Валидация: 5–60 сек
+            vol_index = get_market_volatility_index()
+            if vol_index > 1.5:  # Ускорить в высокой волатильности
+                sleep_sec = max(5, sleep_sec * 0.7)
+            log(f"[Cycle] Sleep: {sleep_sec:.1f} sec (vol={vol_index:.2f})", level="DEBUG")
+            time.sleep(sleep_sec)
 
     except KeyboardInterrupt:
         from core.trade_engine import handle_panic
