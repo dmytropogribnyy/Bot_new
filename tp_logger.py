@@ -186,6 +186,7 @@ def log_trade_result(
                     writer.writerow(row)
             except Exception as io_err:
                 log(f"[TP Logger] ❌ Error writing to {path}: {io_err}", level="ERROR")
+                continue  # Продолжаем с следующим path, не выходим полностью
 
         log(
             f"[REAL_RUN] {symbol} {result_label}: "

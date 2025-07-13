@@ -112,7 +112,7 @@ def get_priority_small_balance_pairs():
 
 def get_dynamic_min_notional(symbol: str) -> float:
     """
-    Возвращает динамический min_notional = max(config.MIN_NOTIONAL_OPEN, min_qty * price).
+    Возвращает динамический min_notional = max(config.MIN_NOTIONAL_OPEN, min_qty * price * buffer).
     Если info не найдено или структура неполная, возвращает дефолтный floor с логом.
     """
     from core.exchange_init import exchange
@@ -131,8 +131,13 @@ def get_dynamic_min_notional(symbol: str) -> float:
         price = info.get("last", 1.0)
         min_qty = info.get("limits", {}).get("amount", {}).get("min", 0.001)
 
-        dynamic_value = float(price) * float(min_qty)
+        if price <= 0 or min_qty <= 0:
+            log(f"[get_dynamic_min_notional] Invalid price={price} or min_qty={min_qty} for {symbol}, fallback to floor", level="WARNING")
+            return min_notional_floor
+
+        dynamic_value = float(price) * float(min_qty) * 1.1
         return max(min_notional_floor, dynamic_value)
+
     except Exception as e:
         log(f"[get_dynamic_min_notional] Error for {symbol}: {e}, fallback to {min_notional_floor}", level="ERROR")
         return min_notional_floor

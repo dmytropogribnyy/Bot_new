@@ -308,33 +308,31 @@ def create_safe_market_order(symbol, side, amount):
         return {"success": False, "error": str(e)}
 
 
-def get_open_positions():
-    """
-    Gets actually open positions with non-zero contracts from the exchange.
-    Returns a list of position objects with non-zero size.
-    """
+def get_open_positions_count():
+    import decimal
+
+    from core.exchange_init import exchange
+    from utils_logging import log
+
     try:
         positions = exchange.fetch_positions()
-        if not isinstance(positions, list):
-            log("[get_open_positions] Invalid fetch_positions result", level="ERROR")
-            return []
-
-        open_positions = []
-        for pos in positions:
-            size = pos.get("contracts") or pos.get("positionAmt") or pos.get("amount") or 0
-            try:
-                size = float(size)
-            except (TypeError, ValueError):
-                size = 0
-            if size != 0:
-                open_positions.append(pos)
-
-        log(f"[get_open_positions] Found {len(open_positions)} open positions", level="DEBUG")
-        return open_positions
-
+        return sum(1 for p in positions if float(p.get("positionAmt", 0)) != 0)
+    except (decimal.InvalidOperation, decimal.ConversionSyntax) as e:
+        log(f"[Decimal Fix] Caught {e} — falling back", level="WARNING")
+        try:
+            raw = exchange.futures_get_position()
+            if not raw:
+                log("[Fallback] Raw positions empty", level="WARNING")
+                return 0
+            open_count = sum(1 for p in raw if abs(float(p.get("positionAmt", "0"))) > 0)
+            log(f"[Decimal Fix] Fallback raw position count = {open_count}", level="INFO")
+            return open_count
+        except Exception as fallback_e:
+            log(f"[Fallback Error] {fallback_e}", level="ERROR")
+            return 0
     except Exception as e:
-        log(f"[get_open_positions] Error: {e}", level="ERROR")
-        return []
+        log(f"[Error] get_open_positions_count: {e}", level="ERROR")
+        return 0
 
 
 def get_ticker_data(symbol):

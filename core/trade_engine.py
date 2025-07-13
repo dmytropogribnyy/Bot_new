@@ -86,6 +86,10 @@ class TradeInfoManager:
         with self._lock:
             self._trades.clear()
 
+    def get_active_trades(self) -> list[str]:
+        with self._lock:
+            return list(self._trades.keys())
+
 
 ###############################################################################
 #                             GLOBAL VARIABLES                                #
@@ -252,7 +256,6 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     from common.config_loader import (
         get_dynamic_min_notional,  # ✅ Новый импорт для динамического min_notional
     )
-    from core.binance_api import round_step_size
     from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
 
@@ -298,7 +301,13 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
             return 0.0, 0.0
 
     # Округление
-    qty = round_step_size(symbol, qty_raw)
+    from core.tp_utils import safe_round_and_validate
+
+    qty = safe_round_and_validate(symbol, qty_raw)
+    if not qty:
+        log(f"[QTY] {symbol}: Qty is invalid after rounding — skipping", level="WARNING")
+        return 0.0, 0.0
+
     log(f"[QTY ROUND] {symbol} raw={qty_raw:.6f} → rounded={qty:.6f}", level="DEBUG")
 
     # ✅ Fallback если qty слишком маленькое (с динамической проверкой)
@@ -455,12 +464,15 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     - Строгая проверка qty ≤ 0 или < min_trade_qty
     - Обновлена логика: сохранение tp_total_qty и tp_fallback_used
     """
+    import time  # Добавлено для time.sleep в улучшениях
+
     import numpy as np
 
     from common.config_loader import DRY_RUN, MAX_OPEN_ORDERS, MIN_NOTIONAL_OPEN, SHORT_TERM_MODE, get_priority_small_balance_pairs, get_runtime_config
     from common.leverage_config import get_leverage_for_symbol
     from core.binance_api import convert_symbol, create_safe_market_order
     from core.component_tracker import log_component_data
+    from core.engine_controller import sync_open_positions  # Добавлено для post-entry desync fix
     from core.entry_logger import log_entry
     from core.fail_stats_tracker import get_symbol_risk_factor
     from core.position_manager import check_entry_allowed
@@ -651,11 +663,20 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
 
         trade_manager.add_trade(symbol, trade_data)
         save_active_trades()
+        sync_open_positions()  # Улучшение: фикс desync сразу после входа (post-entry)
 
         try:
-            success = place_take_profit_and_stop_loss_orders(api_symbol, side, entry_price, qty, tp_prices, sl_price)
-            trade_manager.update_trade(symbol, "tp_sl_success", success)
-            trade_manager.update_trade(symbol, "tp_fallback_used", not success)
+            if DRY_RUN:
+                # Улучшение: для DRY_RUN симулируем TP/SL (лог вместо real call)
+                log(f"[DRY] TP/SL simulated for {symbol}: tp_prices={tp_prices}, sl_price={sl_price}", level="INFO")
+                success = True  # Assume success in DRY
+                trade_manager.update_trade(symbol, "tp_sl_success", success)
+                trade_manager.update_trade(symbol, "tp_fallback_used", False)  # No fallback in sim
+            else:
+                success = place_take_profit_and_stop_loss_orders(api_symbol, side, entry_price, qty, tp_prices, sl_price)
+                time.sleep(0.5)  # Улучшение: пауза перед check success (race condition fix)
+                trade_manager.update_trade(symbol, "tp_sl_success", success)
+                trade_manager.update_trade(symbol, "tp_fallback_used", not success)
 
             if success:
                 send_telegram_message(f"✅ {symbol}: TP/SL orders placed successfully.")
@@ -1310,9 +1331,10 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
 
     from core.binance_api import fetch_ohlcv
     from core.exchange_init import exchange
+    from core.tp_utils import adjust_microprofit_exit  # Добавлено: импорт для soft-exit улучшения
     from core.trade_engine import get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import get_runtime_config, safe_call_retry
+    from utils_core import get_cached_balance, get_runtime_config, safe_call_retry  # Добавлено: get_cached_balance для soft-exit
     from utils_logging import log
 
     config = get_runtime_config()
@@ -1321,6 +1343,9 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     allow_soft_exit_at_zero = config.get("soft_exit_allow_at_zero", False)
     _min_step_hit_required = config.get("minimum_step_profit_hit_required", False)
     _max_slippage_pct = config.get("max_slippage_pct", 0.04)
+    _soft_exit_delay_sec = config.get("soft_exit_delay_minutes", 10) * 60  # Улучшение: configurable delay (default 10 min)
+    _min_soft_profit_pct = config.get("min_soft_profit_pct", 0.3)  # Улучшение: min % для soft (e.g., >0.3%)
+    _atr_threshold_for_soft = config.get("atr_threshold_for_soft", 0.005)  # Улучшение: ATR low → allow soft
 
     step_levels = config.get("step_tp_levels", [0.10, 0.20, 0.30])
     step_sizes = config.get("step_tp_sizes", [0.1] * len(step_levels))
@@ -1332,6 +1357,7 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     break_even_set = False
     trailing_tp_active = False
     last_fetched_price = entry_price
+    sl_restored_once = False  # Улучшение: anti-spam для Telegram на SL restore (only once)
 
     while True:
         try:
@@ -1392,10 +1418,12 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     step_hits[i] = True
 
             # === SL fallback restore
-            open_orders = exchange.fetch_open_orders(symbol)
+            open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)  # Улучшение: retry на fetch_open_orders (Binance sometimes None)
             if sl_price and not any(o["type"].upper() == "STOP_MARKET" for o in open_orders):
                 safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", current_qty, None, {"stopPrice": sl_price, "reduceOnly": True})
-                send_telegram_message(f"🛡 Restored SL for {symbol}")
+                if not sl_restored_once:  # Улучшение: Telegram only once (anti-spam)
+                    send_telegram_message(f"🛡 Restored SL for {symbol}")
+                    sl_restored_once = True
 
             # === Break-even SL
             if not break_even_set and (profit_pct >= 1.5 or trade.get("tp1_hit")):
@@ -1424,10 +1452,33 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                     trade_manager.update_trade(symbol, "trailing_tp_active", True)
                     trade_manager.update_trade(symbol, "tp_prices", [tp1, tp2, tp2 * 1.5])
                     send_telegram_message(f"🚀 Trailing TP adjusted for {symbol}")
+                else:
+                    # Улучшение: Log trailing momentum result (для аналитики)
+                    log(f"[Trailing] Skipped for {symbol}: no momentum (closes={closes[-3:]})", level="DEBUG")
 
             # === Soft exit после 10 мин
-            if elapsed > 600 and not any(step_hits):
+            if elapsed > _soft_exit_delay_sec and not any(step_hits):
+                if tp_touch_flags[0]:
+                    log(f"[SoftExit] Skipped for {symbol}: TP1 touched but not hit yet", level="INFO")
+                    continue
+
+                atr = trade.get("atr", 0.0)
+                slippage = abs(current_price - entry_price) / entry_price
+
+                if atr >= _atr_threshold_for_soft:
+                    log(f"[SoftExit] Skipped for {symbol}: high ATR ({atr:.5f} >= {_atr_threshold_for_soft}) — potential trend", level="DEBUG")
+                    continue
+
                 if profit_usd >= 0.10 or (allow_soft_exit_at_zero and profit_usd >= 0):
+                    # Улучшение: Вставляем adjust_microprofit_exit(...) как дополнительный фильтр
+                    if not adjust_microprofit_exit(profit_pct, balance=get_cached_balance(), duration_minutes=elapsed / 60, position_percentage=current_qty / get_cached_balance()):
+                        log(f"[SoftExit] Skipped for {symbol}: below adaptive microprofit target", level="DEBUG")
+                        continue
+
+                    # Улучшение: Log skipped if potential growth (e.g., profit_pct >0 but no close due to other checks)
+                    if profit_pct > 0 and not (slippage < _max_slippage_pct):
+                        log(f"[SoftExit] Skipped for {symbol}: potential growth (profit_pct={profit_pct:.2f}% >0)", level="DEBUG")
+
                     slippage = abs(current_price - entry_price) / entry_price
                     if slippage < _max_slippage_pct:
                         safe_call_retry(exchange.create_market_order, symbol, "sell" if is_buy else "buy", current_qty, {"reduceOnly": True})

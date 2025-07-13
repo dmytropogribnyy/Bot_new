@@ -187,9 +187,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     import pandas as pd
     import ta
 
-    from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
+    from common.config_loader import DRY_RUN, MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
     from common.leverage_config import get_leverage_for_symbol
     from core.component_tracker import log_component_data
+    from core.engine_controller import sync_open_positions  # Добавлено для desync fix перед qty calc
     from core.entry_logger import log_entry
     from core.missed_signal_logger import log_missed_signal
     from core.position_manager import check_entry_allowed
@@ -200,7 +201,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     from core.trade_engine import calculate_position_size, calculate_risk_amount
     from open_interest_tracker import fetch_open_interest
     from tp_logger import get_today_pnl_from_csv
-    from utils_core import get_cached_balance, get_runtime_config, normalize_symbol
+    from utils_core import get_cached_balance, get_runtime_config, normalize_symbol, safe_call_retry
     from utils_logging import log
 
     symbol = normalize_symbol(symbol)
@@ -287,7 +288,8 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     log_component_data(symbol, breakdown, is_successful=True)
 
     try:
-        open_interest = fetch_open_interest(symbol)
+        # Улучшение: Retry на OI с safe_call_retry (для rate limits)
+        open_interest = safe_call_retry(fetch_open_interest, symbol)
         breakdown["open_interest"] = round(open_interest, 2)
     except Exception as e:
         log(f"[OI] Failed to fetch open_interest for {symbol}: {e}", level="WARNING")
@@ -317,6 +319,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_pct, volume_usdc=volume)
 
     leverage = get_leverage_for_symbol(symbol)
+
+    # Улучшение: Desync перед qty calc (fix если position desync влияет на allowed)
+    sync_open_positions()
+
     qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
 
     if qty is None or qty <= 0:
@@ -333,6 +339,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         return None, failure_reasons
 
     try:
+        # Улучшение: Retry на TP/SL calc не нужен (локальный), но safe_call_retry если API в calculate_tp_levels (нет, df local)
         tp1, tp2, sl_price, share1, share2, tp3_share = calculate_tp_levels(entry_price, direction, df=df)
         if any(x is None or (isinstance(x, float) and np.isnan(x)) for x in (tp1, sl_price, share1)):
             raise ValueError("TP/SL invalid")
@@ -374,6 +381,11 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         last_trade_times[symbol] = datetime.utcnow()
 
     is_reentry = breakdown.get("is_reentry", False)
+
+    # Улучшение: DRY_RUN mock return (если DRY, return mock с log)
+    if DRY_RUN:
+        log(f"[DRY] Signal generated for {symbol}: direction={direction}, qty=1.0 (mock)", level="INFO")
+        return (direction, 1.0, is_reentry, breakdown), []
 
     entry_data = {
         "symbol": symbol,

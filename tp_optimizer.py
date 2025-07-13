@@ -4,7 +4,7 @@ import pandas as pd
 
 from common.config_loader import CONFIG_FILE, EXPORT_PATH
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance
+from utils_core import get_cached_balance, get_runtime_config
 from utils_logging import backup_config, log
 
 CONFIG_PATH = CONFIG_FILE
@@ -25,6 +25,15 @@ def evaluate_best_config(days=7):
 
     try:
         df = pd.read_csv(EXPORT_PATH, parse_dates=["Date"])
+        # NEW: Handle invalid dates
+        invalid_dates = df[df["Date"].isna() | df["Date"].astype(str).str.contains("NaT", na=False)]
+        if not invalid_dates.empty:
+            log(f"[TP Optimizer] Invalid dates found in {len(invalid_dates)} rows — skipping them", level="WARNING")
+            for idx, row in invalid_dates.iterrows():
+                log(f"[Invalid Date] Row {idx}: Date='{row['Date']}'", level="DEBUG")
+            df = df.dropna(subset=["Date"])  # Drop NaT/NaN dates
+            df = df[~df["Date"].astype(str).str.contains("NaT", na=False)]  # Extra filter for "NaT" strings
+
         df = df[df["Date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=days)]
 
         if df.empty:
@@ -32,8 +41,10 @@ def evaluate_best_config(days=7):
             return
 
         balance = get_cached_balance()
-        tp_min_trades = 10 if balance < 300 else 20
-        update_threshold = 0.1 if balance < 300 else 0.2
+        config = get_runtime_config()  # Загружаем runtime config
+        # ✅ Теперь конфигурируемо: дефолты как в твоём коде, но из JSON
+        tp_min_trades = config.get("tp_min_trades_initial", 10) if balance < 300 else config.get("tp_min_trades_full", 20)
+        update_threshold = config.get("tp_update_threshold_initial", 0.1) if balance < 300 else config.get("tp_update_threshold_full", 0.2)
 
         total = len(df)
         if total < tp_min_trades:

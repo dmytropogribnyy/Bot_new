@@ -257,7 +257,7 @@ def check_block_health():
 
 def start_trading_loop():
     from core.binance_api import get_open_positions
-    from core.engine_controller import run_trading_cycle
+    from core.engine_controller import run_trading_cycle, sync_open_positions  # Добавьте импорт sync_open_positions
     from core.exchange_init import exchange
     from utils_core import api_cache, get_market_volatility_index, get_runtime_config
 
@@ -269,9 +269,10 @@ def start_trading_loop():
     log("[Startup] positions cache invalidated", level="DEBUG")
 
     # ✅ Инициализация окружения
-    set_bot_status("running")
     initialize_cache()
     restore_active_trades()
+    sync_open_positions()  # Добавьте здесь для фикса desync на старте (после restore, перед set_bot_status)
+    set_bot_status("running")
 
     start_balance = get_cached_balance()
     log(f"[Startup] Start balance: {start_balance:.2f} USDC", level="INFO")

@@ -1,7 +1,6 @@
 # tp_utils.py
 
 import os
-import time
 
 import pandas as pd
 
@@ -11,17 +10,6 @@ from utils_logging import log
 
 
 def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_pct=None, tp2_pct=None, sl_pct=None):
-    """
-    Рассчитывает TP1, TP2, SL уровни и их доли.
-    Учитывает:
-      - ATR (если доступен),
-      - режим рынка (flat/trend),
-      - direction (BUY/SELL),
-      - фиксированные проценты или значения из df.
-
-    Возвращает:
-        tp1_price, tp2_price, sl_price, share_tp1, share_tp2, tp3_share
-    """
     import numpy as np
 
     from common.config_loader import (
@@ -34,11 +22,9 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
     from utils_logging import log
 
     direction = direction.upper()
-
     tp1_pct = TP1_PERCENT if tp1_pct is None else tp1_pct
     tp2_pct = TP2_PERCENT if tp2_pct is None else tp2_pct
     sl_pct = SL_PERCENT if sl_pct is None else sl_pct
-
     share_tp1 = TP1_SHARE
     share_tp2 = TP2_SHARE
 
@@ -62,31 +48,20 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
     except Exception as e:
         log(f"[TP] ATR fallback used due to error: {e}", level="WARNING")
 
-    log(f"[TP_LEVELS] {direction} | tp1_pct={tp1_pct:.4f}, tp2_pct={tp2_pct:.4f}, sl_pct={sl_pct:.4f}", level="DEBUG")
-
-    if share_tp1 + share_tp2 > 1.0:
-        log(f"[TP_SHARES] Sum of TP shares exceeds 1.0: {share_tp1 + share_tp2:.2f}", level="ERROR")
-        return None, None, None, None, None, None
+    sl_buffer = sl_pct * 0.1  # Можно сделать dynamic: sl_buffer = max(0.001, atr_value * 0.05 / entry_price) if atr_value else sl_pct * 0.1
 
     if direction == "BUY":
         tp1_price = entry_price * (1 + tp1_pct)
         tp2_price = entry_price * (1 + tp2_pct)
-        sl_price = entry_price * (1 - sl_pct)
+        sl_price = entry_price * (1 - sl_pct - sl_buffer)
     elif direction == "SELL":
         tp1_price = entry_price * (1 - tp1_pct)
         tp2_price = entry_price * (1 - tp2_pct)
-        sl_price = entry_price * (1 + sl_pct)
+        sl_price = entry_price * (1 + sl_pct + sl_buffer)
     else:
-        log(f"[TP] Invalid direction: {direction}", level="ERROR")
-        return None, None, None, None, None, None
-
-    if any(np.isnan(x) or x <= 0 for x in [tp1_price, tp2_price, sl_price]):
-        log(f"[TP] Invalid TP/SL values => tp1={tp1_price}, tp2={tp2_price}, sl={sl_price}", level="ERROR")
         return None, None, None, None, None, None
 
     tp3_share = max(0.0, 1.0 - (share_tp1 + share_tp2))
-    log(f"[TP] Calculated tp3_share = {tp3_share:.2f}", level="DEBUG")
-
     return tp1_price, tp2_price, sl_price, share_tp1, share_tp2, tp3_share
 
 
@@ -217,22 +192,47 @@ def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit
     return is_valid, round(net_profit, 2)
 
 
+def safe_round_and_validate(symbol: str, raw_qty: float) -> float | None:
+    """
+    Округляет и валидирует qty. Возвращает None, если raw < min_qty или после округления < min_qty/0.
+    """
+    from core.binance_api import round_step_size
+    from core.exchange_init import exchange  # Для доступа к market limits
+    from utils_logging import log
+
+    market = exchange.markets.get(symbol)
+    min_qty = market["limits"]["amount"]["min"] if market else 0.001  # Fallback
+
+    if raw_qty < min_qty:
+        log(f"[safe_qty] Raw qty={raw_qty:.6f} < min_qty={min_qty} for {symbol} — skipping", level="DEBUG")
+        return None
+
+    rounded_qty = round_step_size(symbol, raw_qty)
+    if rounded_qty <= 0:
+        log(f"[safe_qty] Rounded qty={rounded_qty} <= 0 for {symbol} (raw={raw_qty})", level="WARNING")
+        return None
+
+    return validate_qty(symbol, rounded_qty)
+
+
 def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_prices, sl_price):
     """
-    Ставит TP1/TP2/TP3 и SL ордера с адаптацией под малые qty.
-    Обрабатывает ошибки: "would trigger", слишком близкий SL, слишком маленький объём.
-    Сохраняет tp_total_qty, tp_sl_success, tp_fallback_used, Telegram уведомления.
+    Сначала SL, затем TP — для защиты от delay-фейлов.
+    tp_sl_success = True только если SL успешен и TP > 0.
     """
-    from core.binance_api import convert_symbol, get_symbol_info, round_step_size
+    import time
+
+    from core.binance_api import convert_symbol, get_symbol_info
     from core.exchange_init import exchange
     from core.tp_sl_logger import log_tp_sl_event
-    from core.trade_engine import trade_manager
+    from core.tp_utils import safe_round_and_validate
+    from core.trade_engine import close_real_trade, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import get_runtime_config, safe_call_retry
     from utils_logging import log
 
-    if not tp_prices or not isinstance(tp_prices, (list, tuple)) or len(tp_prices) < 3 or sl_price is None:
-        msg = f"[TP/SL] Invalid TP/SL params for {symbol}. Skipping TP/SL."
+    if not tp_prices or len(tp_prices) < 3 or sl_price is None:
+        msg = f"[TP/SL] Invalid params for {symbol} — skipping."
         log(msg, level="ERROR")
         send_telegram_message(f"⚠️ {msg}")
         return False
@@ -240,156 +240,41 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     cfg = get_runtime_config()
     min_total_qty = cfg.get("min_total_qty_for_tp_full", 0.0035)
     force_sl = cfg.get("FORCE_SL_ALWAYS", False)
-    sl_retry_limit = cfg.get("sl_retry_limit", 3)  # Configurable retries
+    sl_retry_limit = cfg.get("sl_retry_limit", 3)
 
     api_symbol = convert_symbol(symbol)
     market_info = get_symbol_info(symbol)
-
     if not market_info:
-        log(f"[TP/SL] {symbol}: No market info found — aborting", level="ERROR")
+        log(f"[TP/SL] No market info for {symbol}", level="ERROR")
         return False
 
-    min_qty = market_info.get("limits", {}).get("amount", {}).get("min", 0.001)
-    min_notional = market_info.get("limits", {}).get("cost", {}).get("min", 5.0)
+    min_qty = market_info["limits"]["amount"]["min"]
 
     trade_data = trade_manager.get_trade(symbol) or {}
-
-    # === Fallback mode: TP1 only
-    if qty < min_total_qty:
-        log(f"[TP-Fallback] {symbol}: qty={qty:.6f} < {min_total_qty}, using TP1-only mode", level="WARNING")
-        send_telegram_message(f"⚠️ {symbol}: fallback → TP1 only, qty={qty:.4f}")
-
-        tp_price = tp_prices[0]
-        tp_qty = round_step_size(symbol, qty)
-        tp_qty = validate_qty(symbol, tp_qty)  # Your existing validate_qty
-        if not tp_qty:
-            return False
-
-        try:
-            order = safe_call_retry(
-                lambda: exchange.create_limit_sell_order(api_symbol, tp_qty, tp_price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, tp_qty, tp_price),
-                label=f"tp1_fallback_{symbol}",
-            )
-            if order:
-                trade_manager.update_trade(symbol, "tp1_price", tp_price)
-                trade_manager.update_trade(symbol, "tp1_qty", tp_qty)
-                trade_manager.update_trade(symbol, "tp_fallback_used", True)
-                trade_manager.update_trade(symbol, "tp_total_qty", tp_qty)
-                trade_manager.update_trade(symbol, "tp_sl_success", True)
-                log_tp_sl_event(symbol, "TP1", tp_qty, tp_price, "success", reason="fallback")
-            else:
-                log_tp_sl_event(symbol, "TP1", tp_qty, tp_price, "failure", reason="order_rejected")
-                return False
-        except Exception as e:
-            log(f"[TP-Fallback] {symbol} error: {e}", level="ERROR")
-            return False
-
-        # === SL
-        if sl_price:
-            try:
-                sl_order = safe_call_retry(
-                    lambda: exchange.create_order(
-                        api_symbol,
-                        type="STOP_MARKET",
-                        side="sell" if side == "buy" else "buy",
-                        amount=qty,
-                        params={"stopPrice": sl_price, "reduceOnly": True},
-                    ),
-                    label=f"sl_fallback_{symbol}",
-                )
-                if sl_order:
-                    trade_manager.update_trade(symbol, "sl_price", sl_price)
-                    log_tp_sl_event(symbol, "SL", qty, sl_price, "success", reason="fallback_mode")
-            except Exception as e:
-                log(f"[SL] Fallback SL error for {symbol}: {e}", level="ERROR")
-                if force_sl:
-                    log(f"[FORCE_SL] Retrying SL for {symbol}", level="INFO")
-                    for retry in range(sl_retry_limit):
-                        try:
-                            sl_order = safe_call_retry(
-                                lambda: exchange.create_order(
-                                    api_symbol,
-                                    type="STOP_MARKET",
-                                    side="sell" if side == "buy" else "buy",
-                                    amount=qty,
-                                    params={"stopPrice": sl_price, "reduceOnly": True},
-                                ),
-                                label=f"sl_force_retry_{symbol}_{retry}",
-                            )
-                            if sl_order:
-                                trade_manager.update_trade(symbol, "sl_price", sl_price)
-                                log_tp_sl_event(symbol, "SL", qty, sl_price, "success", reason="force_always")
-                                break
-                        except Exception:
-                            time.sleep(1)
-                    else:
-                        send_telegram_message(f"❌ {symbol}: SL retry failed after {sl_retry_limit} attempts")
-                else:
-                    if "trigger" in str(e).lower():
-                        send_telegram_message(f"❌ {symbol}: SL rejected (Order would trigger) in fallback mode")
-                        log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger")
-                        trade_manager.update_trade(symbol, "tp_sl_success", False)
-                    return False
-
-        return True
-
-    # === Standard logic for TP1/TP2/TP3 with validation
+    success_sl = False
+    success_tp = 0
     tp_total = 0.0
-    success_count = 0
-    for i, price in enumerate(tp_prices):
-        level = f"TP{i+1}"
-        share = trade_data.get(f"tp{i+1}_share", 0.0)
-        raw_qty = qty * share
-        qty_i = round_step_size(symbol, raw_qty)
-        qty_i = validate_qty(symbol, qty_i)  # Your existing validate_qty
-        if not qty_i:
-            log_tp_sl_event(symbol, level, qty_i, price, "skipped", reason="qty_too_small_or_notional")
-            continue
 
-        log(f"[TP-TRY] {symbol} {level} → raw={raw_qty:.6f}, rounded={qty_i:.6f}, notional={(qty_i * price):.2f}", level="DEBUG")
+    # === Pre-check SL vs current price ===
+    try:
+        ticker = safe_call_retry(exchange.fetch_ticker, api_symbol)
+        current_price = ticker["last"] if ticker else entry_price
+    except Exception as e:
+        log(f"[PreCheck] Failed to fetch ticker for {symbol}: {e} — using entry_price", level="WARNING")
+        current_price = entry_price
 
-        try:
-            order = safe_call_retry(
-                lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, qty_i, price),
-                label=f"tp_limit_{symbol}_{i}",
-            )
-            if order:
-                trade_manager.update_trade(symbol, f"tp{i+1}_price", price)
-                trade_manager.update_trade(symbol, f"tp{i+1}_qty", qty_i)
-                log_tp_sl_event(symbol, level, qty_i, price, "success")
-                success_count += 1
-                tp_total += qty_i
-            else:
-                log_tp_sl_event(symbol, level, qty_i, price, "failure", reason="order_rejected")
-        except Exception as e:
-            log(f"[TP] {symbol} {level} order error: {e}", level="ERROR")
-            log_tp_sl_event(symbol, level, qty_i, price, "failure", reason="exception")
-
-    trade_manager.update_trade(symbol, "tp_total_qty", tp_total)
-    trade_manager.update_trade(symbol, "tp_fallback_used", False)
-
-    remainder = qty - tp_total
-    if remainder >= min_qty and remainder * tp_prices[0] >= min_notional:
-        log(f"[TP] {symbol}: Unallocated qty={remainder:.6f} remaining", level="DEBUG")
-        send_telegram_message(f"ℹ️ {symbol}: {remainder:.4f} qty not allocated to TP — fallback may be needed.")
-
-    if success_count == 0:
-        log(f"[TP/SL] {symbol}: ❌ No TP levels placed — SL skipped", level="ERROR")
-        send_telegram_message(f"❌ {symbol}: All TP orders failed — SL skipped")
-        log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="no_tp")
-        trade_manager.update_trade(symbol, "tp_total_qty", 0.0)
-        trade_manager.update_trade(symbol, "tp_sl_success", False)
+    if (side == "buy" and sl_price >= current_price) or (side == "sell" and sl_price <= current_price):
+        log(f"[SL] {symbol}: would trigger (current={current_price:.4f}, SL={sl_price:.4f}) — closing", level="WARNING")
+        log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger_now")
+        close_real_trade(symbol)
         return False
 
-    # === SL
-    skip_sl = False
+    # === SL first ===
     min_gap = entry_price * 0.001
     if (side == "buy" and sl_price >= entry_price - min_gap) or (side == "sell" and sl_price <= entry_price + min_gap):
-        log(f"[SL] {symbol}: SL too close to entry — skipped", level="WARNING")
+        log(f"[SL] {symbol}: too close to entry — skipped", level="WARNING")
         log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="too_close")
-        skip_sl = True
-
-    if not skip_sl or force_sl:
+    else:
         try:
             sl_order = safe_call_retry(
                 lambda: exchange.create_order(
@@ -399,44 +284,115 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                     amount=qty,
                     params={"stopPrice": sl_price, "reduceOnly": True},
                 ),
-                label=f"sl_stop_{symbol}",
+                label=f"sl_{symbol}",
             )
             if sl_order:
                 trade_manager.update_trade(symbol, "sl_price", sl_price)
                 log_tp_sl_event(symbol, "SL", qty, sl_price, "success")
+                log(f"[SL] Success: ID={sl_order.get('id', 'n/a')}", level="DEBUG")
+                success_sl = True
         except Exception as e:
-            log(f"[SL] Order error for {symbol}: {e}", level="ERROR")
-            if force_sl:
-                log(f"[FORCE_SL] Retrying SL for {symbol}", level="INFO")
+            log(f"[SL] Error for {symbol}: {e}", level="ERROR")
+            if "trigger" in str(e).lower():
+                send_telegram_message(f"❌ {symbol}: SL rejected (would trigger) → closing position")
+                log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger")
+                close_real_trade(symbol)
+                return False
+            elif force_sl:
                 for retry in range(sl_retry_limit):
                     try:
+                        _widen = 1 + (retry + 1) * 0.002
+                        widened_sl = sl_price * (1 - 0.002 * (retry + 1)) if side == "buy" else sl_price * (1 + 0.002 * (retry + 1))
+                        log(f"[Retry {retry+1}] Widened SL to {widened_sl:.6f}", level="INFO")
                         sl_order = safe_call_retry(
                             lambda: exchange.create_order(
                                 api_symbol,
                                 type="STOP_MARKET",
                                 side="sell" if side == "buy" else "buy",
                                 amount=qty,
-                                params={"stopPrice": sl_price, "reduceOnly": True},
+                                params={"stopPrice": widened_sl, "reduceOnly": True},
                             ),
-                            label=f"sl_force_retry_{symbol}_{retry}",
+                            label=f"sl_retry_{symbol}_{retry}",
                         )
                         if sl_order:
-                            trade_manager.update_trade(symbol, "sl_price", sl_price)
-                            log_tp_sl_event(symbol, "SL", qty, sl_price, "success", reason="force_always")
+                            trade_manager.update_trade(symbol, "sl_price", widened_sl)
+                            log_tp_sl_event(symbol, "SL", qty, widened_sl, "success", reason="force_retry")
+                            success_sl = True
                             break
                     except Exception:
                         time.sleep(1)
-                else:
-                    send_telegram_message(f"❌ {symbol}: SL retry failed after {sl_retry_limit} attempts")
+                if not success_sl:
+                    send_telegram_message(f"❌ {symbol}: SL retry failed — closing position")
+                    close_real_trade(symbol)
+                    return False
             else:
-                if "trigger" in str(e).lower():
-                    send_telegram_message(f"❌ {symbol}: SL rejected (Order would trigger)")
-                    log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger")
-                    trade_manager.update_trade(symbol, "tp_sl_success", False)
                 return False
 
-    trade_manager.update_trade(symbol, "tp_sl_success", True)
-    return True
+    if not success_sl:
+        send_telegram_message(f"❌ {symbol}: SL not placed — skipping TP")
+        trade_manager.update_trade(symbol, "tp_sl_success", False)
+        return False
+
+    fallback = qty < min_total_qty
+    if fallback:
+        log(f"[TP-Fallback] {symbol}: qty={qty:.4f} < {min_total_qty}", level="WARNING")
+        send_telegram_message(f"⚠️ {symbol}: fallback → TP1 only")
+        tp_price = tp_prices[0]
+        tp_qty = safe_round_and_validate(symbol, qty)
+        if tp_qty:
+            try:
+                order = safe_call_retry(
+                    lambda: exchange.create_limit_sell_order(api_symbol, tp_qty, tp_price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, tp_qty, tp_price),
+                    label=f"tp_fallback_{symbol}",
+                )
+                if order:
+                    trade_manager.update_trade(symbol, "tp1_price", tp_price)
+                    trade_manager.update_trade(symbol, "tp1_qty", tp_qty)
+                    tp_total += tp_qty
+                    success_tp += 1
+                    log_tp_sl_event(symbol, "TP1", tp_qty, tp_price, "success", reason="fallback")
+            except Exception as e:
+                log(f"[TP-Fallback] {symbol} error: {e}", level="ERROR")
+    else:
+        for i, price in enumerate(tp_prices):
+            level = f"TP{i+1}"
+            share = trade_data.get(f"tp{i+1}_share", 0.0)
+            raw_qty = qty * share
+            if raw_qty < min_qty:
+                log(f"[TP-Skip] {symbol} {level} raw_qty={raw_qty:.6f} < min_qty={min_qty} — skipping", level="DEBUG")
+                log_tp_sl_event(symbol, level, raw_qty, price, "skipped", reason="raw_qty_too_small")
+                continue
+            qty_i = safe_round_and_validate(symbol, raw_qty)
+            if not qty_i:
+                log_tp_sl_event(symbol, level, raw_qty, price, "skipped", reason="qty_invalid")
+                continue
+            try:
+                order = safe_call_retry(
+                    lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price) if side == "buy" else exchange.create_limit_buy_order(api_symbol, qty_i, price),
+                    label=f"tp_{symbol}_{i}",
+                )
+                if order:
+                    trade_manager.update_trade(symbol, f"tp{i+1}_price", price)
+                    trade_manager.update_trade(symbol, f"tp{i+1}_qty", qty_i)
+                    log_tp_sl_event(symbol, level, qty_i, price, "success")
+                    tp_total += qty_i
+                    success_tp += 1
+            except Exception as e:
+                log(f"[TP] {symbol} {level} error: {e}", level="ERROR")
+                log_tp_sl_event(symbol, level, qty_i, price, "failure", reason="exception")
+
+    trade_manager.update_trade(symbol, "tp_total_qty", tp_total)
+    trade_manager.update_trade(symbol, "tp_fallback_used", fallback)
+
+    tp_sl_success = success_sl and tp_total > 0
+    trade_manager.update_trade(symbol, "tp_sl_success", tp_sl_success)
+
+    if tp_sl_success:
+        send_telegram_message(f"✅ {symbol}: TP/SL orders placed successfully.")
+    else:
+        send_telegram_message(f"⚠️ {symbol}: TP/SL partially failed (SL ok: {success_sl}, TP hits: {success_tp})")
+
+    return tp_sl_success
 
 
 def validate_qty(symbol: str, qty: float) -> float | None:
