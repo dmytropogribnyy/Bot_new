@@ -23,7 +23,6 @@ def run_trading_cycle(symbols, stop_event):
 
     from common.config_loader import AUTO_PROFIT_ENABLED, DRY_RUN
     from common.leverage_config import set_leverage_for_symbols
-    from core.engine_controller import sync_open_positions  # добавлено
     from core.entry_logger import log_entry
     from core.notifier import notify_dry_trade
     from core.position_manager import get_max_positions
@@ -32,7 +31,7 @@ def run_trading_cycle(symbols, stop_event):
     from core.runtime_state import last_trade_times, last_trade_times_lock
     from core.runtime_stats import is_hourly_limit_reached, update_trade_count
     from core.symbol_processor import process_symbol
-    from core.trade_engine import check_auto_profit, enter_trade, get_position_size, safe_close_trade, trade_manager
+    from core.trade_engine import check_auto_profit, close_real_trade, enter_trade, get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import get_cached_balance, get_cached_positions, load_state, normalize_symbol
     from utils_logging import log, notify_error
@@ -90,8 +89,8 @@ def run_trading_cycle(symbols, stop_event):
         positions = get_cached_positions()
         current_active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
         if current_active_positions >= max_positions:
-            log(f"[engine_controller] Max positions ({max_positions}) reached mid-cycle. Stop scanning.", level="INFO")
-            break
+            log(f"[engine_controller] Max positions ({max_positions}) reached mid-cycle. Skipping {symbol}.", level="INFO")
+            continue
 
         try:
             log(f"[engine_controller] Checking {symbol}", level="DEBUG")
@@ -100,7 +99,7 @@ def run_trading_cycle(symbols, stop_event):
             if AUTO_PROFIT_ENABLED and current_trade:
                 if check_auto_profit(current_trade):
                     log(f"[engine_controller] AutoProfit => close {symbol}", level="INFO")
-                    safe_close_trade(exchange, symbol, current_trade, reason="auto_profit")
+                    close_real_trade(symbol)
                     continue
 
             if is_symbol_recently_traded(symbol):
@@ -119,6 +118,11 @@ def run_trading_cycle(symbols, stop_event):
             trade_data = process_symbol(symbol, balance, last_trade_times, last_trade_times_lock)
             if not trade_data:
                 continue
+
+            if not trade_data.get("direction"):
+                log(f"[engine_controller] Skipping {symbol} — no valid direction in trade_data", level="WARNING")
+                continue
+
             entry_successes += 1
 
             is_reentry = trade_data.get("is_reentry", False)
@@ -156,8 +160,10 @@ def run_trading_cycle(symbols, stop_event):
 
 def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
     """
-    Плавно закрывает позицию по symbol. Если ошибка — помечает как pending_exit.
+    Плавно закрывает позицию по symbol.
+    Если ошибка — помечает как pending_exit.
     Не вызывает record_trade_result при reason='error'.
+    ✅ Подстраховка: exit_price = last_price, если не установлен.
     """
     from core.trade_engine import close_real_trade, record_trade_result, trade_manager
     from telegram.telegram_utils import send_telegram_message
@@ -178,12 +184,17 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
             send_telegram_message(f"⚠️ Soft exit error for {symbol}. Marked as pending_exit.")
             return
 
-        # Обычное закрытие позиции
         close_real_trade(symbol)
         log(f"[SoftExit] Completed soft exit for {symbol}", level="INFO")
 
-        # Финализация через record_trade_result
-        record_trade_result(symbol, trade.get("side"), trade.get("entry_price"), trade.get("exit_price", 0.0), reason)
+        exit_price = trade.get("exit_price")
+        if not exit_price:
+            ticker = exchange.fetch_ticker(symbol)
+            exit_price = ticker["last"] if ticker else 0.0
+            trade["exit_price"] = exit_price
+            trade_manager.update_trade(symbol, trade)
+
+        record_trade_result(symbol, trade.get("side"), trade.get("entry_price"), exit_price, reason)
 
     except Exception as e:
         log(f"[SoftExit] ❌ Failed to close {symbol}: {e}", level="ERROR")
@@ -205,37 +216,57 @@ def sync_open_positions():
         positions = exchange.fetch_positions()
         for p in positions:
             symbol = normalize_symbol(p["symbol"])
-            if float(p.get("contracts", 0)) > 0 and not trade_manager.has_trade(symbol):
-                entry = float(p.get("entryPrice", 0))
-                if entry <= 0:  # Fallback if entry=0
-                    ticker = exchange.fetch_ticker(symbol)
-                    entry = float(ticker.get("last", 0)) if ticker else 0
 
-                trade_data = {
-                    "symbol": symbol,
-                    "side": "buy" if float(p["positionAmt"]) > 0 else "sell",
-                    "entry": entry,
-                    "qty": abs(float(p["positionAmt"])),
-                    "start_time": datetime.now(),
-                    "commission": 0.0,
-                    "net_profit_tp1": 0.0,
-                    "market_regime": "unknown",
-                    "breakdown": {},
-                    "pair_type": "unknown",
-                    "sl_price": None,
-                    "tp_prices": [],
-                    "tp1": None,
-                    "tp2": None,
-                    "tp1_share": 0.8,
-                    "tp2_share": 0.2,
-                    "tp3_share": 0.0,
-                    "tp_total_qty": 0.0,
-                    "tp_sl_success": False,
-                    "tp_fallback_used": False,
-                    "order_id": "recovered",
-                }
-                trade_manager.add_trade(symbol, trade_data)
-                save_active_trades()
-                send_telegram_message(f"🚨 DESYNC FIXED: Added {symbol} to manager")
+            # ✅ Поддержка positionAmt (основной), fallback на contracts
+            position_amt = float(p.get("positionAmt", p.get("contracts", 0)))
+
+            # ✅ Только если позиция реально открыта и не учтена
+            if abs(position_amt) > 0 and not trade_manager.has_trade(symbol):
+                try:
+                    entry = float(p.get("entryPrice", 0))
+                    if entry <= 0:
+                        try:
+                            ticker = exchange.fetch_ticker(symbol)
+                            entry = float(ticker.get("last", 0)) if ticker else 0
+                        except Exception as e:
+                            log(f"[SyncOpenPositions] Failed to fetch ticker for {symbol}: {e}", level="WARNING")
+                            entry = 0
+
+                    if entry <= 0 or abs(position_amt) <= 0:
+                        continue
+
+                    trade_data = {
+                        "symbol": symbol,
+                        "side": "buy" if position_amt > 0 else "sell",
+                        "entry": entry,
+                        "qty": abs(position_amt),
+                        "start_time": datetime.now(),
+                        "commission": 0.0,
+                        "net_profit_tp1": 0.0,
+                        "market_regime": "unknown",
+                        "breakdown": {},
+                        "pair_type": "unknown",
+                        "sl_price": None,
+                        "tp_prices": [],
+                        "tp1": None,
+                        "tp2": None,
+                        "tp1_share": 0.8,
+                        "tp2_share": 0.2,
+                        "tp3_share": 0.0,
+                        "tp_total_qty": 0.0,
+                        "tp_sl_success": False,
+                        "tp_fallback_used": False,
+                        "order_id": "recovered",
+                    }
+
+                    trade_manager.add_trade(symbol, trade_data)
+                    save_active_trades()
+
+                    log(f"[SyncOpenPositions] ✅ Added {symbol} with qty={position_amt} and entry={entry}", level="INFO")
+                    send_telegram_message(f"🚨 DESYNC FIXED: Added {symbol} to manager")
+
+                except Exception as e:
+                    log(f"[SyncOpenPositions] Error syncing {symbol}: {e}", level="WARNING")
+
     except Exception as e:
         log(f"[Desync] Sync failed: {e}", level="WARNING")

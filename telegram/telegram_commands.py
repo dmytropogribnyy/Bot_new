@@ -13,7 +13,7 @@ from common.config_loader import (
 )
 from common.leverage_config import LEVERAGE_MAP
 from core.runtime_state import global_trading_pause_until, is_trading_globally_paused, paused_symbols
-from core.trade_engine import close_real_trade, open_positions_count, trade_manager
+from core.trade_engine import open_positions_count, trade_manager
 from telegram.registry import COMMAND_REGISTRY
 from telegram.telegram_handler import handle_errors
 from telegram.telegram_utils import (
@@ -78,8 +78,8 @@ def _format_pos_dry(t):
 
 def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
     """
-    Monitor stop/shutdown process with a time limit,
-    re-closing positions if needed.
+    Monitor stop/shutdown process, waiting for positions to close naturally.
+    Sends regular updates, but does NOT force close positions.
     """
     start = time.time()
     check_interval = 60
@@ -94,22 +94,11 @@ def _monitor_stop_timeout(reason: str, state: dict, timeout_minutes=30):
                 open_details = [_format_pos_dry(t) for t in trade_manager._trades.values() if not t.get("tp1_hit") and not t.get("tp2_hit") and not t.get("soft_exit_hit")]
             else:
                 positions = get_open_positions()
-                open_details = [_format_pos_real(p) for p in positions]
-
-                # Retry closing after 5 minutes
-                if open_details and (time.time() - start) > 300:
-                    for pos in positions:
-                        if float(pos.get("contracts", 0)) > 0:
-                            try:
-                                close_real_trade(pos["symbol"])
-                                log(f"[Stop] Retry closing position for {pos['symbol']}", level="INFO")
-                            except Exception as e:
-                                log(f"[Stop] Failed to close pos: {e}", level="ERROR")
+                open_details = [_format_pos_real(p) for p in positions if float(p.get("contracts", 0)) > 0]
 
             current_time = time.time()
             if current_time - last_notification_time >= notification_interval:
                 if (time.time() - start) >= timeout_minutes * 60:
-                    # Timeout
                     if open_details:
                         msg = (
                             f"⏰ *Stop timeout warning*.\n"

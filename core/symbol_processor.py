@@ -11,7 +11,6 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
     from core.binance_api import convert_symbol
     from core.exchange_init import exchange
-    from core.position_manager import get_max_positions
     from core.strategy import should_enter_trade
     from core.tp_utils import calculate_tp_levels, check_min_profit
     from core.trade_engine import get_market_regime, get_position_size, open_positions_lock
@@ -31,10 +30,6 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             return None
 
         with open_positions_lock:
-            positions = exchange.fetch_positions()
-            if sum(float(pos.get("contracts", 0)) > 0 for pos in positions) >= get_max_positions(balance):
-                log(f"⏩ Skipping {symbol} — max positions reached", level="DEBUG")
-                return None
             if get_position_size(symbol) > 0:
                 log(f"⏩ Skipping {symbol} — position already open", level="DEBUG")
                 return None
@@ -142,7 +137,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             "breakdown": breakdown,
             "signal_score": breakdown.get("signal_score", 0.0),
             "tp_prices": [tp1, tp2, tp2 * 1.5],
-            "tp_total_qty": tp_total_qty,  # ✅ Добавлено
+            "tp_total_qty": tp_total_qty,
         }
 
     except Exception as e:

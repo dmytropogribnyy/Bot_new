@@ -329,7 +329,6 @@ def get_min_net_profit(balance=None):
 
     from common.config_loader import TP_LOG_FILE
     from tp_logger import get_last_trade
-    from utils_core import get_runtime_config
     from utils_logging import log
 
     # ✅ Сначала проверяем runtime override (если установлен явно)
@@ -518,7 +517,6 @@ def get_total_position_value():
         float: Общая стоимость позиций.
     """
     from core.exchange_init import exchange
-    from utils_core import safe_call_retry
 
     try:
         positions = safe_call_retry(exchange.fetch_positions)

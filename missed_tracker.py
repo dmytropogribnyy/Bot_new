@@ -1,61 +1,62 @@
 import json
 import os
 import threading
+import time
+from typing import Dict, List, Optional
 
 from utils_logging import log
 
-CACHE_FILE = "data/cached_missed.json"
-MAX_ENTRIES = 100
 CACHE_LOCK = threading.Lock()
+MAX_ENTRIES = 100
+CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cached_missed.json")
 
 
-def add_missed_opportunity(symbol, entry_price, reason, breakdown):
-    """
-    Добавляет символ в список пропущенных возможностей.
-    """
+def ensure_missed_log_exists():
+    if not os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "w") as f:
+            json.dump([], f)
+
+
+def get_missed_opportunities() -> List[Dict]:
+    ensure_missed_log_exists()
+    try:
+        with open(CACHE_FILE, "r") as f:
+            cached = json.load(f)
+            if not isinstance(cached, list):
+                log("[MissedTracker] cached_missed.json is not a list. Resetting.", level="WARNING")
+                return []
+            return cached
+    except Exception as e:
+        log(f"[MissedTracker] Failed to load missed cache: {e}", level="WARNING")
+        return []
+
+
+def save_missed_opportunities(data: List[Dict]):
+    try:
+        with open(CACHE_FILE, "w") as f:
+            json.dump(data[:MAX_ENTRIES], f, indent=2)
+    except Exception as e:
+        log(f"[MissedTracker] Failed to save missed cache: {e}", level="ERROR")
+
+
+def record_missed_opportunity(symbol: str, entry_price: float, reason: str, breakdown: Optional[Dict] = None):
     entry = {
         "symbol": symbol,
-        "entry_price": entry_price,
+        "entry_price": round(entry_price, 6),
         "reason": reason,
-        "breakdown": breakdown,
+        "breakdown": breakdown or {},
+        "timestamp": time.time(),
     }
 
     with CACHE_LOCK:
-        cache = []
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r") as f:
-                try:
-                    cache = json.load(f)
-                    if not isinstance(cache, list):
-                        log("[MissedTracker] WARNING: Cache corrupted, resetting to empty list", level="WARNING")
-                        cache = []
-                except Exception as e:
-                    log(f"[MissedTracker] Cache load error: {e}", level="WARNING")
-                    cache = []
+        data = get_missed_opportunities()
+        data.insert(0, entry)
+        save_missed_opportunities(data)
 
-        cache.append(entry)
-        cache = cache[-MAX_ENTRIES:]
-
-        with open(CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
+    log(f"[MissedTracker] Recorded missed entry {symbol} @ {entry_price:.4f} — {reason}", level="INFO")
 
 
-def flush_best_missed_opportunities():
-    """
-    Возвращает список последних пропущенных возможностей.
-    Используется для отладки и анализа сигналов.
-    """
+def flush_best_missed_opportunities(limit: int = 5) -> List[Dict]:
     with CACHE_LOCK:
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r") as f:
-                try:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        return data
-                    else:
-                        log("[MissedTracker] Unexpected cache format, returning empty list", level="WARNING")
-                        return []
-                except Exception as e:
-                    log(f"[MissedTracker] Cache read error: {e}", level="WARNING")
-                    return []
-        return []
+        data = get_missed_opportunities()
+        return data[:limit]

@@ -196,7 +196,6 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     from core.position_manager import check_entry_allowed
     from core.runtime_state import is_symbol_paused, is_trading_globally_paused, pause_all_trading
     from core.signal_utils import get_signal_breakdown, passes_1plus1
-    from core.strategy import fetch_data_multiframe, symbol_type_map
     from core.tp_utils import calculate_tp_levels, check_min_profit
     from core.trade_engine import calculate_position_size, calculate_risk_amount
     from open_interest_tracker import fetch_open_interest

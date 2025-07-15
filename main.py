@@ -27,7 +27,7 @@ from core.fail_stats_tracker import (
 )
 from core.failure_logger import log_failure
 from core.strategy import last_trade_times, last_trade_times_lock, should_enter_trade
-from core.trade_engine import close_real_trade, trade_manager
+from core.trade_engine import close_real_trade, get_position_size, trade_manager
 from missed_tracker import flush_best_missed_opportunities
 from pair_selector import auto_cleanup_signal_failures, auto_update_valid_pairs_if_needed, select_active_symbols, start_symbol_rotation, track_missed_opportunities
 from stats import (
@@ -65,7 +65,6 @@ def restore_active_trades():
     Восстанавливает активные сделки из data/active_trades.json при старте бота.
     Удаляет записи, по которым позиции на Binance уже закрыты.
     """
-    from core.trade_engine import get_position_size
 
     file_path = Path("data/active_trades.json")
     if not file_path.exists():
@@ -200,8 +199,8 @@ def start_report_loops():
 
 
 def check_block_health():
+    from constants import TP_LOG_FILE  # ✅ исправлено
     from core.failure_logger import log_failure
-    from tp_logger import TP_LOG_FILE
     from utils_core import load_json_file
 
     try:
@@ -214,7 +213,6 @@ def check_block_health():
         ratio = len(high_risk) / len(all_symbols)
         log(f"[HealthCheck] High risk: {len(high_risk)}/{len(all_symbols)} ({ratio:.1%})", level="INFO")
 
-        # 🔄 Логируем их как провальные — для накопления статистики
         for sym in high_risk:
             log_failure(sym, ["high_risk_auto"])
 
@@ -222,11 +220,9 @@ def check_block_health():
             apply_failure_decay(accelerated=True)
             log("Accelerated decay triggered", level="WARNING")
 
-            # 🟠 При >50% — Telegram alert + PnL
             if ratio > 0.5:
                 examples = high_risk[:5]
 
-                # 📊 Считаем последние 20 сделок и средний PnL
                 try:
                     df = load_json_file(TP_LOG_FILE, fallback=[])
                     if isinstance(df, list):
