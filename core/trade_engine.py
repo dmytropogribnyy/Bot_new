@@ -380,13 +380,10 @@ def save_active_trades():
 
 def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unknown"):
     """
-    Финальная версия метода входа в сделку (v3.7):
-    - Проверяет лимиты, торговые часы, сигналы
-    - Вызывает market order → проверяет filled_qty
-    - Ждёт 0.5s + повторно sync_open_positions(), чтобы позиция подтвердилась
-    - Только после этого вызывает place_take_profit_and_stop_loss_orders(...)
-    - Если TP/SL не удалось выставить — закрывает позицию (если ABORT_IF_NO_TP)
-    - Строгая проверка qty ≤ 0 или < min_trade_qty
+    Восстановленная версия 1.3.3 с базовыми доработками (v3.8 Stage 1):
+    - Сохраняет структуру 1.3.3
+    - Добавляет фикс tp_total_qty + tp_fallback_used
+    - Сохраняет confirm + sync + monitor
     """
     import time
     from threading import Lock, Thread
@@ -469,7 +466,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
 
         rf, _ = get_symbol_risk_factor(symbol)
         min_rf = get_runtime_config().get("min_risk_factor", 0.9)
-        log(f"[Risk] {symbol}: risk_factor={rf:.2f} vs min_rf={min_rf}", level="DEBUG")
         if rf < min_rf:
             log(f"[Skip] {symbol}: risk_factor {rf:.2f} < min_risk_factor {min_rf}", level="INFO")
             send_telegram_message(f"⚠️ Skipping {symbol}: risk factor too low ({rf:.2f} < {min_rf})", force=True)
@@ -488,38 +484,18 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         min_qty = cfg.get("min_trade_qty", 0.001)
 
         if qty is None or qty <= 0:
-            log_entry(
-                {"symbol": symbol, "side": side, "entry": round(entry_price, 4), "qty": qty, "breakdown": breakdown or {}, "pair_type": pair_type, "fail_reason": "qty=0_or_invalid"},
-                status="FAIL",
-            )
             log(f"[ENTER] ❌ Rejected {symbol}: qty={qty} is invalid (<= 0)", level="WARNING")
             send_telegram_message(f"⚠️ Skipping {symbol}: qty={qty} is invalid (<= 0)", force=True)
             return False
 
         qty = round(qty, 6)
         if qty < min_qty:
-            log_entry(
-                {"symbol": symbol, "side": side, "entry": round(entry_price, 4), "qty": qty, "breakdown": breakdown or {}, "pair_type": pair_type, "fail_reason": "qty < min_trade_qty"},
-                status="FAIL",
-            )
             log(f"[ENTER] ❌ qty={qty:.6f} < min_trade_qty={min_qty} → skipping {symbol}", level="WARNING")
             send_telegram_message(f"⚠️ Skipping {symbol}: qty={qty:.4f} < min_trade_qty={min_qty}", force=True)
             return False
 
         notional = qty * entry_price
         if notional < MIN_NOTIONAL_OPEN:
-            log_entry(
-                {
-                    "symbol": symbol,
-                    "side": side,
-                    "entry": round(entry_price, 4),
-                    "qty": qty,
-                    "breakdown": breakdown or {},
-                    "pair_type": pair_type,
-                    "fail_reason": "notional < MIN_NOTIONAL_OPEN",
-                },
-                status="FAIL",
-            )
             log(f"[Notional] {symbol} too small: ${notional:.2f}", level="WARNING")
             send_telegram_message(f"⚠️ Skipping {symbol}: notional too small (${notional:.2f})", force=True)
             return False
@@ -543,8 +519,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         tp_prices = [tp1, tp2, tp3]
 
         result = create_safe_market_order(api_symbol, side.lower(), qty)
-        log(f"[Binance] Market order response for {symbol}: {result}", level="DEBUG")
-
         if not result["success"] or result.get("filled_qty", 0) == 0:
             log("[Enter Trade] Market order failed or 0 filled qty", level="ERROR")
             send_telegram_message(f"❌ Market order issue for {symbol}", force=True)
@@ -593,25 +567,21 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         trade_manager.add_trade(symbol, trade_data)
         save_active_trades()
 
-        sync_open_positions()  # 🔁 Первый sync сразу после добавления сделки
-        time.sleep(0.5)  # ⏱ Пауза для подтверждения обновления позиции на стороне Binance
-        sync_open_positions()  # 🔁 Второй sync для надёжности
+        sync_open_positions()
+        time.sleep(0.5)
+        sync_open_positions()
 
-        # ✅ Подтверждение позиции через get_position_size (LOOP-режим)
         confirm_success = False
         for attempt in range(5):
-            time.sleep(0.2)  # ⏱ Пауза между попытками
+            time.sleep(0.2)
             if get_position_size(symbol) > 0:
-                log(f"[Confirm] ✅ {symbol} confirmed on position check (attempt {attempt + 1})", level="INFO")
                 confirm_success = True
                 break
         if not confirm_success:
-            log(f"[Warning] ⚠️ {symbol} still not confirmed after 5 attempts — fallback TP/SL will be used", level="WARNING")
             send_telegram_message(f"⚠️ {symbol}: Position not confirmed after 5 attempts — monitor manually!", force=True)
 
         try:
             if DRY_RUN:
-                log(f"[DRY] TP/SL simulated for {symbol}: tp_prices={tp_prices}, sl_price={sl_price}", level="INFO")
                 success = True
                 trade_manager.update_trade(symbol, "tp_sl_success", success)
                 trade_manager.update_trade(symbol, "tp_fallback_used", False)
@@ -619,15 +589,11 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
                 success = place_take_profit_and_stop_loss_orders(api_symbol, side, entry_price, qty, tp_prices, sl_price)
                 trade_manager.update_trade(symbol, "tp_sl_success", success)
                 trade_manager.update_trade(symbol, "tp_fallback_used", not success)
+                trade_manager.update_trade(symbol, "tp_total_qty", qty)
 
-            if success:
-                send_telegram_message(f"✅ {symbol}: TP/SL orders placed successfully.")
-            else:
-                send_telegram_message(f"❌ {symbol}: TP/SL not placed after market entry!")
+            if not success:
                 if get_runtime_config().get("ABORT_IF_NO_TP", True):
-                    log(f"[TP/SL FAIL] {symbol}: aborting trade due to TP/SL failure", level="WARNING")
                     close_real_trade(symbol, reason="tp_sl_fail")
-
                     record_trade_result(symbol, side, entry_price, entry_price, result_type="manual")
                     send_telegram_message(f"⚠️ {symbol}: TP/SL failed — position closed", force=True)
                     return False
@@ -637,7 +603,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             send_telegram_message(f"⚠️ TP/SL placement failed for {symbol}: {e}", force=True)
 
         log_entry(trade_data, status="SUCCESS")
-        log(f"[Enter Trade] ✅ ENTERED {symbol} qty={qty:.4f} @ {entry_price:.4f}", level="INFO")
         send_telegram_message(f"🚀 ENTER {symbol} {side.upper()} qty={qty:.4f} @ {entry_price:.4f}", force=True)
 
         Thread(target=monitor_active_position, args=(symbol, side, entry_price, qty, start_time), daemon=True).start()
