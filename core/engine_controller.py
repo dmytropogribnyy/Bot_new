@@ -214,13 +214,12 @@ def sync_open_positions():
 
     try:
         positions = exchange.fetch_positions()
+        synced_count = 0
         for p in positions:
             symbol = normalize_symbol(p["symbol"])
 
-            # ✅ Поддержка positionAmt (основной), fallback на contracts
             position_amt = float(p.get("positionAmt", p.get("contracts", 0)))
 
-            # ✅ Только если позиция реально открыта и не учтена
             if abs(position_amt) > 0 and not trade_manager.has_trade(symbol):
                 try:
                     entry = float(p.get("entryPrice", 0))
@@ -265,8 +264,12 @@ def sync_open_positions():
                     log(f"[SyncOpenPositions] ✅ Added {symbol} with qty={position_amt} and entry={entry}", level="INFO")
                     send_telegram_message(f"🚨 DESYNC FIXED: Added {symbol} to manager")
 
+                    synced_count += 1
+
                 except Exception as e:
                     log(f"[SyncOpenPositions] Error syncing {symbol}: {e}", level="WARNING")
+
+        log(f"[SyncOpenPositions] ✅ Sync complete. Synced positions: {synced_count}", level="INFO")
 
     except Exception as e:
         log(f"[Desync] Sync failed: {e}", level="WARNING")

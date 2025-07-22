@@ -243,7 +243,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     - Адаптивный SL GAP: 0.3% с ретраями до 0.5–1.0% (если FORCE_SL_ALWAYS=True)
     - Fallback TP1-only если qty < min_total_qty
     - TP qty корректируется по фактическому остатку позиции
-    - Логирование всех этапов
+    - Логирование всех этапов + контроль TP total
     """
     import time
 
@@ -277,7 +277,6 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     success_tp = 0
     tp_total = 0.0
 
-    # 1️⃣ Получаем актуальный остаток позиции (сразу после входа может быть пусто)
     try:
         positions = safe_call_retry(exchange.fetch_positions)
         current_position_qty = 0.0
@@ -287,13 +286,12 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                 break
     except Exception as e:
         log(f"[TP/SL] Failed to fetch current position for {symbol}: {e}", level="WARNING")
-        current_position_qty = qty  # fallback на qty из market order
+        current_position_qty = qty
 
     if current_position_qty <= 0.0:
         log(f"[TP/SL] {symbol}: Position not confirmed — fallback to qty={qty:.6f}", level="WARNING")
         current_position_qty = qty
 
-    # 2️⃣ Проверяем GAP до SL и корректируем при необходимости
     try:
         ticker = safe_call_retry(exchange.fetch_ticker, api_symbol)
         current_price = ticker["last"] if ticker else entry_price
@@ -311,7 +309,6 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             send_telegram_message(f"❌ {symbol}: GAP до SL слишком мал даже после корректировки — отмена входа")
             return False
 
-    # 3️⃣ Ставим SL (первым)
     try:
         sl_order = safe_call_retry(
             lambda: exchange.create_order(
@@ -363,7 +360,6 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         else:
             return False
 
-    # 4️⃣ Ставим TP (по фактической позиции)
     fallback = qty < min_total_qty
     if fallback:
         tp_price = tp_prices[0]
@@ -427,6 +423,10 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
 
     trade_manager.update_trade(symbol, "tp_total_qty", tp_total)
     trade_manager.update_trade(symbol, "tp_fallback_used", fallback)
+
+    if tp_total < min_qty:
+        log(f"[TP/SL] {symbol}: Total TP qty {tp_total:.6f} < min_qty {min_qty} — TP counted as failed", level="WARNING")
+        send_telegram_message(f"⚠️ {symbol}: Total TP qty too small ({tp_total:.6f}) — check position or min_qty")
 
     if tp_total == 0.0:
         log(f"[TP/SL] {symbol}: No TP orders placed — fallback: {fallback}, SL success: {success_sl}", level="WARNING")

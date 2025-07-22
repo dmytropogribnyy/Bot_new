@@ -163,7 +163,7 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     Возвращает (qty, risk_amount)
     """
     from common.config_loader import (
-        get_dynamic_min_notional,  # ✅ Новый импорт для динамического min_notional
+        get_dynamic_min_notional,
     )
     from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
@@ -184,18 +184,15 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     risk_amount = balance * base_risk_pct
     max_trade_value = balance * max_margin_percent
 
-    # Предварительный расчёт
     qty_raw = (risk_amount * leverage) / entry_price
     notional = qty_raw * entry_price
     log(f"[QTY CALC] {symbol} → initial qty={qty_raw:.6f}, notional={notional:.2f}", level="DEBUG")
 
-    # Ограничение по max_margin_percent
     if notional > max_trade_value:
         qty_raw = max_trade_value / entry_price
         notional = qty_raw * entry_price
         log(f"[CAP LIMIT] {symbol}: reduced qty to fit max_margin_percent ({max_margin_percent * 100:.1f}%)", level="WARNING")
 
-    # Проверка капитализации
     total_used = get_total_position_value()
     projected_total = total_used + notional
     max_total = balance * max_capital_utilization_pct
@@ -209,7 +206,6 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
             log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
             return 0.0, 0.0
 
-    # Округление
     from core.tp_utils import safe_round_and_validate
 
     qty = safe_round_and_validate(symbol, qty_raw)
@@ -219,8 +215,7 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
 
     log(f"[QTY ROUND] {symbol} raw={qty_raw:.6f} → rounded={qty:.6f}", level="DEBUG")
 
-    # ✅ Fallback если qty слишком маленькое (с динамической проверкой)
-    min_notional_dynamic = get_dynamic_min_notional(symbol)  # ✅ Вызов динамического min_notional
+    min_notional_dynamic = get_dynamic_min_notional(symbol)
     if qty < min_trade_qty:
         fallback_qty = min_trade_qty
         fallback_notional = fallback_qty * entry_price
@@ -233,16 +228,16 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
             log(f"[REJECTED] {symbol}: qty {qty:.6f} < min_trade_qty {min_trade_qty} and can't boost safely (dynamic min {min_notional_dynamic:.2f})", level="WARNING")
             return 0.0, 0.0
 
-    # ✅ Финальная проверка нотионала (динамическая версия)
+    if qty < min_trade_qty and notional >= min_notional_dynamic:
+        log(f"[QTY NOTICE] {symbol}: qty {qty:.6f} < min_trade_qty but passes notional — fallback allowed", level="INFO")
+
     notional = qty * entry_price
     if notional < min_notional_dynamic:
         log(f"[REJECTED] {symbol}: final notional {notional:.2f} < dynamic min {min_notional_dynamic:.2f}", level="WARNING")
         return 0.0, 0.0
 
-    # ✅ Мягкое уведомление, если qty ровно на min_trade_qty
     if qty == min_trade_qty:
         log(f"[NOTICE] {symbol}: qty at min_trade_qty threshold ({qty:.6f}) — monitor for TP/SL placement", level="INFO")
-        # send_telegram_message(f"⚠️ {symbol}: qty на минимуме ({qty:.6f}) — следи за TP/SL")  # опционально
 
     log(f"[QTY OK] {symbol} → qty={qty:.6f}, notional={notional:.2f}, risk={risk_amount:.2f}", level="DEBUG")
     return qty, risk_amount
