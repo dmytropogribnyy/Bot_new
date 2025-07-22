@@ -380,10 +380,10 @@ def save_active_trades():
 
 def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unknown"):
     """
-    Восстановленная версия 1.3.3 с базовыми доработками (v3.8 Stage 1):
-    - Сохраняет структуру 1.3.3
-    - Добавляет фикс tp_total_qty + tp_fallback_used
-    - Сохраняет confirm + sync + monitor
+    Восстановленная версия 1.3.3 с Confirm Loop fix (v3.8 Stage 2.1):
+    - Сохраняет структуру 1.3.3 + Stage 1
+    - Добавляет Confirm retry + sync внутри цикла
+    - Остальная логика без изменений
     """
     import time
     from threading import Lock, Thread
@@ -577,8 +577,12 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             if get_position_size(symbol) > 0:
                 confirm_success = True
                 break
+            elif attempt == 2:
+                log(f"[Confirm] {symbol}: position not found, retrying sync_open_positions() (attempt {attempt+1})", level="INFO")
+                sync_open_positions()
+
         if not confirm_success:
-            send_telegram_message(f"⚠️ {symbol}: Position not confirmed after 5 attempts — monitor manually!", force=True)
+            send_telegram_message(f"⚠️ {symbol}: Position not confirmed after retries — fallback qty will be used!", force=True)
 
         try:
             if DRY_RUN:
