@@ -19,7 +19,6 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
         TP2_PERCENT,
         TP2_SHARE,
     )
-    from utils_logging import log
 
     direction = direction.upper()
     tp1_pct = TP1_PERCENT if tp1_pct is None else tp1_pct
@@ -193,47 +192,54 @@ def check_min_profit(entry, tp1, qty, share_tp1, direction, fee_rate, min_profit
 
 
 def safe_round_and_validate(symbol: str, raw_qty: float) -> float | None:
+    """
+    Округляет qty с защитой и проверкой через exchange
+    """
     from core.binance_api import round_step_size
-    from core.exchange_init import exchange
-    from utils_core import safe_call_retry
+    from utils_core import safe_call_retry, safe_float_conversion
     from utils_logging import log
 
-    market = exchange.markets.get(symbol)
-    if not market:
-        log(f"[safe_qty] No market info for {symbol} — reloading...", level="WARNING")
-        try:
-            safe_call_retry(exchange.load_markets, label="reload_markets")
-            market = exchange.markets.get(symbol)
-        except Exception as e:
-            log(f"[safe_qty] Failed to reload markets: {e}", level="ERROR")
+    try:
+        qty = safe_float_conversion(raw_qty)
+        if qty <= 0:
             return None
 
-    if not market:
-        log(f"[safe_qty] Market info still missing for {symbol} — aborting", level="ERROR")
-        return None
+        # Попытка получить market info
+        market = exchange.markets.get(symbol)
+        if not market:
+            log(f"[safe_qty] No market info for {symbol} — reloading...", level="WARNING")
+            try:
+                safe_call_retry(exchange.load_markets, label="reload_markets")
+                market = exchange.markets.get(symbol)
+            except Exception as e:
+                log(f"[safe_qty] Failed to reload markets: {e}", level="ERROR")
+                return None
 
-    min_qty = market["limits"]["amount"]["min"]
+        if not market:
+            log(f"[safe_qty] Market info still missing for {symbol} — aborting", level="ERROR")
+            return None
 
-    if raw_qty < min_qty:
-        log(f"[safe_qty] Raw qty={raw_qty:.6f} < min_qty={min_qty} for {symbol} — skipping", level="DEBUG")
-        return None
+        min_qty = safe_float_conversion(market.get("limits", {}).get("amount", {}).get("min"), 0.0)
+        if qty < min_qty:
+            log(f"[safe_qty] Qty {qty} < minQty {min_qty} for {symbol}", level="WARNING")
+            return None
 
-    try:
-        rounded_qty = round_step_size(symbol, raw_qty)
+        rounded_qty = round_step_size(symbol, qty)
+        if rounded_qty <= 0:
+            log(f"[safe_qty] Rounded qty={rounded_qty} <= 0 for {symbol} (raw={raw_qty})", level="WARNING")
+            return None
+
+        # Финальная проверка через validate_qty
+        validated_qty = validate_qty(symbol, rounded_qty)
+        if validated_qty is None:
+            log(f"[safe_qty] validate_qty returned None for {symbol} (rounded={rounded_qty})", level="WARNING")
+            return None
+
+        return validated_qty
+
     except Exception as e:
-        log(f"[safe_qty] Failed to round qty={raw_qty} for {symbol}: {e}", level="ERROR")
+        log(f"[safe_qty] Failed for {symbol}, qty={raw_qty}: {e}", level="ERROR")
         return None
-
-    if rounded_qty <= 0:
-        log(f"[safe_qty] Rounded qty={rounded_qty} <= 0 for {symbol} (raw={raw_qty})", level="WARNING")
-        return None
-
-    validated_qty = validate_qty(symbol, rounded_qty)
-    if validated_qty is None:
-        log(f"[safe_qty] validate_qty returned None for {symbol} (rounded={rounded_qty})", level="WARNING")
-        return None
-
-    return validated_qty
 
 
 def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_prices, sl_price):
@@ -252,7 +258,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     from core.tp_sl_logger import log_tp_sl_event
     from core.trade_engine import close_real_trade, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import get_runtime_config, safe_call_retry
+    from utils_core import safe_call_retry
     from utils_logging import log
 
     if not tp_prices or len(tp_prices) < 3 or sl_price is None:
@@ -449,61 +455,55 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
 
 def validate_qty(symbol: str, qty: float) -> float | None:
     """
-    Проверяет и корректирует qty под правила Binance:
-    - min_qty, step_size, precision.
-    Возвращает скорректированную qty или None, если недопустима.
+    Проверяет и корректирует qty по требованиям Binance:
+    - округление по step_size
+    - проверка на min_qty
+    - защита от Decimal/float ошибок
+    Возвращает: скорректированное qty или None
     """
-    try:
-        config = get_runtime_config()
-        retry_limit = config.get("market_reload_retry_limit", 3)
+    from core.exchange_init import exchange
+    from utils_core import safe_float_conversion
+    from utils_logging import log
 
+    try:
         market = exchange.markets.get(symbol)
         if not market:
-            for i in range(retry_limit):
-                try:
-                    log(f"[validate_qty] Market not found for {symbol}, reloading (attempt {i+1})", level="WARNING")
-                    exchange.load_markets()
-                    market = exchange.markets.get(symbol)
-                    if market:
-                        break
-                except Exception as e:
-                    log(f"[validate_qty] Retry {i+1} failed to load markets: {e}", level="ERROR")
-            if not market:
-                log(f"[validate_qty] Failed to load market info for {symbol}", level="ERROR")
-                return None
+            exchange.load_markets()
+            market = exchange.markets.get(symbol)
 
-        min_qty = float(market["limits"]["amount"].get("min", 0.0))
-        precision = int(market["precision"].get("amount", 8))
+        if not market:
+            log(f"[validate_qty] No market info for {symbol}", level="ERROR")
+            return None
 
+        # Получаем step_size из filters
         step_size = None
         for f in market["info"].get("filters", []):
             if f.get("filterType") == "LOT_SIZE":
-                step_size = float(f.get("stepSize", 0.0))
+                step_size = safe_float_conversion(f.get("stepSize", 0.001))
                 break
 
         if not step_size or step_size <= 0:
             log(f"[validate_qty] Invalid step_size for {symbol}: {step_size}", level="ERROR")
             return None
 
-        if qty < min_qty:
-            log(f"[validate_qty] Qty {qty} < min_qty {min_qty} for {symbol}", level="WARNING")
+        min_qty = safe_float_conversion(market["limits"]["amount"].get("min", 0.0))
+        precision = int(market.get("precision", {}).get("amount", 8))
+
+        qty = safe_float_conversion(qty)
+        if qty <= 0:
+            log(f"[validate_qty] Qty is non-positive: {qty}", level="WARNING")
             return None
 
+        # Округляем по step_size
         steps = round(qty / step_size)
         adjusted_qty = round(steps * step_size, precision)
 
-        log(f"[validate_qty] Adjusted qty from {qty} to {adjusted_qty} for {symbol}", level="DEBUG")
-
         if adjusted_qty < min_qty:
-            log(f"[validate_qty] Adjusted qty {adjusted_qty} < min_qty {min_qty} for {symbol}", level="WARNING")
-            return None
-
-        if adjusted_qty <= 0:
-            log(f"[validate_qty] Adjusted qty {adjusted_qty} <= 0 for {symbol}", level="WARNING")
+            log(f"[validate_qty] Adjusted qty {adjusted_qty} < min_qty {min_qty}", level="WARNING")
             return None
 
         return adjusted_qty
 
     except Exception as e:
-        log(f"[validate_qty] Failed to validate qty for {symbol}: {e}", level="ERROR")
+        log(f"[validate_qty] Error for {symbol}: {e}", level="ERROR")
         return None

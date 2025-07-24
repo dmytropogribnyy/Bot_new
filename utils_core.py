@@ -4,6 +4,7 @@ import json
 import os
 import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import Lock
 
@@ -553,6 +554,29 @@ def get_total_position_value():
     except Exception as e:
         log(f"[get_total_position_value] ❌ Ошибка при расчёте: {e}", level="ERROR")
         return 0.0
+
+
+def safe_float_conversion(value, default=0.0):
+    """Универсальная безопасная конвертация в float"""
+    if value is None:
+        return default
+    try:
+        if isinstance(value, str):
+            value = value.strip().replace(",", "")
+        if hasattr(value, "__float__"):
+            return float(value)
+        return float(str(value))
+    except (ValueError, TypeError, InvalidOperation) as e:
+        log(f"[SafeFloat] Failed to convert {value}: {e}", level="ERROR")
+        return default
+
+
+def safe_decimal(value):
+    try:
+        return Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError) as e:
+        log(f"[SafeDecimal] Failed to convert {value}: {e}", level="ERROR")
+        return Decimal("0")
 
 
 if __name__ == "__main__":

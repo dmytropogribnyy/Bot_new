@@ -354,21 +354,29 @@ def get_ticker_data(symbol):
 
 def round_step_size(symbol, qty):
     """
-    Округляет qty до допустимого step_size символа Binance,
-    используя exchange.amount_to_precision(...) с fallback.
+    Округляет qty согласно step_size, защищён от decimal/float ошибок
     """
-    from core.exchange_init import exchange
+    from utils_core import safe_float_conversion
     from utils_logging import log
 
     try:
-        rounded = exchange.amount_to_precision(symbol, qty)
-        return float(rounded)
+        qty_f = safe_float_conversion(qty)
+        rounded = exchange.amount_to_precision(symbol, qty_f)
+
+        if isinstance(rounded, str):
+            rounded = rounded.strip().replace(",", "")
+            return float(rounded)
+        elif hasattr(rounded, "__float__"):
+            return float(rounded)
+        else:
+            return float(str(rounded))
+
     except Exception as e:
-        log(f"[step_size] Failed to round via exchange for {symbol}: {e}", level="WARNING")
-        # Fallback на шаг 0.001
+        log(f"[step_size] Decimal error for {symbol}, qty={qty}: {e}", level="ERROR")
+        # fallback: округление вручную по 0.001
         step_size = 0.001
-        rounded_qty = qty - (qty % step_size)
-        return round(rounded_qty, 8)
+        fallback_qty = qty_f - (qty_f % step_size)
+        return round(fallback_qty, 6)
 
 
 def handle_rate_limits(func):

@@ -1253,145 +1253,113 @@ def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check
 
 def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     """
-    OctoMonitor v5.1 FINAL — безопасный мониторинг позиции:
-    - Stepwise TP, fallback SL, break-even, trailing TP, soft exit, post-hold recovery
-    - SL restore при исчезновении, AutoProfit, TP disappear check
-    - Закрытие через close_real_trade, а не напрямую
-    - Гибкое поведение в зависимости от min_qty, slippage, profit
+    Мониторит активную позицию и исполняет step TP, SL restore, AutoProfit, soft-exit и принудительное закрытие.
+    Версия v5.4 с полным step TP исполнением и SL qty валидацией.
     """
     import time
 
     from core.exchange_init import exchange
-    from core.tp_utils import adjust_microprofit_exit, validate_qty
+    from core.tp_utils import safe_round_and_validate
     from core.trade_engine import close_real_trade, get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import get_cached_balance, get_runtime_config, safe_call_retry
+    from utils_core import api_cache, cache_lock, get_runtime_config, safe_call_retry, safe_float_conversion
     from utils_logging import log
 
     config = get_runtime_config()
-    _MAX_HOLD_MINUTES = config.get("max_hold_minutes", 30)
-    _SOFT_EXIT_DELAY = config.get("soft_exit_delay_minutes", 10) * 60
-    _AUTO_PROFIT_PCT = config.get("auto_profit_threshold", 2.5)
-    _ATR_THRESH = config.get("atr_threshold_for_soft", 0.005)
-    _MIN_PROFIT_USD = 0.10
-    _MAX_SLIPPAGE = config.get("max_slippage_pct", 0.04)
-    _MIN_QTY = config.get("min_trade_qty", 0.0008)
-
-    step_levels = config.get("step_tp_levels", [0.06, 0.1, 0.18])
-    step_sizes = config.get("step_tp_sizes", [0.3, 0.3, 0.3])
-    step_hits = [False] * len(step_levels)
+    step_levels = config.get("step_tp_levels", [0.004, 0.008, 0.012])
+    step_sizes = config.get("step_tp_sizes", [0.4, 0.3, 0.3])
+    auto_profit_pct = config.get("auto_profit_threshold", 1.5)
+    max_hold = config.get("max_hold_minutes", 30) * 60
 
     is_buy = side.lower() == "buy"
-    break_even_set = False
-    _trailing_tp_active = False
-    sl_restored = False
+    step_hits = [False] * len(step_levels)
+
+    if start_time is None or not isinstance(start_time, float):
+        start_time = time.time()
+
+    log(f"[Monitor] Started monitoring {symbol} at entry={entry_price} qty={initial_qty}", level="INFO")
 
     while True:
-        try:
-            trade = trade_manager.get_trade(symbol)
-            if not trade:
-                log(f"[Monitor] {symbol} trade not found — exiting", level="WARNING")
-                return
+        time.sleep(5)
+        qty = get_position_size(symbol)
 
-            qty = get_position_size(symbol)
-            if qty <= 0:
-                log(f"[Monitor] {symbol}: position closed — exit", level="INFO")
-                return
-            elif qty < _MIN_QTY:
-                log(f"[Monitor] {symbol}: qty {qty:.6f} < min — passive monitoring", level="INFO")
+        if qty <= 0:
+            log(f"[Monitor] {symbol}: position closed — exit", level="INFO")
+            with cache_lock:
+                api_cache["positions"]["timestamp"] = 0
+            trade_manager.remove_trade(symbol)
+            from core.engine_controller import sync_open_positions
 
-            price_data = safe_call_retry(exchange.fetch_ticker, symbol)
-            if not price_data:
-                time.sleep(5)
+            sync_open_positions()
+            return
+
+        elapsed = time.time() - start_time
+        if elapsed > max_hold:
+            log(f"[Monitor] {symbol}: max hold time exceeded → closing", level="WARNING")
+            send_telegram_message(f"⏳ Max hold time exceeded for {symbol} → closing position")
+            close_real_trade(symbol, reason="timeout")
+            return
+
+        price_data = safe_call_retry(exchange.fetch_ticker, symbol)
+        if not price_data:
+            continue
+        current_price = safe_float_conversion(price_data.get("last", 0))
+
+        if current_price <= 0:
+            log(f"[Monitor] {symbol}: invalid current price: {current_price}", level="WARNING")
+            continue
+
+        if is_buy:
+            profit_pct = ((current_price - entry_price) / entry_price) * 100
+        else:
+            profit_pct = ((entry_price - current_price) / entry_price) * 100
+
+        for i, level in enumerate(step_levels):
+            if not step_hits[i] and profit_pct >= level * 100:
+                qty_raw = qty * step_sizes[i]
+                qty_i = safe_round_and_validate(symbol, qty_raw)
+                if qty_i is None or qty_i <= 0:
+                    log(f"[Monitor] Skipping TP{i+1} for {symbol} due to invalid qty", level="WARNING")
+                    continue
+                try:
+                    order_side = "sell" if is_buy else "buy"
+                    safe_call_retry(exchange.create_market_order, symbol, order_side, qty_i, params={"reduceOnly": True})
+                    step_hits[i] = True
+                    send_telegram_message(f"✅ TP{i+1} HIT: {symbol} +{profit_pct:.2f}% qty={qty_i:.4f}")
+                    trade_manager.update_trade(symbol, f"tp{i+1}_hit", True)
+                except Exception as e:
+                    log(f"[Monitor] Failed to execute TP{i+1} for {symbol}: {e}", level="ERROR")
+
+        if profit_pct >= auto_profit_pct:
+            send_telegram_message(f"🚀 AutoProfit threshold reached for {symbol} ({profit_pct:.2f}%) → closing")
+            close_real_trade(symbol, reason="auto_profit")
+            return
+
+        open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)
+        trade = trade_manager.get_trade(symbol)
+        sl_price = trade.get("sl_price") if trade else None
+        sl_restored = trade.get("sl_restored", False) if trade else False
+
+        if not open_orders and not sl_restored and sl_price and qty > 0:
+            sl_price = safe_float_conversion(sl_price)
+            sl_distance = abs(current_price - sl_price) / current_price
+            if sl_distance < 0.01:
+                sl_price = round(current_price * (0.99 if is_buy else 1.01), 6)
+                log(f"[Monitor] Adjusted SL to {sl_price} (was too close)", level="INFO")
+            qty_validated = safe_round_and_validate(symbol, qty)
+            if not qty_validated:
+                log("[Monitor] Can't validate qty for SL restore", level="WARNING")
                 continue
-
-            current_price = price_data["last"]
-            profit_pct = ((current_price - entry_price) / entry_price) * 100 if is_buy else ((entry_price - current_price) / entry_price) * 100
-            profit_usd = abs(current_price - entry_price) * qty
-            elapsed = time.time() - start_time.timestamp()
-
-            open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)
-
-            # SL restore if all orders gone and not restored yet
-            if not open_orders and not sl_restored:
-                sl_price = trade.get("sl_price")
-                if sl_price and validate_qty(symbol, qty):
-                    safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", qty, params={"stopPrice": sl_price, "reduceOnly": True})
-                    send_telegram_message(f"🛡 SL restored for {symbol}")
-                    log(f"[Monitor] Restored SL for {symbol} → {sl_price}", level="WARNING")
-                    sl_restored = True
-
-            # Stepwise TP
-            for i, level in enumerate(step_levels):
-                if not step_hits[i] and profit_pct >= level * 100:
-                    qty_i = round(qty * step_sizes[i], 6)
-                    if validate_qty(symbol, qty_i):
-                        safe_call_retry(exchange.create_market_order, symbol, "sell" if is_buy else "buy", qty_i, {"reduceOnly": True})
-                        trade_manager.update_trade(symbol, f"tp{i+1}_hit", True)
-                        trade_manager.update_trade(symbol, "tp_total_qty", round(trade.get("tp_total_qty", 0) + qty_i, 6))
-                        send_telegram_message(f"✅ TP{i+1} HIT: {symbol} +{int(level*100)}% qty={qty_i:.4f}")
-                        step_hits[i] = True
-
-            # Break-even SL
-            if not break_even_set and (profit_pct >= 1.5 or trade.get("tp1_hit")):
-                be_sl = round(entry_price * (1.001 if is_buy else 0.999), 6)
-                for o in open_orders:
-                    if o["type"].upper() == "STOP_MARKET":
-                        exchange.cancel_order(o["id"], symbol)
-                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", qty, params={"stopPrice": be_sl, "reduceOnly": True})
-                trade_manager.update_trade(symbol, "sl_price", be_sl)
-                trade_manager.update_trade(symbol, "break_even_set", True)
-                send_telegram_message(f"🔒 Break-even SL set for {symbol} → {be_sl}")
-                break_even_set = True
-
-            # Auto-profit
-            if profit_pct >= _AUTO_PROFIT_PCT and not trade.get("tp1_hit"):
-                send_telegram_message(f"💰 Auto-profit: closing {symbol} at {profit_pct:.2f}%")
-                trade_manager.update_trade(symbol, "auto_profit_hit", True)
-                close_real_trade(symbol, reason="auto_profit")
-                return
-
-            # Soft-exit after delay
-            if elapsed > _SOFT_EXIT_DELAY and not any(step_hits):
-                atr = trade.get("atr", 0.0)
-                if atr < _ATR_THRESH and profit_usd >= _MIN_PROFIT_USD:
-                    if adjust_microprofit_exit(profit_pct, get_cached_balance(), elapsed / 60, qty / get_cached_balance()):
-                        if abs(current_price - entry_price) / entry_price < _MAX_SLIPPAGE:
-                            trade_manager.update_trade(symbol, "soft_exit_hit", True)
-                            send_telegram_message(f"📤 Soft exit triggered: {symbol} +{profit_pct:.2f}%")
-                            close_real_trade(symbol, reason="soft_exit")
-                            return
-
-            # Max-hold timeout + post-recovery
-            if elapsed >= _MAX_HOLD_MINUTES * 60:
-                if profit_pct >= 0:
-                    trade_manager.update_trade(symbol, "time_limit_hit", True)
-                    send_telegram_message(f"⏰ TIME EXIT: {symbol} +{profit_pct:.2f}%")
-                    close_real_trade(symbol, reason="time_limit_profit")
-                    return
+            try:
+                sl_side = "sell" if is_buy else "buy"
+                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", sl_side, qty_validated, params={"stopPrice": sl_price, "reduceOnly": True})
+                send_telegram_message(f"🛡 SL restored for {symbol}")
+                trade_manager.update_trade(symbol, "sl_restored", True)
+            except Exception as e:
+                if "immediately trigger" in str(e):
+                    log("[Monitor] SL restore failed - too close to price", level="WARNING")
                 else:
-                    send_telegram_message(f"⏳ {symbol} hit time limit in loss — waiting 5min for recovery")
-                    start_recovery = time.time()
-                    while time.time() - start_recovery < 300:
-                        price_data = safe_call_retry(exchange.fetch_ticker, symbol)
-                        if price_data:
-                            current_price = price_data["last"]
-                            profit_pct = ((current_price - entry_price) / entry_price) * 100 if is_buy else ((entry_price - current_price) / entry_price) * 100
-                            if profit_pct >= 0:
-                                send_telegram_message(f"✅ {symbol} recovered to 0% → closing")
-                                trade_manager.update_trade(symbol, "post_hold_hit", True)
-                                close_real_trade(symbol, reason="post_hold_recovery")
-                                return
-                        time.sleep(10)
-                    send_telegram_message(f"🔻 TIME EXIT LOSS: {symbol} at {profit_pct:.2f}%")
-                    close_real_trade(symbol, reason="time_limit_loss")
-                    return
-
-            time.sleep(5)
-
-        except Exception as e:
-            log(f"[Monitor] Error in {symbol}: {e}", level="ERROR")
-            time.sleep(10)
+                    log(f"[Monitor] SL restore error: {e}", level="ERROR")
 
 
 def handle_panic(stop_event):
