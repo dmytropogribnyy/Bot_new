@@ -375,10 +375,11 @@ def save_active_trades():
 
 def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unknown"):
     """
-    Восстановленная версия 1.3.3 с Confirm Loop fix (v3.8 Stage 2.1):
+    Финальная версия enter_trade (v3.8 Stage 2.2):
     - Сохраняет структуру 1.3.3 + Stage 1
-    - Добавляет Confirm retry + sync внутри цикла
-    - Остальная логика без изменений
+    - Подтверждение позиции через Confirm Loop с 10 попытками
+    - Обновление qty на подтверждённый
+    - Защита от tp_sl_fail и fallback закрытия
     """
     import time
     from threading import Lock, Thread
@@ -398,8 +399,9 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     from core.signal_utils import passes_1plus1
     from core.strategy import fetch_data_multiframe
     from core.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
+    from core.trade_engine import get_position_size, save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import extract_symbol, get_cached_balance, is_optimal_trading_hour, load_state, safe_call_retry
+    from utils_core import api_cache, cache_lock, extract_symbol, get_cached_balance, is_optimal_trading_hour, safe_call_retry
     from utils_logging import log, now
 
     global open_positions_count, dry_run_positions_count
@@ -519,8 +521,38 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             send_telegram_message(f"❌ Market order issue for {symbol}", force=True)
             return False
 
+        # ✅ Критичный блок подтверждения позиции
+        actual_qty = result.get("filled_qty", qty)
         entry_price = result.get("avg_price", entry_price)
         order_id = result.get("result", {}).get("id")
+
+        max_retries = 10
+        position_confirmed = False
+        confirmed_qty = 0
+
+        log(f"[Enter Trade] Waiting for position confirmation for {symbol}...", level="INFO")
+
+        for i in range(max_retries):
+            time.sleep(0.5)
+            with cache_lock:
+                api_cache["positions"]["timestamp"] = 0
+            sync_open_positions()
+            current_qty = get_position_size(symbol)
+            if current_qty > 0:
+                position_confirmed = True
+                confirmed_qty = current_qty
+                log(f"[Enter Trade] Position confirmed: {symbol} qty={confirmed_qty}", level="INFO")
+                break
+            if i == 4:
+                exchange.load_markets()
+                log(f"[Enter Trade] Reloaded markets, attempt {i+1}/{max_retries}", level="DEBUG")
+
+        if not position_confirmed:
+            log(f"[Enter Trade] WARNING: Position not confirmed after {max_retries} attempts", level="WARNING")
+            send_telegram_message(f"⚠️ {symbol}: Position not confirmed, using order qty for TP/SL")
+            confirmed_qty = actual_qty
+        qty = confirmed_qty
+        log(f"[Enter Trade] Using qty={qty} for TP/SL placement", level="INFO")
 
         opened_position = True
         with open_positions_lock:
@@ -561,23 +593,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
 
         trade_manager.add_trade(symbol, trade_data)
         save_active_trades()
-
-        sync_open_positions()
-        time.sleep(0.5)
-        sync_open_positions()
-
-        confirm_success = False
-        for attempt in range(5):
-            time.sleep(0.2)
-            if get_position_size(symbol) > 0:
-                confirm_success = True
-                break
-            elif attempt == 2:
-                log(f"[Confirm] {symbol}: position not found, retrying sync_open_positions() (attempt {attempt+1})", level="INFO")
-                sync_open_positions()
-
-        if not confirm_success:
-            send_telegram_message(f"⚠️ {symbol}: Position not confirmed after retries — fallback qty will be used!", force=True)
 
         try:
             if DRY_RUN:
@@ -898,157 +913,157 @@ def close_dry_trade(symbol):
             trade_manager.set_last_closed_time(symbol, time.time())
 
 
-def close_real_trade(symbol: str, reason: str = "manual") -> None:
+def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     """
-    Закрытие сделки:
-    1. Отмена ордеров;
-    2. Пять попыток закрытия (qty + fallback);
-    3. Если не удалось — pending_exit + hang_trades.json;
-    4. Только при успехе — запись в record_trade_result(...).
+    Гарантированное закрытие позиции:
+    - Пытается закрыть до 5 раз (market → fallback IOC limit)
+    - Проверяет остаток позиции после каждой попытки
+    - Вызывает record_trade_result только при успехе
+    - Записывает в hang_trades.json при ошибке
     """
-    import decimal
     import json
     import time
     from pathlib import Path
 
-    from common.config_loader import get_runtime_config
     from core.exchange_init import exchange
-    from core.tp_utils import validate_qty
+    from core.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import normalize_symbol, safe_call_retry
+    from utils_core import get_position_size, initialize_cache, normalize_symbol, safe_call_retry
     from utils_logging import log
 
     global DRY_RUN
 
     symbol = normalize_symbol(symbol)
-    config = get_runtime_config()
-    position_close_threshold = config.get("position_close_threshold", 1e-6)
-    retry_limit = config.get("position_close_retry_limit", 5)
+    log(f"[Close] Starting close for {symbol}, reason={reason}", level="INFO")
 
-    state = load_state()
     trade = trade_manager.get_trade(symbol)
-
     if not trade:
-        if not state.get("stopping") and not state.get("shutdown"):
-            log(f"[SmartSwitch] No active trade for {symbol}", level="WARNING")
-        return
+        log(f"[Close] No active trade for {symbol}", level="WARNING")
+        return False
+
+    side = trade.get("side", "buy")
+    entry_price = trade.get("entry", 0)
 
     try:
-        exchange.cancel_all_orders(symbol)
-        log(f"[Cleanup] Cancelled all open orders for {symbol}", level="INFO")
-    except Exception as e:
-        log(f"[Cleanup] Failed to cancel all orders for {symbol}: {e}", level="WARNING")
-
-    try:
-        positions = exchange.fetch_positions()
-        position = next((p for p in positions if p["symbol"] == symbol and float(p.get("contracts", 0)) > 0), None)
-    except Exception as e:
-        log(f"[PositionCheck] Failed to fetch positions for {symbol}: {e}", level="ERROR")
-        return
-
-    if not position:
-        log(f"[SmartSwitch] No open position for {symbol}, but trade exists — possible stale state", level="WARNING")
-        return
-
-    side = trade["side"]
-    qty = float(position["contracts"])
-    exit_price = None
-    retry_success = False
-
-    try:
-        ticker = safe_call_retry(exchange.fetch_ticker, symbol, label=f"fetch_ticker {symbol}")
-        exit_price = ticker["last"] if ticker else trade["entry"]
-    except Exception as e:
-        log(f"[SmartSwitch] Failed to fetch ticker for {symbol}: {e}", level="WARNING")
-        exit_price = trade["entry"]
-
-    for attempt in range(retry_limit):
-        try:
-            if DRY_RUN:
-                log(f"[SmartSwitch] DRY_RUN close for {symbol}, qty={qty}", level="WARNING")
-                retry_success = True
-                break
-
-            _close_func = safe_call_retry(
-                lambda: exchange.create_market_sell_order(symbol, qty, params={"reduceOnly": True})
-                if side.lower() == "buy"
-                else lambda: exchange.create_market_buy_order(symbol, qty, params={"reduceOnly": True}),
-                label=f"close_attempt_{attempt}_{symbol}",
-            )
-
-            time.sleep(1)
-            remaining = get_position_size(symbol)
-
-            if remaining < position_close_threshold:
-                log(f"[SmartSwitch] Successfully closed {symbol}, qty={qty}", level="INFO")
-                retry_success = True
-                break
-            else:
-                log(f"[SmartSwitch] Attempt {attempt+1}: Position still open: {remaining}", level="WARNING")
-
-        except (decimal.InvalidOperation, decimal.ConversionSyntax) as e:
-            log(f"[SmartSwitch] Decimal error on attempt {attempt+1} for {symbol}: {e}", level="ERROR")
+        orders = exchange.fetch_open_orders(symbol)
+        for order in orders:
             try:
-                fallback_qty = validate_qty(symbol, qty)
-                if not fallback_qty:
-                    raise Exception(f"[SmartSwitch] Qty {qty} invalid or too small for {symbol}, fallback aborted.")
+                exchange.cancel_order(order["id"], symbol)
+                log(f"[Close] Cancelled order {order['id']} for {symbol}", level="DEBUG")
+            except Exception as e:
+                log(f"[Close] Failed to cancel order: {e}", level="WARNING")
+    except Exception as e:
+        log(f"[Close] Error fetching orders: {e}", level="WARNING")
 
-                _fallback_order = safe_call_retry(
-                    lambda: exchange.create_market_sell_order(symbol, fallback_qty, params={"reduceOnly": True})
-                    if side.lower() == "buy"
-                    else lambda: exchange.create_market_buy_order(symbol, fallback_qty, params={"reduceOnly": True}),
-                    label=f"fallback_close_{symbol}",
-                )
-                time.sleep(1)
+    max_attempts = 5
+    close_success = False
+    exit_price = None
+
+    for attempt in range(max_attempts):
+        try:
+            current_qty = get_position_size(symbol)
+            if current_qty < 1e-6:
+                log(f"[Close] Position already closed for {symbol}", level="INFO")
+                close_success = True
+                break
+
+            ticker = safe_call_retry(exchange.fetch_ticker, symbol)
+            current_price = ticker.get("last") if ticker else entry_price
+
+            log(f"[Close] Attempt {attempt+1}: closing {symbol} qty={current_qty:.6f}", level="INFO")
+            close_side = "sell" if side.lower() == "buy" else "buy"
+
+            if DRY_RUN:
+                log(f"[Close] DRY_RUN mode - simulating close for {symbol}", level="INFO")
+                close_success = True
+                exit_price = current_price
+                break
+
+            try:
+                order = exchange.create_market_order(symbol, close_side, current_qty, params={"reduceOnly": True})
+                exit_price = order.get("average", order.get("price", current_price))
+                time.sleep(2)
                 remaining = get_position_size(symbol)
 
-                if remaining < position_close_threshold:
-                    log(f"[SmartSwitch] Closed with fallback qty={fallback_qty} for {symbol}", level="INFO")
-                    retry_success = True
+                if remaining < 1e-6:
+                    log(f"[Close] Successfully closed {symbol} at {exit_price}", level="INFO")
+                    close_success = True
                     break
+                else:
+                    log(f"[Close] Still open: {remaining:.6f}", level="WARNING")
 
-            except Exception as fallback_error:
-                log(f"[SmartSwitch] Fallback close failed for {symbol}: {fallback_error}", level="ERROR")
+            except Exception as e:
+                log(f"[Close] Market order failed for {symbol}: {e}", level="ERROR")
+
+                # Fallback: limit order IOC
+                try:
+                    limit_price = current_price * 0.998 if close_side == "sell" else current_price * 1.002
+                    order = exchange.create_limit_order(symbol, close_side, current_qty, limit_price, params={"reduceOnly": True, "timeInForce": "IOC"})
+                    exit_price = order.get("average", limit_price)
+                    time.sleep(2)
+                    remaining = get_position_size(symbol)
+
+                    if remaining < 1e-6:
+                        log(f"[Close] Fallback IOC close success for {symbol}", level="INFO")
+                        close_success = True
+                        break
+                    else:
+                        log(f"[Close] Fallback IOC: still open: {remaining:.6f}", level="WARNING")
+
+                except Exception as e2:
+                    log(f"[Close] Fallback IOC failed: {e2}", level="ERROR")
 
         except Exception as e:
-            log(f"[SmartSwitch] Close error on attempt {attempt+1} for {symbol}: {e}", level="ERROR")
-            time.sleep(1)
+            log(f"[Close] Attempt {attempt+1} error: {e}", level="ERROR")
 
-    if retry_success:
-        record_trade_result(symbol, side=side, entry_price=trade.get("entry"), exit_price=exit_price, result_type=reason)
+        safe_call_retry(exchange.fetch_positions, label="post_close_sync")
+        time.sleep(1)
+
+    final_qty = get_position_size(symbol)
+    if final_qty < 1e-6:
+        close_success = True
+
+    if close_success:
+        if not exit_price:
+            try:
+                ticker = safe_call_retry(exchange.fetch_ticker, symbol)
+                exit_price = ticker.get("last") or entry_price
+            except Exception:
+                exit_price = entry_price
+
+        log(f"[Close] Recording trade result for {symbol}", level="INFO")
+        record_trade_result(symbol=symbol, side=side, entry_price=entry_price, exit_price=exit_price, result_type=reason)
 
         trade_manager.remove_trade(symbol)
         trade_manager.set_last_closed_time(symbol, time.time())
-        log(f"[SmartSwitch] Removed {symbol} from trade manager", level="DEBUG")
+        save_active_trades()
         initialize_cache()
-        return
+        log(f"[Close] ✅ Completed close for {symbol}", level="INFO")
+        return True
 
-    log(f"[SmartSwitch] ❌ Could not close {symbol} after {retry_limit} attempts", level="ERROR")
-    send_telegram_message(f"🚨 Close failed after retries for {symbol} — manual action required (qty={qty})", force=True)
+    # ❌ Failed
+    log(f"[Close] ❌ FAILED to close {symbol} after {max_attempts} attempts", level="ERROR")
+    send_telegram_message(f"🚨 URGENT: Failed to close {symbol} - manual intervention required!")
 
     trade["pending_exit"] = True
-    trade["exit_fail_reason"] = "manual_close_failed"
-    for key, value in trade.items():
-        trade_manager.update_trade(symbol, key, value)
-    log(f"[SmartSwitch] Updated pending_exit for {symbol} after close failure", level="WARNING")
+    trade["exit_fail_reason"] = reason
+    trade_manager.update_trade(symbol, "pending_exit", True)
+    trade_manager.update_trade(symbol, "exit_fail_reason", reason)
 
     try:
         hangs_path = Path("data/hang_trades.json")
+        hangs = {}
         if hangs_path.exists():
             with open(hangs_path, "r") as f:
                 hangs = json.load(f)
-        else:
-            hangs = {}
-
-        hangs[symbol] = {"qty": qty, "side": side, "timestamp": time.time()}
-
+        hangs[symbol] = {"qty": final_qty, "side": side, "reason": reason, "timestamp": time.time()}
         with open(hangs_path, "w") as f:
             json.dump(hangs, f, indent=2)
-
-        log(f"[SmartSwitch] Added {symbol} to hang_trades.json", level="WARNING")
-
+        log(f"[Close] Added {symbol} to hang_trades.json", level="WARNING")
     except Exception as e:
-        log(f"[SmartSwitch] Failed to write hang_trades.json: {e}", level="ERROR")
+        log(f"[Close] Failed to write hang_trades.json: {e}", level="ERROR")
+
+    return False
 
 
 def open_real_trade(symbol, direction, qty, entry_price):
@@ -1238,161 +1253,145 @@ def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check
 
 def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     """
-    OctoMonitor v4.0 FINAL — безопасный мониторинг позиции:
-    - Stepwise TP, fallback, break-even, trailing TP, soft exit, SL restore
-    - ❗ record_trade_result заменён на close_real_trade
-    - ✅ SL/TP восстанавливаются только при валидном qty
-    - ✅ Контроль min_trade_qty — лог, но без блокировок
+    OctoMonitor v5.1 FINAL — безопасный мониторинг позиции:
+    - Stepwise TP, fallback SL, break-even, trailing TP, soft exit, post-hold recovery
+    - SL restore при исчезновении, AutoProfit, TP disappear check
+    - Закрытие через close_real_trade, а не напрямую
+    - Гибкое поведение в зависимости от min_qty, slippage, profit
     """
     import time
 
-    from core.binance_api import fetch_ohlcv
     from core.exchange_init import exchange
     from core.tp_utils import adjust_microprofit_exit, validate_qty
+    from core.trade_engine import close_real_trade, get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import get_cached_balance, get_runtime_config, safe_call_retry
     from utils_logging import log
 
     config = get_runtime_config()
-    _MAX_HOLD_MINUTES = config.get("max_hold_minutes", 60)
-    _SL_PRIORITY = config.get("sl_must_trigger_first", False)
-    allow_soft_exit_at_zero = config.get("soft_exit_allow_at_zero", False)
-    _min_step_hit_required = config.get("minimum_step_profit_hit_required", False)
-    _max_slippage_pct = config.get("max_slippage_pct", 0.04)
-    _soft_exit_delay_sec = config.get("soft_exit_delay_minutes", 10) * 60
-    _min_soft_profit_pct = config.get("min_soft_profit_pct", 0.3)
-    _atr_threshold_for_soft = config.get("atr_threshold_for_soft", 0.005)
-    _auto_profit_pct = config.get("auto_profit_trigger_pct", 2.5)
+    _MAX_HOLD_MINUTES = config.get("max_hold_minutes", 30)
+    _SOFT_EXIT_DELAY = config.get("soft_exit_delay_minutes", 10) * 60
+    _AUTO_PROFIT_PCT = config.get("auto_profit_threshold", 2.5)
+    _ATR_THRESH = config.get("atr_threshold_for_soft", 0.005)
+    _MIN_PROFIT_USD = 0.10
+    _MAX_SLIPPAGE = config.get("max_slippage_pct", 0.04)
+    _MIN_QTY = config.get("min_trade_qty", 0.0008)
 
-    step_levels = config.get("step_tp_levels", [0.10, 0.20, 0.30])
-    step_sizes = config.get("step_tp_sizes", [0.1] * len(step_levels))
+    step_levels = config.get("step_tp_levels", [0.06, 0.1, 0.18])
+    step_sizes = config.get("step_tp_sizes", [0.3, 0.3, 0.3])
     step_hits = [False] * len(step_levels)
-    tp_touch_flags = [False] * len(step_levels)
-    _tp_touch_times = [None] * len(step_levels)
 
     is_buy = side.lower() == "buy"
     break_even_set = False
-    trailing_tp_active = False
-    _last_fetched_price = entry_price
-    _sl_restored_once = False
-    min_trade_qty = config.get("min_trade_qty", 0.0008)
+    _trailing_tp_active = False
+    sl_restored = False
 
     while True:
         try:
             trade = trade_manager.get_trade(symbol)
             if not trade:
-                log(f"[Monitor] {symbol} ➤ trade not found — stopping", level="WARNING")
+                log(f"[Monitor] {symbol} trade not found — exiting", level="WARNING")
                 return
 
-            current_qty = get_position_size(symbol)
-            if current_qty <= 0:
+            qty = get_position_size(symbol)
+            if qty <= 0:
                 log(f"[Monitor] {symbol}: position closed — exit", level="INFO")
                 return
-            elif current_qty <= min_trade_qty:
-                log(f"[Monitor] {symbol}: qty at min threshold ({current_qty:.6f}) — monitor for SL/TP", level="INFO")
-                # send_telegram_message(f"⚠️ {symbol}: qty at min threshold ({current_qty:.6f}) — monitoring for SL/TP")
+            elif qty < _MIN_QTY:
+                log(f"[Monitor] {symbol}: qty {qty:.6f} < min — passive monitoring", level="INFO")
 
-            price_data = safe_call_retry(exchange.fetch_ticker, symbol, label=f"monitor_{symbol}")
+            price_data = safe_call_retry(exchange.fetch_ticker, symbol)
             if not price_data:
                 time.sleep(5)
                 continue
 
             current_price = price_data["last"]
-            _last_fetched_price = current_price
             profit_pct = ((current_price - entry_price) / entry_price) * 100 if is_buy else ((entry_price - current_price) / entry_price) * 100
-            profit_usd = abs(current_price - entry_price) * current_qty
+            profit_usd = abs(current_price - entry_price) * qty
             elapsed = time.time() - start_time.timestamp()
 
             open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)
 
-            # ✅ SL restore fix with qty validation
-            sl_restore_attempted = trade.get("sl_restore_attempted", False)
-            if current_qty > 0 and not open_orders and not sl_restore_attempted:
-                valid_qty = validate_qty(symbol, current_qty)
-                if valid_qty:
-                    sl_price = trade.get("sl_price")
-                    if sl_price:
-                        safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", valid_qty, None, {"stopPrice": sl_price, "reduceOnly": True})
-                        send_telegram_message(f"🛡 Restored SL for {symbol}")
-                        _sl_restored_once = True
-                trade_manager.update_trade(symbol, "sl_restore_attempted", True)
+            # SL restore if all orders gone and not restored yet
+            if not open_orders and not sl_restored:
+                sl_price = trade.get("sl_price")
+                if sl_price and validate_qty(symbol, qty):
+                    safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", qty, params={"stopPrice": sl_price, "reduceOnly": True})
+                    send_telegram_message(f"🛡 SL restored for {symbol}")
+                    log(f"[Monitor] Restored SL for {symbol} → {sl_price}", level="WARNING")
+                    sl_restored = True
 
+            # Stepwise TP
             for i, level in enumerate(step_levels):
-                _tp_price = entry_price * (1 + level) if is_buy else entry_price * (1 - level)
                 if not step_hits[i] and profit_pct >= level * 100:
-                    qty = round(current_qty * step_sizes[i], 6)
-                    if validate_qty(symbol, qty):
-                        safe_call_retry(exchange.create_market_order, symbol, "sell" if is_buy else "buy", qty, {"reduceOnly": True})
+                    qty_i = round(qty * step_sizes[i], 6)
+                    if validate_qty(symbol, qty_i):
+                        safe_call_retry(exchange.create_market_order, symbol, "sell" if is_buy else "buy", qty_i, {"reduceOnly": True})
                         trade_manager.update_trade(symbol, f"tp{i+1}_hit", True)
-                        trade_manager.update_trade(symbol, "tp_total_qty", round(trade.get("tp_total_qty", 0) + qty, 6))
-                        send_telegram_message(f"🌟 TP{i+1} hit +{int(level*100)}% → {symbol} qty={qty:.3f}")
+                        trade_manager.update_trade(symbol, "tp_total_qty", round(trade.get("tp_total_qty", 0) + qty_i, 6))
+                        send_telegram_message(f"✅ TP{i+1} HIT: {symbol} +{int(level*100)}% qty={qty_i:.4f}")
                         step_hits[i] = True
 
+            # Break-even SL
             if not break_even_set and (profit_pct >= 1.5 or trade.get("tp1_hit")):
-                new_sl = round(entry_price * 1.001, 6) if is_buy else round(entry_price * 0.999, 6)
+                be_sl = round(entry_price * (1.001 if is_buy else 0.999), 6)
                 for o in open_orders:
                     if o["type"].upper() == "STOP_MARKET":
                         exchange.cancel_order(o["id"], symbol)
-                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", current_qty, None, {"stopPrice": new_sl, "reduceOnly": True})
-                trade_manager.update_trade(symbol, "sl_price", new_sl)
+                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", "sell" if is_buy else "buy", qty, params={"stopPrice": be_sl, "reduceOnly": True})
+                trade_manager.update_trade(symbol, "sl_price", be_sl)
                 trade_manager.update_trade(symbol, "break_even_set", True)
-                send_telegram_message(f"🔒 SL moved to break-even for {symbol}")
+                send_telegram_message(f"🔒 Break-even SL set for {symbol} → {be_sl}")
                 break_even_set = True
 
-            if not trailing_tp_active and not trade.get("tp1_hit") and profit_pct > _auto_profit_pct:
-                ohlcv = fetch_ohlcv(symbol, timeframe="5m", limit=12)
-                closes = [c[4] for c in ohlcv[-6:]]
-                momentum = closes[-1] > closes[-2] > closes[-3] if is_buy else closes[-1] < closes[-2] < closes[-3]
-                if momentum:
-                    tp1 = current_price * 1.004 if is_buy else current_price * 0.996
-                    tp2 = current_price * 1.007 if is_buy else current_price * 0.993
-                    for o in open_orders:
-                        if o["type"].upper() == "LIMIT":
-                            exchange.cancel_order(o["id"], symbol)
-                    safe_call_retry(exchange.create_limit_order, symbol, "sell" if is_buy else "buy", current_qty, tp1, {"reduceOnly": True, "postOnly": True})
-                    safe_call_retry(exchange.create_limit_order, symbol, "sell" if is_buy else "buy", current_qty * 0.2, tp2, {"reduceOnly": True, "postOnly": True})
-                    trade_manager.update_trade(symbol, "trailing_tp_active", True)
-                    trade_manager.update_trade(symbol, "tp_prices", [tp1, tp2, tp2 * 1.5])
-                    send_telegram_message(f"🚀 Trailing TP adjusted for {symbol}")
-                    trailing_tp_active = True
+            # Auto-profit
+            if profit_pct >= _AUTO_PROFIT_PCT and not trade.get("tp1_hit"):
+                send_telegram_message(f"💰 Auto-profit: closing {symbol} at {profit_pct:.2f}%")
+                trade_manager.update_trade(symbol, "auto_profit_hit", True)
+                close_real_trade(symbol, reason="auto_profit")
+                return
 
-            if elapsed > _soft_exit_delay_sec and not any(step_hits):
-                if tp_touch_flags[0]:
-                    continue
-
+            # Soft-exit after delay
+            if elapsed > _SOFT_EXIT_DELAY and not any(step_hits):
                 atr = trade.get("atr", 0.0)
-                slippage = abs(current_price - entry_price) / entry_price
-
-                if atr >= _atr_threshold_for_soft:
-                    continue
-
-                if profit_usd >= 0.10 or (allow_soft_exit_at_zero and profit_usd >= 0):
-                    if not adjust_microprofit_exit(profit_pct, balance=get_cached_balance(), duration_minutes=elapsed / 60, position_percentage=current_qty / get_cached_balance()):
-                        continue
-
-                    if slippage < _max_slippage_pct:
-                        trade_manager.update_trade(symbol, "soft_exit_hit", True)
-                        close_real_trade(symbol)
-                        return
-
-            if elapsed > (_MAX_HOLD_MINUTES * 60) and profit_pct < 0:
-                recovery_start = time.time()
-                while time.time() - recovery_start < 300:
-                    price_data = safe_call_retry(exchange.fetch_ticker, symbol, label=f"post_hold_check {symbol}")
-                    if price_data:
-                        current_price = price_data["last"]
-                        profit_pct = ((current_price - entry_price) / entry_price) * 100 if is_buy else ((entry_price - current_price) / entry_price) * 100
-                        if profit_pct >= 0:
-                            trade_manager.update_trade(symbol, "post_hold_hit", True)
-                            close_real_trade(symbol)
+                if atr < _ATR_THRESH and profit_usd >= _MIN_PROFIT_USD:
+                    if adjust_microprofit_exit(profit_pct, get_cached_balance(), elapsed / 60, qty / get_cached_balance()):
+                        if abs(current_price - entry_price) / entry_price < _MAX_SLIPPAGE:
+                            trade_manager.update_trade(symbol, "soft_exit_hit", True)
+                            send_telegram_message(f"📤 Soft exit triggered: {symbol} +{profit_pct:.2f}%")
+                            close_real_trade(symbol, reason="soft_exit")
                             return
-                    time.sleep(5)
 
-            time.sleep(1)
+            # Max-hold timeout + post-recovery
+            if elapsed >= _MAX_HOLD_MINUTES * 60:
+                if profit_pct >= 0:
+                    trade_manager.update_trade(symbol, "time_limit_hit", True)
+                    send_telegram_message(f"⏰ TIME EXIT: {symbol} +{profit_pct:.2f}%")
+                    close_real_trade(symbol, reason="time_limit_profit")
+                    return
+                else:
+                    send_telegram_message(f"⏳ {symbol} hit time limit in loss — waiting 5min for recovery")
+                    start_recovery = time.time()
+                    while time.time() - start_recovery < 300:
+                        price_data = safe_call_retry(exchange.fetch_ticker, symbol)
+                        if price_data:
+                            current_price = price_data["last"]
+                            profit_pct = ((current_price - entry_price) / entry_price) * 100 if is_buy else ((entry_price - current_price) / entry_price) * 100
+                            if profit_pct >= 0:
+                                send_telegram_message(f"✅ {symbol} recovered to 0% → closing")
+                                trade_manager.update_trade(symbol, "post_hold_hit", True)
+                                close_real_trade(symbol, reason="post_hold_recovery")
+                                return
+                        time.sleep(10)
+                    send_telegram_message(f"🔻 TIME EXIT LOSS: {symbol} at {profit_pct:.2f}%")
+                    close_real_trade(symbol, reason="time_limit_loss")
+                    return
+
+            time.sleep(5)
 
         except Exception as e:
             log(f"[Monitor] Error in {symbol}: {e}", level="ERROR")
-            time.sleep(5)
+            time.sleep(10)
 
 
 def handle_panic(stop_event):

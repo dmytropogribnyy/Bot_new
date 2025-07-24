@@ -204,21 +204,39 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
 
 
 def sync_open_positions():
+    import json
+    import time
     from datetime import datetime
+    from pathlib import Path
 
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import normalize_symbol
+    from utils_core import api_cache, cache_lock, get_runtime_config, normalize_symbol
     from utils_logging import log
 
+    debug_mode = get_runtime_config().get("debug_mode", False)
+    debug_path = Path("logs/debug_monitoring_summary.json")
+
     try:
+        # КРИТИЧНО: Сброс кеша ДО получения
+        with cache_lock:
+            api_cache["positions"]["timestamp"] = 0
+            log("[SyncOpenPositions] Cache invalidated", level="DEBUG")
+
         positions = exchange.fetch_positions()
         synced_count = 0
+
+        # Сразу обновим кеш после получения
+        with cache_lock:
+            api_cache["positions"]["value"] = positions
+            api_cache["positions"]["timestamp"] = time.time()
+            log(f"[SyncOpenPositions] Cache updated with {len(positions)} positions", level="DEBUG")
+
         for p in positions:
             symbol = normalize_symbol(p["symbol"])
-
             position_amt = float(p.get("positionAmt", p.get("contracts", 0)))
+            debug_entry = {}
 
             if abs(position_amt) > 0 and not trade_manager.has_trade(symbol):
                 try:
@@ -265,6 +283,35 @@ def sync_open_positions():
                     send_telegram_message(f"🚨 DESYNC FIXED: Added {symbol} to manager")
 
                     synced_count += 1
+
+                    # 🧠 DEBUG LOGGING
+                    if debug_mode:
+                        debug_entry = {
+                            "symbol": symbol,
+                            "source": "sync_open_positions",
+                            "entry_price": entry,
+                            "qty": abs(position_amt),
+                            "order_id": "recovered",
+                            "timestamp": time.time(),
+                            "debug_note": "Recovered position into manager",
+                        }
+
+                        # Append to JSON list
+                        try:
+                            if debug_path.exists():
+                                with open(debug_path, "r") as f:
+                                    existing = json.load(f)
+                                    if not isinstance(existing, list):
+                                        existing = []
+                            else:
+                                existing = []
+
+                            existing.append(debug_entry)
+                            with open(debug_path, "w") as f:
+                                json.dump(existing, f, indent=2)
+
+                        except Exception as e:
+                            log(f"[DebugMonitor] Failed to write debug entry for {symbol}: {e}", level="WARNING")
 
                 except Exception as e:
                     log(f"[SyncOpenPositions] Error syncing {symbol}: {e}", level="WARNING")

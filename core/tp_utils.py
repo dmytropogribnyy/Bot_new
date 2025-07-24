@@ -238,12 +238,12 @@ def safe_round_and_validate(symbol: str, raw_qty: float) -> float | None:
 
 def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_prices, sl_price):
     """
-    Финальная версия установки TP/SL (v3.7):
-    - Если позиция не подтвердилась — используем qty из market-входа
-    - Адаптивный SL GAP: 0.3% с ретраями до 0.5–1.0% (если FORCE_SL_ALWAYS=True)
-    - Fallback TP1-only если qty < min_total_qty
-    - TP qty корректируется по фактическому остатку позиции
-    - Логирование всех этапов + контроль TP total
+    Обновлённая финальная версия установки TP/SL (v3.8 Final):
+    - Корректировка SL, если он слишком близко к текущей цене (<0.5%)
+    - Отмена, если SL после корректировки >5% от entry (по умолчанию)
+    - Поддержка fallback TP1-only
+    - Защита TP по qty и min_qty
+    - Логирование и Telegram уведомления
     """
     import time
 
@@ -299,16 +299,29 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         log(f"[PreCheck] Failed to fetch ticker for {symbol}: {e} — using entry_price", level="WARNING")
         current_price = entry_price
 
+    # === ФИКС 3: Корректировка SL ===
+    min_sl_gap_percent = 0.005
     sl_gap = abs(current_price - sl_price) / current_price
-    if sl_gap < 0.003:
-        adjusted_sl = round(current_price * (0.997 if side == "buy" else 1.003), 6)
-        log(f"[SL ADJUST] {symbol}: SL={sl_price:.4f} → {adjusted_sl:.4f} (Δ={sl_gap:.5%})", level="WARNING")
-        sl_price = adjusted_sl
-        send_telegram_message(f"⚠️ {symbol}: SL скорректирован (был слишком близко)")
-        if abs(current_price - sl_price) / current_price < 0.003:
-            send_telegram_message(f"❌ {symbol}: GAP до SL слишком мал даже после корректировки — отмена входа")
-            return False
+    if sl_gap < min_sl_gap_percent:
+        old_sl = sl_price
+        if side == "buy":
+            adjusted_sl = round(current_price * (1 - min_sl_gap_percent), 6)
+            sl_price = min(adjusted_sl, old_sl * 0.995)
+        else:
+            adjusted_sl = round(current_price * (1 + min_sl_gap_percent), 6)
+            sl_price = max(adjusted_sl, old_sl * 1.005)
+        log(f"[SL ADJUST] {symbol}: SL={old_sl:.4f} → {sl_price:.4f} (gap was {sl_gap:.3%}, current={current_price:.4f})", level="WARNING")
+        send_telegram_message(f"⚠️ {symbol}: SL adjusted to avoid immediate trigger")
 
+    actual_sl_percent = abs(sl_price - entry_price) / entry_price
+    max_sl_percent = 0.05
+    if actual_sl_percent > max_sl_percent:
+        log(f"[SL CHECK] {symbol}: SL distance {actual_sl_percent:.2%} exceeds max {max_sl_percent:.0%} — aborting entry", level="ERROR")
+        send_telegram_message(f"❌ {symbol}: SL too far from entry — closing position")
+        close_real_trade(symbol, reason="sl_distance_exceeded")
+        return False
+
+    # === Установка SL ===
     try:
         sl_order = safe_call_retry(
             lambda: exchange.create_order(
@@ -360,6 +373,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         else:
             return False
 
+    # === Установка TP ===
     fallback = qty < min_total_qty
     if fallback:
         tp_price = tp_prices[0]
@@ -386,24 +400,16 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             level = f"TP{i+1}"
             share = trade_data.get(f"tp{i+1}_share", 0.0)
             raw_qty = qty * share
-
             if raw_qty > current_position_qty:
-                log(f"[TP] {symbol} {level} raw_qty {raw_qty:.6f} > position {current_position_qty:.6f} — adjusting", level="INFO")
                 raw_qty = current_position_qty
-
             if raw_qty < min_qty:
-                log(f"[TP] {symbol} {level} skipped — raw_qty={raw_qty:.6f} < min_qty={min_qty}", level="DEBUG")
                 log_tp_sl_event(symbol, level, raw_qty, price, "skipped", reason="too_small")
                 continue
-
             qty_i = safe_round_and_validate(symbol, raw_qty)
             if not qty_i:
-                log(f"[TP] {symbol} {level} skipped — validate_qty failed (raw_qty={raw_qty:.6f})", level="WARNING")
                 log_tp_sl_event(symbol, level, raw_qty, price, "skipped", reason="rounding")
                 continue
-
             current_position_qty -= qty_i
-
             try:
                 order = safe_call_retry(
                     lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price, params={"reduceOnly": True})
@@ -417,8 +423,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                     log_tp_sl_event(symbol, level, qty_i, price, "success")
                     tp_total += qty_i
                     success_tp += 1
-            except Exception as e:
-                log(f"[TP] {symbol} {level} error: {e}", level="ERROR")
+            except Exception:
                 log_tp_sl_event(symbol, level, qty_i, price, "failure", reason="exception")
 
     trade_manager.update_trade(symbol, "tp_total_qty", tp_total)
@@ -429,7 +434,6 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         send_telegram_message(f"⚠️ {symbol}: Total TP qty too small ({tp_total:.6f}) — check position or min_qty")
 
     if tp_total == 0.0:
-        log(f"[TP/SL] {symbol}: No TP orders placed — fallback: {fallback}, SL success: {success_sl}", level="WARNING")
         send_telegram_message(f"⚠️ {symbol}: No TP orders placed — SL placed: {success_sl}, TP fallback: {fallback}")
 
     tp_sl_success = success_sl and tp_total > 0

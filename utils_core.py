@@ -422,17 +422,29 @@ def save_json_file(path, data, indent=2):
         return False
 
 
-def is_optimal_trading_hour(strict: bool = True):
+def is_optimal_trading_hour(strict: bool = True) -> bool:
     """
-    Проверка торгового окна.
-    - strict=True: разрешено только 8:00–23:59 UTC
-    - strict=False: ночью (2:00–8:00) разрешаем только сильные сигналы
+    Проверка, разрешено ли торговать в текущий час UTC согласно runtime_config.
+
+    - strict=True: используем monitoring_hours_utc (например, 2–23)
+    - strict=False: мягкое окно — разрешены только override-сделки
+
+    Возвращает True, если текущий UTC-час разрешён.
     """
-    hour = datetime.utcnow().hour
-    if strict:
-        return 8 <= hour <= 23
+    now_utc_hour = datetime.utcnow().hour
+    config = get_runtime_config()
+
+    allowed_hours = config.get("monitoring_hours_utc", list(range(24)))
+
+    if now_utc_hour in allowed_hours:
+        log(f"[TimeCheck] ⏰ UTC hour={now_utc_hour} → ✅ allowed", level="DEBUG")
+        return True
     else:
-        return 2 <= hour <= 7  # мягкое ночное окно
+        if not strict:
+            log(f"[TimeCheck] ⏰ UTC hour={now_utc_hour} → ⚠️ not allowed, but soft override enabled", level="DEBUG")
+            return True
+        log(f"[TimeCheck] ⏰ UTC hour={now_utc_hour} → ❌ not allowed (strict mode)", level="DEBUG")
+        return False
 
 
 def normalize_symbol(symbol) -> str:
