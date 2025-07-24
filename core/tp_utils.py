@@ -306,7 +306,8 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         current_price = entry_price
 
     # === ФИКС 3: Корректировка SL ===
-    min_sl_gap_percent = 0.005
+    min_sl_gap_percent = cfg.get("min_sl_gap_percent", 0.005)
+
     sl_gap = abs(current_price - sl_price) / current_price
     if sl_gap < min_sl_gap_percent:
         old_sl = sl_price

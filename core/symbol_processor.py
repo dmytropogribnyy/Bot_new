@@ -9,7 +9,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     from collections import defaultdict
 
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
-    from core.binance_api import convert_symbol
+    from core.binance_api import convert_symbol, fetch_ohlcv
     from core.exchange_init import exchange
     from core.strategy import should_enter_trade
     from core.tp_utils import calculate_tp_levels, check_min_profit
@@ -63,7 +63,7 @@ def process_symbol(symbol, balance, last_trade_times, lock):
             log(f"❌ Invalid signal for {symbol} (direction={direction}, qty={qty})", level="WARNING")
             return None
 
-        df = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=2)
+        df = fetch_ohlcv(symbol, timeframe="5m", limit=2)
         if not df or not isinstance(df, list) or len(df) < 2:
             log(f"⚠️ Skipping {symbol} — invalid OHLCV", level="ERROR")
             return None

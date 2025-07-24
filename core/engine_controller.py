@@ -167,8 +167,10 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
     """
     from core.trade_engine import close_real_trade, record_trade_result, trade_manager
     from telegram.telegram_utils import send_telegram_message
+    from utils_core import normalize_symbol
     from utils_logging import log
 
+    symbol = normalize_symbol(symbol)
     trade = trade_manager.get_trade(symbol)
     if not trade:
         log(f"[SoftExit] No active trade for {symbol}", level="WARNING")
@@ -179,27 +181,31 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
 
         if reason == "error":
             log(f"[SoftExit] Error reason for {symbol}, skipping finalization", level="WARNING")
-            trade["pending_exit"] = True
-            trade_manager.update_trade(symbol, trade)
+            trade_manager.update_trade(symbol, "pending_exit", True)
             send_telegram_message(f"⚠️ Soft exit error for {symbol}. Marked as pending_exit.")
             return
 
+        # Закрываем позицию
         close_real_trade(symbol)
         log(f"[SoftExit] Completed soft exit for {symbol}", level="INFO")
 
+        # Подстраховка: получаем exit_price, если он не установлен
         exit_price = trade.get("exit_price")
         if not exit_price:
-            ticker = exchange.fetch_ticker(symbol)
-            exit_price = ticker["last"] if ticker else 0.0
-            trade["exit_price"] = exit_price
-            trade_manager.update_trade(symbol, trade)
+            try:
+                ticker = exchange.fetch_ticker(symbol)
+                exit_price = ticker["last"] if ticker else 0.0
+            except Exception as e:
+                log(f"[SoftExit] Failed to fetch ticker: {e}", level="WARNING")
+                exit_price = 0.0
+            trade_manager.update_trade(symbol, "exit_price", exit_price)
 
-        record_trade_result(symbol, trade.get("side"), trade.get("entry_price"), exit_price, reason)
+        # Запись результата
+        record_trade_result(symbol=symbol, side=trade.get("side", "buy"), entry_price=trade.get("entry", 0.0), exit_price=exit_price, result_type=reason)
 
     except Exception as e:
         log(f"[SoftExit] ❌ Failed to close {symbol}: {e}", level="ERROR")
-        trade["pending_exit"] = True
-        trade_manager.update_trade(symbol, trade)
+        trade_manager.update_trade(symbol, "pending_exit", True)
         send_telegram_message(f"⚠️ Soft exit failed for {symbol}. Marked as pending_exit.", force=True)
 
 

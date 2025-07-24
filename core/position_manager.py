@@ -12,19 +12,32 @@ from utils_core import extract_symbol
 def check_entry_allowed(balance):
     """
     Проверяет, можно ли открыть новую позицию:
-    - по количеству позиций
+    - по количеству позиций (anti-desync: биржа vs менеджер)
     - по capital utilization
     - по лимиту на количество входов в час
     """
     from datetime import datetime, timedelta
 
     from core.trade_engine import trade_manager
-    from utils_core import get_runtime_config, get_total_position_value
+    from utils_core import get_cached_positions, get_runtime_config, get_total_position_value
     from utils_logging import log
 
     config = get_runtime_config()
     max_positions = get_max_positions(balance)
-    current_positions = trade_manager.count_active_positions()
+
+    # === Реальные позиции из кеша (быстрее и надёжнее)
+    try:
+        positions = get_cached_positions()
+        actual_positions = len([p for p in positions if abs(float(p.get("contracts", p.get("positionAmt", 0)) or 0)) > 0])
+    except Exception as e:
+        log(f"[EntryCheck] ⚠️ Failed to get cached positions: {e}", level="WARNING")
+        actual_positions = max_positions + 1  # fallback — запретить вход
+
+    # === Позиции, учтённые менеджером
+    manager_count = trade_manager.count_active_positions()
+
+    # === Финальное значение: минимум между фактическим и менеджером
+    current_positions = min(actual_positions, manager_count)
     now = datetime.utcnow()
 
     # === Check: максимальное количество одновременных позиций
@@ -37,7 +50,7 @@ def check_entry_allowed(balance):
         log("[EntryCheck] ❌ Cannot enter: balance is zero", level="WARNING")
         return False, "zero_balance"
 
-    # === Check: capital utilization (с учётом текущих открытых)
+    # === Check: capital utilization
     used_capital = get_total_position_value()
     max_cap_pct = config.get("max_capital_utilization_pct", 0.80)
     cap_utilization = used_capital / balance

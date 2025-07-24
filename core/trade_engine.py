@@ -119,7 +119,6 @@ def calculate_risk_amount(balance, symbol=None, atr_percent=None, volume_usdc=No
     - risk_multiplier
     - risk_factor (для symbol)
     - adaptive effective_sl = max(SL_PERCENT, atr_percent * 1.5)
-
     Возвращает:
         risk_amount (в USDC), effective_sl (в %)
     """
@@ -128,7 +127,6 @@ def calculate_risk_amount(balance, symbol=None, atr_percent=None, volume_usdc=No
     from utils_logging import log
 
     cfg = get_runtime_config()
-
     base_risk_pct = cfg.get("base_risk_pct", 0.0075)  # по умолчанию 0.75%
     risk_multiplier = cfg.get("risk_multiplier", 1.0)
     sl_percent = cfg.get("SL_PERCENT", 0.01)
@@ -141,30 +139,37 @@ def calculate_risk_amount(balance, symbol=None, atr_percent=None, volume_usdc=No
     # === Учитываем риск-фактор (если symbol указан)
     risk_factor = 1.0
     if symbol:
-        rf, _ = get_symbol_risk_factor(symbol)
+        rf, _ = get_symbol_risk_factor(symbol)  # ✅ Исправлено
         risk_factor = rf
         log(f"[Risk] Risk factor for {symbol}: {risk_factor:.2f}", level="DEBUG")
 
     # === Расчёт итогового риска
     risk_amount = balance * base_risk_pct * risk_multiplier * risk_factor
 
+    # === Фикс #4.3: минимальный риск, если < MIN_NOTIONAL_OPEN
+    min_notional_open = cfg.get("MIN_NOTIONAL_OPEN", 20.0)
+    if risk_amount < min_notional_open:
+        adjusted_risk = min_notional_open * 1.5
+        log(f"[Risk] risk_amount ${risk_amount:.2f} < MIN_NOTIONAL_OPEN → forcing to ${adjusted_risk:.2f}", level="WARNING")
+        risk_amount = adjusted_risk
+
     log(f"[Risk] balance={balance:.2f}, base_pct={base_risk_pct:.4f}, multiplier={risk_multiplier}, factor={risk_factor:.2f} → risk=${risk_amount:.2f}, SL={effective_sl:.4f}", level="DEBUG")
 
     return risk_amount, effective_sl
 
 
-def calculate_position_size(symbol, entry_price, balance, leverage, runtime_config=None):
+def calculate_position_size(symbol, entry_price, balance, leverage, runtime_config=None, risk_amount=None):
     """
     Рассчитывает размер позиции с учётом:
-    - риск-процента
+    - risk_amount (если передан извне — используется напрямую)
+    - base_risk_pct и balance, если risk_amount не задан
     - max_margin_percent на сделку
     - max_capital_utilization_pct на все сделки
     - минимального нотионала и min_trade_qty
     Возвращает (qty, risk_amount)
     """
-    from common.config_loader import (
-        get_dynamic_min_notional,
-    )
+    from common.config_loader import get_dynamic_min_notional
+    from core.tp_utils import safe_round_and_validate
     from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
 
@@ -181,7 +186,10 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
         log(f"[ERROR] Invalid entry price {entry_price} for {symbol}", level="ERROR")
         return 0.0, 0.0
 
-    risk_amount = balance * base_risk_pct
+    # ✅ Используем risk_amount, если задан, иначе рассчитываем
+    if risk_amount is None:
+        risk_amount = balance * base_risk_pct
+
     max_trade_value = balance * max_margin_percent
 
     qty_raw = (risk_amount * leverage) / entry_price
@@ -205,8 +213,6 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
         else:
             log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
             return 0.0, 0.0
-
-    from core.tp_utils import safe_round_and_validate
 
     qty = safe_round_and_validate(symbol, qty_raw)
     if not qty:
@@ -476,7 +482,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             return False
 
         leverage = get_leverage_for_symbol(symbol)
-        qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
+        qty, _ = calculate_position_size(symbol, entry_price, balance, leverage, risk_amount=risk_amount)
         cfg = get_runtime_config()
         min_qty = cfg.get("min_trade_qty", 0.001)
 
@@ -553,6 +559,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
             confirmed_qty = actual_qty
         qty = confirmed_qty
         log(f"[Enter Trade] Using qty={qty} for TP/SL placement", level="INFO")
+        time.sleep(2)
 
         opened_position = True
         with open_positions_lock:
@@ -676,6 +683,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     - Уведомляет в Telegram (включая TP1/TP2-hit отдельно)
     - Удаляет позицию из активных
     - Возвращает dict с итогами
+    - FIX #4: Динамический порог минимальной прибыли
     """
     import math
     import time
@@ -787,13 +795,16 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     net_absolute_profit = 0.0 if math.isnan(net_absolute_profit) else net_absolute_profit
     net_pnl_percent = 0.0 if math.isnan(net_pnl_percent) else net_pnl_percent
 
-    min_profit_threshold = 0.05
+    # ✅ FIX #4: Динамический порог минимальной прибыли из runtime config
+    min_profit_threshold = get_min_net_profit()
+    log(f"[TP Filter] Using min_profit_threshold={min_profit_threshold:.4f} from runtime config", level="DEBUG")
+
     if trade.get("tp1_hit") and net_absolute_profit < min_profit_threshold:
-        log(f"[TP1 Filtered] {symbol}: TP1 hit ignored due to net_profit={net_absolute_profit:.4f} < {min_profit_threshold}", level="WARNING")
+        log(f"[TP1 Filtered] {symbol}: TP1 hit ignored due to net_profit={net_absolute_profit:.4f} < {min_profit_threshold:.4f}", level="WARNING")
         trade["tp1_hit"] = False
 
     if trade.get("tp2_hit") and net_absolute_profit < min_profit_threshold:
-        log(f"[TP2 Filtered] {symbol}: TP2 hit ignored due to net_profit={net_absolute_profit:.4f} < {min_profit_threshold}", level="WARNING")
+        log(f"[TP2 Filtered] {symbol}: TP2 hit ignored due to net_profit={net_absolute_profit:.4f} < {min_profit_threshold:.4f}", level="WARNING")
         trade["tp2_hit"] = False
 
     log(f"[PnL] {symbol} entry={entry_price}, exit={exit_price}, qty={qty}, gross={absolute_profit:.2f}, net={net_absolute_profit:.2f}, fee={commission:.2f}", level="DEBUG")
@@ -920,6 +931,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     - Проверяет остаток позиции после каждой попытки
     - Вызывает record_trade_result только при успехе
     - Записывает в hang_trades.json при ошибке
+    - FIX #2: полностью очищает кеш после успешного закрытия
     """
     import json
     import time
@@ -928,7 +940,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import get_position_size, initialize_cache, normalize_symbol, safe_call_retry
+    from utils_core import api_cache, get_position_size, normalize_symbol, safe_call_retry
     from utils_logging import log
 
     global DRY_RUN
@@ -944,6 +956,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     side = trade.get("side", "buy")
     entry_price = trade.get("entry", 0)
 
+    # === Cancel all open orders
     try:
         orders = exchange.fetch_open_orders(symbol)
         for order in orders:
@@ -1037,11 +1050,15 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
         trade_manager.remove_trade(symbol)
         trade_manager.set_last_closed_time(symbol, time.time())
         save_active_trades()
-        initialize_cache()
+
+        # ✅ FIX #2: Полный сброс кеша после закрытия
+        api_cache.clear()
+        log(f"[Close] 🔄 Cleared API cache after closing {symbol}", level="DEBUG")
+
         log(f"[Close] ✅ Completed close for {symbol}", level="INFO")
         return True
 
-    # ❌ Failed
+    # ❌ FAILED
     log(f"[Close] ❌ FAILED to close {symbol} after {max_attempts} attempts", level="ERROR")
     send_telegram_message(f"🚨 URGENT: Failed to close {symbol} - manual intervention required!")
 
@@ -1254,7 +1271,7 @@ def run_micro_profit_optimizer(symbol, side, entry_price, qty, start_time, check
 def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     """
     Мониторит активную позицию и исполняет step TP, SL restore, AutoProfit, soft-exit и принудительное закрытие.
-    Версия v5.4 с полным step TP исполнением и SL qty валидацией.
+    Версия v5.5 с полным step TP исполнением, SL qty валидацией и FIX #2, #3.
     """
     import time
 
@@ -1285,8 +1302,10 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
 
         if qty <= 0:
             log(f"[Monitor] {symbol}: position closed — exit", level="INFO")
+            # ✅ FIX #2: Сброс кеша позиций И баланса
             with cache_lock:
                 api_cache["positions"]["timestamp"] = 0
+                api_cache["balance"]["timestamp"] = 0  # ✅ Добавлено
             trade_manager.remove_trade(symbol)
             from core.engine_controller import sync_open_positions
 
@@ -1343,9 +1362,10 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
         if not open_orders and not sl_restored and sl_price and qty > 0:
             sl_price = safe_float_conversion(sl_price)
             sl_distance = abs(current_price - sl_price) / current_price
-            if sl_distance < 0.01:
+            # ✅ FIX #3: Унифицированный порог 0.5% как в tp_utils.py
+            if sl_distance < 0.005:  # ✅ Изменено с 0.01 на 0.005
                 sl_price = round(current_price * (0.99 if is_buy else 1.01), 6)
-                log(f"[Monitor] Adjusted SL to {sl_price} (was too close)", level="INFO")
+                log(f"[Monitor] Adjusted SL to {sl_price} (was too close, distance={sl_distance:.4f})", level="INFO")
             qty_validated = safe_round_and_validate(symbol, qty)
             if not qty_validated:
                 log("[Monitor] Can't validate qty for SL restore", level="WARNING")
