@@ -63,6 +63,11 @@ def get_cached_balance():
     from core.exchange_init import exchange
 
     with cache_lock:
+        # ✅ ДОБАВЛЕНО: Защита от отсутствующих ключей
+        if "balance" not in api_cache:
+            api_cache["balance"] = {"value": None, "timestamp": 0}
+            log("[Cache] Initialized missing 'balance' key in api_cache", level="DEBUG")
+
         now = time.time()
         if (now - api_cache["balance"]["timestamp"] > CACHE_TTL) or (api_cache["balance"]["value"] is None):
             try:
@@ -74,7 +79,9 @@ def get_cached_balance():
             except Exception as e:
                 log(f"Error fetching balance: {e}", level="ERROR")
                 send_telegram_message(f"⚠️ Failed to fetch balance: {e}", force=True)
-                return api_cache["balance"]["value"] if api_cache["balance"]["value"] is not None else 0.0
+                # ✅ УЛУЧШЕНО: Безопасное обращение к кешу
+                cached_value = api_cache.get("balance", {}).get("value")
+                return cached_value if cached_value is not None else 0.0
         return api_cache["balance"]["value"]
 
 
@@ -83,6 +90,11 @@ def get_cached_positions():
     from core.exchange_init import exchange
 
     with cache_lock:
+        # ✅ ДОБАВЛЕНО: Защита от отсутствующих ключей
+        if "positions" not in api_cache:
+            api_cache["positions"] = {"value": [], "timestamp": 0}
+            log("[Cache] Initialized missing 'positions' key in api_cache", level="DEBUG")
+
         now = time.time()
         if (now - api_cache["positions"]["timestamp"] > CACHE_TTL) or (not api_cache["positions"]["value"]):
             try:
@@ -93,7 +105,9 @@ def get_cached_positions():
             except Exception as e:
                 log(f"Error fetching positions: {e}", level="ERROR")
                 send_telegram_message(f"⚠️ Failed to fetch positions: {e}", force=True)
-                return api_cache["positions"]["value"] if api_cache["positions"]["value"] else []
+                # ✅ УЛУЧШЕНО: Безопасное обращение к кешу
+                cached_value = api_cache.get("positions", {}).get("value")
+                return cached_value if cached_value else []
         return api_cache["positions"]["value"]
 
 
@@ -177,13 +191,13 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
                 raise ValueError(f"{label} returned None")
 
             if attempt > 0:
-                log(f"{label} succeeded on attempt {attempt+1}/{tries}", level="INFO")
+                log(f"{label} succeeded on attempt {attempt + 1}/{tries}", level="INFO")
 
             return result
 
         except (decimal.InvalidOperation, decimal.ConversionSyntax) as dec_e:
             # Перехватываем ошибки Decimal
-            log(f"{label} decimal error (attempt {attempt+1}/{tries}): {dec_e} ({type(dec_e)})", level="ERROR")
+            log(f"{label} decimal error (attempt {attempt + 1}/{tries}): {dec_e} ({type(dec_e)})", level="ERROR")
 
             if attempt < tries - 1:
                 sleep_time = delay * (2**attempt)

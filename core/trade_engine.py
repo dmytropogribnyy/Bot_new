@@ -939,7 +939,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import api_cache, normalize_symbol, safe_call_retry
+    from utils_core import api_cache, cache_lock, normalize_symbol, safe_call_retry
     from utils_logging import log
 
     global DRY_RUN
@@ -1050,9 +1050,13 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
         trade_manager.set_last_closed_time(symbol, time.time())
         save_active_trades()
 
-        # ✅ FIX #2: Полный сброс кеша после закрытия
-        api_cache.clear()
-        log(f"[Close] 🔄 Cleared API cache after closing {symbol}", level="DEBUG")
+        # ✅ ИСПРАВЛЕНО: Сброс timestamp вместо clear()
+        with cache_lock:
+            if "positions" in api_cache:
+                api_cache["positions"]["timestamp"] = 0
+            if "balance" in api_cache:
+                api_cache["balance"]["timestamp"] = 0
+        log(f"[Close] 🔄 Reset cache timestamps after closing {symbol}", level="DEBUG")
 
         log(f"[Close] ✅ Completed close for {symbol}", level="INFO")
         return True
@@ -1261,7 +1265,6 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
 
     from core.exchange_init import exchange
     from core.tp_utils import safe_round_and_validate
-    from core.trade_engine import close_real_trade, get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import api_cache, cache_lock, get_runtime_config, safe_call_retry, safe_float_conversion
     from utils_logging import log
@@ -1280,90 +1283,112 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
 
     log(f"[Monitor] Started monitoring {symbol} at entry={entry_price} qty={initial_qty}", level="INFO")
 
-    while True:
-        time.sleep(5)
-        qty = get_position_size(symbol)
+    # ✅ ДОБАВЛЕНО: Защита всего потока мониторинга
+    try:
+        while True:
+            time.sleep(5)
+            qty = get_position_size(symbol)
 
-        if qty <= 0:
-            log(f"[Monitor] {symbol}: position closed — exit", level="INFO")
-            # ✅ FIX #2: Сброс кеша позиций И баланса
-            with cache_lock:
-                api_cache["positions"]["timestamp"] = 0
-                api_cache["balance"]["timestamp"] = 0  # ✅ Добавлено
-            trade_manager.remove_trade(symbol)
-            from core.engine_controller import sync_open_positions
+            if qty <= 0:
+                log(f"[Monitor] {symbol}: position closed — exit", level="INFO")
+                # ✅ ИСПРАВЛЕНО: Добавлена проверка существования ключей
+                with cache_lock:
+                    if "positions" in api_cache:
+                        api_cache["positions"]["timestamp"] = 0
+                    else:
+                        log("[Monitor] Warning: positions key missing in api_cache", level="WARNING")
+                    if "balance" in api_cache:
+                        api_cache["balance"]["timestamp"] = 0
+                    else:
+                        log("[Monitor] Warning: balance key missing in api_cache", level="WARNING")
 
-            sync_open_positions()
-            return
+                trade_manager.remove_trade(symbol)
+                from core.engine_controller import sync_open_positions
 
-        elapsed = time.time() - start_time
-        if elapsed > max_hold:
-            log(f"[Monitor] {symbol}: max hold time exceeded → closing", level="WARNING")
-            send_telegram_message(f"⏳ Max hold time exceeded for {symbol} → closing position")
-            close_real_trade(symbol, reason="timeout")
-            return
+                sync_open_positions()
+                return
 
-        price_data = safe_call_retry(exchange.fetch_ticker, symbol)
-        if not price_data:
-            continue
-        current_price = safe_float_conversion(price_data.get("last", 0))
+            elapsed = time.time() - start_time
+            if elapsed > max_hold:
+                log(f"[Monitor] {symbol}: max hold time exceeded → closing", level="WARNING")
+                send_telegram_message(f"⏳ Max hold time exceeded for {symbol} → closing position")
+                close_real_trade(symbol, reason="timeout")
+                return
 
-        if current_price <= 0:
-            log(f"[Monitor] {symbol}: invalid current price: {current_price}", level="WARNING")
-            continue
+            price_data = safe_call_retry(exchange.fetch_ticker, symbol)
+            if not price_data:
+                continue
+            current_price = safe_float_conversion(price_data.get("last", 0))
 
-        if is_buy:
-            profit_pct = ((current_price - entry_price) / entry_price) * 100
-        else:
-            profit_pct = ((entry_price - current_price) / entry_price) * 100
+            if current_price <= 0:
+                log(f"[Monitor] {symbol}: invalid current price: {current_price}", level="WARNING")
+                continue
 
-        for i, level in enumerate(step_levels):
-            if not step_hits[i] and profit_pct >= level * 100:
-                qty_raw = qty * step_sizes[i]
-                qty_i = safe_round_and_validate(symbol, qty_raw)
-                if qty_i is None or qty_i <= 0:
-                    log(f"[Monitor] Skipping TP{i + 1} for {symbol} due to invalid qty", level="WARNING")
+            if is_buy:
+                profit_pct = ((current_price - entry_price) / entry_price) * 100
+            else:
+                profit_pct = ((entry_price - current_price) / entry_price) * 100
+
+            for i, level in enumerate(step_levels):
+                if not step_hits[i] and profit_pct >= level * 100:
+                    qty_raw = qty * step_sizes[i]
+                    qty_i = safe_round_and_validate(symbol, qty_raw)
+                    if qty_i is None or qty_i <= 0:
+                        log(f"[Monitor] Skipping TP{i + 1} for {symbol} due to invalid qty", level="WARNING")
+                        continue
+                    try:
+                        order_side = "sell" if is_buy else "buy"
+                        safe_call_retry(exchange.create_market_order, symbol, order_side, qty_i, params={"reduceOnly": True})
+                        step_hits[i] = True
+                        send_telegram_message(f"✅ TP{i + 1} HIT: {symbol} +{profit_pct:.2f}% qty={qty_i:.4f}")
+                        trade_manager.update_trade(symbol, f"tp{i + 1}_hit", True)
+                    except Exception as e:
+                        log(f"[Monitor] Failed to execute TP{i + 1} for {symbol}: {e}", level="ERROR")
+
+            if profit_pct >= auto_profit_pct:
+                log(f"[Monitor] AutoProfit triggered at {profit_pct:.2f}%", level="INFO")
+                send_telegram_message(f"🚀 AutoProfit threshold reached for {symbol} ({profit_pct:.2f}%) → closing")
+                close_real_trade(symbol, reason="auto_profit")
+                return
+
+            open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)
+            trade = trade_manager.get_trade(symbol)
+            sl_price = trade.get("sl_price") if trade else None
+            sl_restored = trade.get("sl_restored", False) if trade else False
+
+            if not open_orders and not sl_restored and sl_price and qty > 0:
+                sl_price = safe_float_conversion(sl_price)
+                sl_distance = abs(current_price - sl_price) / current_price
+                # ✅ FIX #3: Унифицированный порог 0.5% как в tp_utils.py
+                if sl_distance < 0.005:  # ✅ Изменено с 0.01 на 0.005
+                    sl_price = round(current_price * (0.99 if is_buy else 1.01), 6)
+                    log(f"[Monitor] Adjusted SL to {sl_price} (was too close, distance={sl_distance:.4f})", level="INFO")
+                qty_validated = safe_round_and_validate(symbol, qty)
+                if not qty_validated:
+                    log("[Monitor] Can't validate qty for SL restore", level="WARNING")
                     continue
                 try:
-                    order_side = "sell" if is_buy else "buy"
-                    safe_call_retry(exchange.create_market_order, symbol, order_side, qty_i, params={"reduceOnly": True})
-                    step_hits[i] = True
-                    send_telegram_message(f"✅ TP{i + 1} HIT: {symbol} +{profit_pct:.2f}% qty={qty_i:.4f}")
-                    trade_manager.update_trade(symbol, f"tp{i + 1}_hit", True)
+                    sl_side = "sell" if is_buy else "buy"
+                    safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", sl_side, qty_validated, params={"stopPrice": sl_price, "reduceOnly": True})
+                    send_telegram_message(f"🛡 SL restored for {symbol}")
+                    trade_manager.update_trade(symbol, "sl_restored", True)
                 except Exception as e:
-                    log(f"[Monitor] Failed to execute TP{i + 1} for {symbol}: {e}", level="ERROR")
+                    if "immediately trigger" in str(e):
+                        log("[Monitor] SL restore failed - too close to price", level="WARNING")
+                    else:
+                        log(f"[Monitor] SL restore error: {e}", level="ERROR")
 
-        if profit_pct >= auto_profit_pct:
-            send_telegram_message(f"🚀 AutoProfit threshold reached for {symbol} ({profit_pct:.2f}%) → closing")
-            close_real_trade(symbol, reason="auto_profit")
-            return
+    except Exception as e:
+        # ✅ КРИТИЧНО: Защита от падения потока
+        log(f"[Monitor] CRITICAL: Monitor thread crashed for {symbol}: {e}", level="ERROR")
+        send_telegram_message(f"🚨 Monitor crashed for {symbol}! Attempting emergency close...")
 
-        open_orders = safe_call_retry(exchange.fetch_open_orders, symbol)
-        trade = trade_manager.get_trade(symbol)
-        sl_price = trade.get("sl_price") if trade else None
-        sl_restored = trade.get("sl_restored", False) if trade else False
-
-        if not open_orders and not sl_restored and sl_price and qty > 0:
-            sl_price = safe_float_conversion(sl_price)
-            sl_distance = abs(current_price - sl_price) / current_price
-            # ✅ FIX #3: Унифицированный порог 0.5% как в tp_utils.py
-            if sl_distance < 0.005:  # ✅ Изменено с 0.01 на 0.005
-                sl_price = round(current_price * (0.99 if is_buy else 1.01), 6)
-                log(f"[Monitor] Adjusted SL to {sl_price} (was too close, distance={sl_distance:.4f})", level="INFO")
-            qty_validated = safe_round_and_validate(symbol, qty)
-            if not qty_validated:
-                log("[Monitor] Can't validate qty for SL restore", level="WARNING")
-                continue
-            try:
-                sl_side = "sell" if is_buy else "buy"
-                safe_call_retry(exchange.create_order, symbol, "STOP_MARKET", sl_side, qty_validated, params={"stopPrice": sl_price, "reduceOnly": True})
-                send_telegram_message(f"🛡 SL restored for {symbol}")
-                trade_manager.update_trade(symbol, "sl_restored", True)
-            except Exception as e:
-                if "immediately trigger" in str(e):
-                    log("[Monitor] SL restore failed - too close to price", level="WARNING")
-                else:
-                    log(f"[Monitor] SL restore error: {e}", level="ERROR")
+        # Попытка аварийного закрытия позиции
+        try:
+            close_real_trade(symbol, reason="monitor_crash")
+        except Exception as close_error:
+            log(f"[Monitor] Failed to emergency close {symbol}: {close_error}", level="ERROR")
+            send_telegram_message(f"❌ FAILED to close {symbol} after monitor crash! MANUAL INTERVENTION REQUIRED!")
 
 
 def handle_panic(stop_event):
