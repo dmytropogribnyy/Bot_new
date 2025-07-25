@@ -20,7 +20,7 @@ from common.config_loader import (
 from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
-from utils_core import get_cached_balance, initialize_cache, load_state, normalize_symbol, safe_call_retry
+from utils_core import get_cached_balance, load_state, normalize_symbol, safe_call_retry
 from utils_logging import log
 
 _active_trades_save_lock = Lock()
@@ -211,7 +211,7 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
             qty_raw = allowed_notional / entry_price
             log(f"[AUTO REDUCE] {symbol}: adjusted qty to fit capital usage", level="WARNING")
         else:
-            log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct*100:.0f}%)", level="WARNING")
+            log(f"[BLOCKED] {symbol}: capital usage {projected_total:.2f} > {max_total:.2f} (limit {max_capital_utilization_pct * 100:.0f}%)", level="WARNING")
             return 0.0, 0.0
 
     qty = safe_round_and_validate(symbol, qty_raw)
@@ -405,7 +405,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     from core.signal_utils import passes_1plus1
     from core.strategy import fetch_data_multiframe
     from core.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
-    from core.trade_engine import get_position_size, save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import api_cache, cache_lock, extract_symbol, get_cached_balance, is_optimal_trading_hour, safe_call_retry
     from utils_logging import log, now
@@ -551,7 +550,7 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
                 break
             if i == 4:
                 exchange.load_markets()
-                log(f"[Enter Trade] Reloaded markets, attempt {i+1}/{max_retries}", level="DEBUG")
+                log(f"[Enter Trade] Reloaded markets, attempt {i + 1}/{max_retries}", level="DEBUG")
 
         if not position_confirmed:
             log(f"[Enter Trade] WARNING: Position not confirmed after {max_retries} attempts", level="WARNING")
@@ -940,7 +939,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
-    from utils_core import api_cache, get_position_size, normalize_symbol, safe_call_retry
+    from utils_core import api_cache, normalize_symbol, safe_call_retry
     from utils_logging import log
 
     global DRY_RUN
@@ -983,7 +982,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
             ticker = safe_call_retry(exchange.fetch_ticker, symbol)
             current_price = ticker.get("last") if ticker else entry_price
 
-            log(f"[Close] Attempt {attempt+1}: closing {symbol} qty={current_qty:.6f}", level="INFO")
+            log(f"[Close] Attempt {attempt + 1}: closing {symbol} qty={current_qty:.6f}", level="INFO")
             close_side = "sell" if side.lower() == "buy" else "buy"
 
             if DRY_RUN:
@@ -1027,7 +1026,7 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
                     log(f"[Close] Fallback IOC failed: {e2}", level="ERROR")
 
         except Exception as e:
-            log(f"[Close] Attempt {attempt+1} error: {e}", level="ERROR")
+            log(f"[Close] Attempt {attempt + 1} error: {e}", level="ERROR")
 
         safe_call_retry(exchange.fetch_positions, label="post_close_sync")
         time.sleep(1)
@@ -1081,21 +1080,6 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
         log(f"[Close] Failed to write hang_trades.json: {e}", level="ERROR")
 
     return False
-
-
-def open_real_trade(symbol, direction, qty, entry_price):
-    """
-    Упрощённая версия входа без сложных расчётов (если нужно).
-    """
-    try:
-        side = "buy" if direction.lower() == "buy" else "sell"
-        order = exchange.create_market_order(symbol, side, qty)
-        log(f"[Open Trade] Opened {direction} for {symbol}: qty={qty}, entry={entry_price}", level="INFO")
-        initialize_cache()
-        return order
-    except Exception as e:
-        log(f"[Open Trade] Failed for {symbol}: {e}", level="ERROR")
-        raise
 
 
 ###############################################################################
@@ -1338,16 +1322,16 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                 qty_raw = qty * step_sizes[i]
                 qty_i = safe_round_and_validate(symbol, qty_raw)
                 if qty_i is None or qty_i <= 0:
-                    log(f"[Monitor] Skipping TP{i+1} for {symbol} due to invalid qty", level="WARNING")
+                    log(f"[Monitor] Skipping TP{i + 1} for {symbol} due to invalid qty", level="WARNING")
                     continue
                 try:
                     order_side = "sell" if is_buy else "buy"
                     safe_call_retry(exchange.create_market_order, symbol, order_side, qty_i, params={"reduceOnly": True})
                     step_hits[i] = True
-                    send_telegram_message(f"✅ TP{i+1} HIT: {symbol} +{profit_pct:.2f}% qty={qty_i:.4f}")
-                    trade_manager.update_trade(symbol, f"tp{i+1}_hit", True)
+                    send_telegram_message(f"✅ TP{i + 1} HIT: {symbol} +{profit_pct:.2f}% qty={qty_i:.4f}")
+                    trade_manager.update_trade(symbol, f"tp{i + 1}_hit", True)
                 except Exception as e:
-                    log(f"[Monitor] Failed to execute TP{i+1} for {symbol}: {e}", level="ERROR")
+                    log(f"[Monitor] Failed to execute TP{i + 1} for {symbol}: {e}", level="ERROR")
 
         if profit_pct >= auto_profit_pct:
             send_telegram_message(f"🚀 AutoProfit threshold reached for {symbol} ({profit_pct:.2f}%) → closing")
@@ -1421,7 +1405,7 @@ def handle_panic(stop_event):
                 log("[PANIC] All positions confirmed closed.", level="INFO")
                 return
             else:
-                log(f"[PANIC] Still open after attempt {i+1}: {[p['symbol'] for p in still_open]}", level="WARNING")
+                log(f"[PANIC] Still open after attempt {i + 1}: {[p['symbol'] for p in still_open]}", level="WARNING")
         except Exception as e:
             log(f"[PANIC] Retry check error: {e}", level="ERROR")
         time.sleep(3)
