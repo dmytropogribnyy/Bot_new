@@ -695,7 +695,7 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
     from core.runtime_state import get_loss_streak, increment_loss_streak, pause_symbol, reset_loss_streak
     from telegram.telegram_utils import send_telegram_message
     from tp_logger import log_trade_result as csv_log_trade_result
-    from utils_core import get_min_net_profit, normalize_symbol, update_runtime_config
+    from utils_core import get_min_net_profit, normalize_symbol
     from utils_logging import log
 
     symbol = normalize_symbol(symbol)
@@ -847,15 +847,15 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
         log(f"[ERROR] Failed to log trade to CSV: {e}", level="ERROR")
 
     # === Адаптация min_profit_threshold
-    if is_successful:
-        prev = get_min_net_profit()
-        if prev < 0.30:
-            new_val = round(min(0.30, prev + 0.10), 2)
-            update_runtime_config({"min_profit_threshold": new_val})
-            log(f"[ProfitAdapt] min_profit_threshold updated to {new_val}", level="INFO")
-    elif result_type == "sl" and net_absolute_profit < 0:
-        update_runtime_config({"min_profit_threshold": 0.10})
-        log("[ProfitAdapt] Reset min_profit_threshold to 0.10 after SL", level="WARNING")
+    # if is_successful:
+    #     prev = get_min_net_profit()
+    #     if prev < 0.30:
+    #         new_val = round(min(0.30, prev + 0.10), 2)
+    #         update_runtime_config({"min_profit_threshold": new_val})
+    #         log(f"[ProfitAdapt] min_profit_threshold updated to {new_val}", level="INFO")
+    # elif result_type == "sl" and net_absolute_profit < 0:
+    #     update_runtime_config({"min_profit_threshold": 0.10})
+    #     log("[ProfitAdapt] Reset min_profit_threshold to 0.10 after SL", level="WARNING")
 
     # === SL streak & pause
     if result_type == "sl" or trade.get("sl_hit"):
