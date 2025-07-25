@@ -16,9 +16,16 @@
 
     "cSpell.enabled": false,
 
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
+
     "editor.codeActionsOnSave": {
         "source.fixAll": "explicit",
         "source.fixAll.ruff": "explicit",
         "source.organizeImports": "explicit"
+    },
+
+    "terminal.integrated.env.windows": {
+        "VIRTUAL_ENV": "${workspaceFolder}\\venv",
+        "PATH": "${workspaceFolder}\\venv\\Scripts;${env:PATH}"
     }
 }
