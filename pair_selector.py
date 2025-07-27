@@ -87,8 +87,16 @@ def save_low_volume_hits(data):
 
 def auto_update_valid_pairs_if_needed():
     """
-    Обновляет valid_usdc_symbols.json каждые 1 час через test_api.py.
+    Обновляет valid_usdc_symbols.json каждые 1 час через test_api.py,
+    если флаг disable_test_api_autorun не активирован.
     """
+    from utils_core import get_runtime_config
+
+    config = get_runtime_config()
+    if config.get("disable_test_api_autorun", False):
+        log("⏭️ test_api.py auto-run disabled via config", level="INFO")
+        return
+
     last_updated_path = Path("data/valid_usdc_last_updated.txt")
     now = int(time.time())
 
@@ -432,13 +440,7 @@ def select_active_symbols():
 
     save_symbols_file(final_symbols_list)
 
-    msg = (
-        f"🔄 Symbol rotation:\n"
-        f"Balance: {balance:.1f} USDC\n"
-        f"Filtered: {len(filtered_data)}\n"
-        f"Fixed: {len(fixed)} | Dynamic: {len(dynamic_list)}\n"
-        f"Active total: {len(final_symbols_list)}"
-    )
+    msg = f"🔄 Symbol rotation:\nBalance: {balance:.1f} USDC\nFiltered: {len(filtered_data)}\nFixed: {len(fixed)} | Dynamic: {len(dynamic_list)}\nActive total: {len(final_symbols_list)}"
     send_telegram_message(msg, force=True)
 
     log(f"[Selector] Selected {len(final_symbols_list)} total symbols ({len(fixed)} fixed, {len(dynamic_list)} dynamic)", level="INFO")

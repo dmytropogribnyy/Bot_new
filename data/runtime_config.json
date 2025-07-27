@@ -113,6 +113,7 @@
   "tp_min_trades_full": 20,
   "tp_update_threshold_initial": 0.1,
   "tp_update_threshold_full": 0.2,
+  "disable_test_api_autorun": true,
   "bot_status": "running",
   "last_adaptation_timestamp": null
 }
