@@ -244,7 +244,9 @@ def safe_round_and_validate(symbol: str, raw_qty: float) -> float | None:
 
 def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_prices, sl_price):
     """
-    Обновлённая финальная версия установки TP/SL (v3.8 Final):
+    Обновлённая финальная версия установки TP/SL (v3.9):
+    - SL ВСЕГДА ставится ПЕРВЫМ (критический FIX #1)
+    - Сохранена ВСЯ логика оригинала
     - Корректировка SL, если он слишком близко к текущей цене (<0.5%)
     - Отмена, если SL после корректировки >5% от entry (по умолчанию)
     - Поддержка fallback TP1-only
@@ -283,6 +285,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     success_tp = 0
     tp_total = 0.0
 
+    # Получаем текущую позицию
     try:
         positions = safe_call_retry(exchange.fetch_positions)
         current_position_qty = 0.0
@@ -298,6 +301,7 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         log(f"[TP/SL] {symbol}: Position not confirmed — fallback to qty={qty:.6f}", level="WARNING")
         current_position_qty = qty
 
+    # Получаем текущую цену
     try:
         ticker = safe_call_retry(exchange.fetch_ticker, api_symbol)
         current_price = ticker["last"] if ticker else entry_price
@@ -305,10 +309,12 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         log(f"[PreCheck] Failed to fetch ticker for {symbol}: {e} — using entry_price", level="WARNING")
         current_price = entry_price
 
-    # === ФИКС 3: Корректировка SL ===
-    min_sl_gap_percent = cfg.get("min_sl_gap_percent", 0.005)
+    # === КРИТИЧЕСКИЙ FIX #1: SL СТАВИТСЯ ПЕРВЫМ ===
 
+    # Корректировка SL если слишком близко
+    min_sl_gap_percent = cfg.get("min_sl_gap_percent", 0.005)
     sl_gap = abs(current_price - sl_price) / current_price
+
     if sl_gap < min_sl_gap_percent:
         old_sl = sl_price
         if side == "buy":
@@ -320,15 +326,16 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         log(f"[SL ADJUST] {symbol}: SL={old_sl:.4f} → {sl_price:.4f} (gap was {sl_gap:.3%}, current={current_price:.4f})", level="WARNING")
         send_telegram_message(f"⚠️ {symbol}: SL adjusted to avoid immediate trigger")
 
+    # Проверка максимального расстояния SL
     actual_sl_percent = abs(sl_price - entry_price) / entry_price
     max_sl_percent = 0.05
     if actual_sl_percent > max_sl_percent:
         log(f"[SL CHECK] {symbol}: SL distance {actual_sl_percent:.2%} exceeds max {max_sl_percent:.0%} — aborting entry", level="ERROR")
-        send_telegram_message(f"❌ {symbol}: SL too far from entry — closing position")
+        send_telegram_message(f"❌ {symbol}: SL too far from entry — closing position", force=True)
         close_real_trade(symbol, reason="sl_distance_exceeded")
         return False
 
-    # === Установка SL ===
+    # === УСТАНОВКА SL ===
     try:
         sl_order = safe_call_retry(
             lambda: exchange.create_order(
@@ -342,15 +349,21 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         )
         if sl_order:
             trade_manager.update_trade(symbol, "sl_price", sl_price)
+            trade_manager.update_trade(symbol, "sl_order_id", sl_order.get("id"))
             log_tp_sl_event(symbol, "SL", qty, sl_price, "success")
             success_sl = True
+            log(f"[TP/SL] ✅ SL placed first for {symbol} at {sl_price}", level="INFO")
     except Exception as e:
         log(f"[SL] Error for {symbol}: {e}", level="ERROR")
+
+        # Обработка "would trigger immediately"
         if "trigger" in str(e).lower():
             send_telegram_message(f"❌ {symbol}: SL rejected — closing position")
             log_tp_sl_event(symbol, "SL", qty, sl_price, "skipped", reason="would_trigger")
             close_real_trade(symbol)
             return False
+
+        # Retry логика для SL
         if force_sl:
             for retry in range(sl_retry_limit):
                 time.sleep(1)
@@ -368,21 +381,33 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                     )
                     if sl_order:
                         trade_manager.update_trade(symbol, "sl_price", round(widened_sl, 6))
+                        trade_manager.update_trade(symbol, "sl_order_id", sl_order.get("id"))
                         log_tp_sl_event(symbol, "SL", qty, widened_sl, "success", reason="force_retry")
                         success_sl = True
+                        log(f"[TP/SL] ✅ SL placed after {retry + 1} retries for {symbol}", level="INFO")
                         break
                 except Exception as e:
-                    log(f"[SL-Retry] {symbol} retry {retry+1} failed: {e}", level="WARNING")
+                    log(f"[SL-Retry] {symbol} retry {retry + 1} failed: {e}", level="WARNING")
+
             if not success_sl:
                 send_telegram_message(f"❌ {symbol}: SL retry failed — closing")
                 close_real_trade(symbol)
                 return False
         else:
+            # Если FORCE_SL_ALWAYS = False и SL не встал - закрываем позицию
+            send_telegram_message(f"❌ {symbol}: SL placement failed — closing position")
+            close_real_trade(symbol)
             return False
 
-    # === Установка TP ===
+    # === УСТАНОВКА TP (только после успешного SL) ===
+    if not success_sl:
+        log(f"[TP/SL] {symbol}: Skipping TP placement as SL failed", level="ERROR")
+        return False
+
+    # Проверка на микро-позицию
     fallback = qty < min_total_qty
     if fallback:
+        # КРИТИЧЕСКИЙ FIX #2: Fallback на TP1-only для микро-позиций
         tp_price = tp_prices[0]
         tp_qty = safe_round_and_validate(symbol, qty)
         if tp_qty:
@@ -402,20 +427,27 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                     send_telegram_message(f"✅ {symbol}: fallback TP1 placed qty={tp_qty:.4f}")
             except Exception as e:
                 log(f"[TP-Fallback] {symbol} error: {e}", level="ERROR")
+                send_telegram_message(f"⚠️ {symbol}: TP fallback failed, SL-only protection")
     else:
+        # Обычная установка TP уровней
         for i, price in enumerate(tp_prices):
-            level = f"TP{i+1}"
-            share = trade_data.get(f"tp{i+1}_share", 0.0)
+            level = f"TP{i + 1}"
+            share = trade_data.get(f"tp{i + 1}_share", 0.0)
             raw_qty = qty * share
+
+            # Защита от превышения текущей позиции
             if raw_qty > current_position_qty:
                 raw_qty = current_position_qty
+
             if raw_qty < min_qty:
                 log_tp_sl_event(symbol, level, raw_qty, price, "skipped", reason="too_small")
                 continue
+
             qty_i = safe_round_and_validate(symbol, raw_qty)
             if not qty_i:
                 log_tp_sl_event(symbol, level, raw_qty, price, "skipped", reason="rounding")
                 continue
+
             current_position_qty -= qty_i
             try:
                 order = safe_call_retry(
@@ -425,31 +457,36 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                     label=f"tp_{symbol}_{i}",
                 )
                 if order:
-                    trade_manager.update_trade(symbol, f"tp{i+1}_price", price)
-                    trade_manager.update_trade(symbol, f"tp{i+1}_qty", qty_i)
+                    trade_manager.update_trade(symbol, f"tp{i + 1}_price", price)
+                    trade_manager.update_trade(symbol, f"tp{i + 1}_qty", qty_i)
                     log_tp_sl_event(symbol, level, qty_i, price, "success")
                     tp_total += qty_i
                     success_tp += 1
             except Exception:
                 log_tp_sl_event(symbol, level, qty_i, price, "failure", reason="exception")
 
+    # === ОБНОВЛЕНИЕ СОСТОЯНИЯ ===
     trade_manager.update_trade(symbol, "tp_total_qty", tp_total)
     trade_manager.update_trade(symbol, "tp_fallback_used", fallback)
 
+    # Проверка результатов
     if tp_total < min_qty:
         log(f"[TP/SL] {symbol}: Total TP qty {tp_total:.6f} < min_qty {min_qty} — TP counted as failed", level="WARNING")
         send_telegram_message(f"⚠️ {symbol}: Total TP qty too small ({tp_total:.6f}) — check position or min_qty")
 
     if tp_total == 0.0:
-        send_telegram_message(f"⚠️ {symbol}: No TP orders placed — SL placed: {success_sl}, TP fallback: {fallback}")
+        # КРИТИЧЕСКИЙ FIX #5: Telegram уведомление при TP fallback
+        send_telegram_message(f"⚠️ {symbol}: No TP orders placed — SL only protection")
+        log(f"[TP/SL] ⚠️ {symbol}: Operating with SL-only protection", level="WARNING")
 
+    # Финальный статус
     tp_sl_success = success_sl and tp_total > 0
     trade_manager.update_trade(symbol, "tp_sl_success", tp_sl_success)
 
     if tp_sl_success:
         send_telegram_message(f"✅ {symbol}: TP/SL orders placed successfully.")
     else:
-        send_telegram_message(f"⚠️ {symbol}: TP/SL failed (SL ok: {success_sl}, TP placed: {success_tp})")
+        send_telegram_message(f"⚠️ {symbol}: TP/SL partial (SL ok: {success_sl}, TP placed: {success_tp})")
 
     return tp_sl_success
 

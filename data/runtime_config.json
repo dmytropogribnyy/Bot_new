@@ -16,17 +16,14 @@
   "max_dynamic_pairs": 30,
   "scanner_min_candidates": 10,
   "step_tp_levels": [
-    0.0025,
-    0.004,
-    0.006
+    0.004, 0.008, 0.012
   ],
   "step_tp_sizes": [
-    0.6,
-    0.25,
-    0.15
+    0.5, 0.3, 0.2
   ],
+  "min_sl_gap_percent": 0.005,
   "minimum_step_profit_hit_required": false,
-  "SL_PERCENT": 0.008,
+  "SL_PERCENT": 0.012,
   "sl_must_trigger_first": false,
   "FORCE_SL_ALWAYS": true,
   "sl_retry_limit": 3,
@@ -37,13 +34,13 @@
   "min_profit_threshold": 0.06,
   "MIN_NOTIONAL_OPEN": 5.0,
   "MIN_NOTIONAL_ORDER": 5.0,
-  "min_trade_qty": 0.001,
+  "min_trade_qty": 0.005,
   "min_total_qty_for_tp_full": 0.002,
   "max_hourly_trade_limit": 15,
   "hourly_limit_check_mode": "active_only",
   "cycle_interval_seconds": 3,
-  "max_capital_utilization_pct": 0.85,
-  "max_margin_percent": 0.3,
+  "max_capital_utilization_pct": 0.8,
+  "max_margin_percent": 0.4,
   "max_slippage_pct": 0.02,
   "enable_passes_1plus1_soft": false,
   "passes_1plus1_mode": "disabled",
@@ -52,7 +49,8 @@
   "enable_strong_signal_override": true,
   "require_closed_candle_for_entry": false,
   "ABORT_IF_NO_TP": false,
-  "auto_reduce_entry_if_risk_exceeds": false,
+  "auto_reduce_entry_if_risk_exceeds": true,
+  "force_fallback_qty_if_valid": true,
   "SHORT_TERM_MODE": false,
   "monitoring_hours_utc": [
     0,
