@@ -345,7 +345,7 @@ def sync_open_positions():
             save_active_trades()
         # ========== КОНЕЦ FIX #3 ==========
 
-        log(f"[SyncOpenPositions] ✅ Sync complete. Added: {synced_count}, Removed: {removed_count}", level="INFO")
+        log(f"[SyncOpenPositions] ✅ Sync complete. Added: {synced_count}, Removed: {removed_count}, Active: {len(exchange_symbols)}", level="INFO")
 
     except Exception as e:
         log(f"[Desync] Sync failed: {e}", level="WARNING")
