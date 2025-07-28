@@ -222,7 +222,7 @@ def sync_open_positions():
     from utils_logging import log
 
     debug_mode = get_runtime_config().get("debug_mode", False)
-    debug_path = Path("logs/debug_monitoring_summary.json")
+    debug_path = Path("data/debug_monitoring_summary.json")
 
     try:
         # КРИТИЧНО: Сброс кеша ДО получения
@@ -239,6 +239,7 @@ def sync_open_positions():
             api_cache["positions"]["timestamp"] = time.time()
             log(f"[SyncOpenPositions] Cache updated with {len(positions)} positions", level="DEBUG")
 
+        # === СУЩЕСТВУЮЩАЯ ЛОГИКА ДОБАВЛЕНИЯ ПОЗИЦИЙ ===
         for p in positions:
             symbol = normalize_symbol(p["symbol"])
             position_amt = float(p.get("positionAmt", p.get("contracts", 0)))
@@ -322,7 +323,29 @@ def sync_open_positions():
                 except Exception as e:
                     log(f"[SyncOpenPositions] Error syncing {symbol}: {e}", level="WARNING")
 
-        log(f"[SyncOpenPositions] ✅ Sync complete. Synced positions: {synced_count}", level="INFO")
+        # ========== НАЧАЛО FIX #3 ==========
+        # Собираем реальные позиции с биржи
+        exchange_symbols = set()
+        for p in positions:
+            symbol = normalize_symbol(p["symbol"])
+            position_amt = float(p.get("positionAmt", p.get("contracts", 0)))
+            if abs(position_amt) > 0:
+                exchange_symbols.add(symbol)
+
+        # Удаляем фантомные позиции из trade_manager
+        removed_count = 0
+        for symbol in list(trade_manager.trades.keys()):
+            if symbol not in exchange_symbols:
+                log(f"[SyncOpenPositions] Removing phantom position: {symbol}", level="WARNING")
+                trade_manager.remove_trade(symbol)
+                removed_count += 1
+
+        if removed_count > 0:
+            send_telegram_message(f"🧹 Cleaned {removed_count} phantom positions")
+            save_active_trades()
+        # ========== КОНЕЦ FIX #3 ==========
+
+        log(f"[SyncOpenPositions] ✅ Sync complete. Added: {synced_count}, Removed: {removed_count}", level="INFO")
 
     except Exception as e:
         log(f"[Desync] Sync failed: {e}", level="WARNING")
