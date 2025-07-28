@@ -29,6 +29,7 @@ Thumbs.db
 # Local data files
 data/*.csv
 data/*.json
+data/*.txt
 !data/runtime_config.json
 data/backups/
 bot_state.json
