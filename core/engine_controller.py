@@ -334,7 +334,7 @@ def sync_open_positions():
 
         # Удаляем фантомные позиции из trade_manager
         removed_count = 0
-        for symbol in list(trade_manager.trades.keys()):
+        for symbol in trade_manager.get_active_trades():  # ← ИСПРАВЛЕНО!
             if symbol not in exchange_symbols:
                 log(f"[SyncOpenPositions] Removing phantom position: {symbol}", level="WARNING")
                 trade_manager.remove_trade(symbol)

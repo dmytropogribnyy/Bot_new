@@ -190,6 +190,11 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     if risk_amount is None:
         risk_amount = balance * base_risk_pct
 
+    # Boost для малых балансов (FIX для qty=0.0)
+    if risk_amount < 20.0:
+        risk_amount = min(20.0, balance * 0.1)  # минимум $20 или 10% баланса
+        log(f"[Risk] Boosted risk_amount to ${risk_amount:.2f} for small balance", level="INFO")
+
     max_trade_value = balance * max_margin_percent
 
     qty_raw = (risk_amount * leverage) / entry_price
