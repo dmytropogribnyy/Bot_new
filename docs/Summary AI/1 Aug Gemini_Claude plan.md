@@ -2630,4 +2630,309 @@ Export to Sheets
 
 Мы не создаем "другого" бота. Мы проводим профессиональный рефакторинг: берем ваш мощный "двигатель" (ваши стратегии и наработки) и помещаем его в новый, более совершенный "кузов" (новую архитектуру), который позволит этому двигателю работать быстрее, надежнее и без сбоев.
 
-Каждый полезный элемент вашего текущего проекта будет сохранен. Готовы продолжить с core/risk_manager.py?
+# Каждый полезный элемент вашего текущего проекта будет сохранен. Готовы продолжить с core/risk_manager.py?
+
+Updates from Claude
+Изучив план от 1 августа, вижу что там уже созданы базовые файлы. Давайте их улучшим с учетом вашего текущего кода:
+🔧 Улучшения для файлов из плана:
+
+1. core/exchange_client.py - нужны критические дополнения:
+   python# Добавить к существующему коду:
+
+class ExchangeClient:
+def **init**(self, config): # ... существующий код ...
+self.\_symbol_info_cache = {} # Кеш информации о символах
+self.\_order_history = deque(maxlen=1000) # История ордеров
+
+    async def fetch_order_book(self, symbol: str, limit: int = 20):
+        """Получает стакан ордеров (нужно для OBI)"""
+        await self.rate_limiter.wait_if_needed('info', weight=1)
+        return await self.exchange.fetch_order_book(symbol, limit)
+
+    async def fetch_my_trades(self, symbol: str = None, limit: int = 100):
+        """История сделок для анализа"""
+        await self.rate_limiter.wait_if_needed('info', weight=5)
+        return await self.exchange.fetch_my_trades(symbol, since=None, limit=limit)
+
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = '1m', limit: int = 100):
+        """OHLCV данные для стратегии"""
+        await self.rate_limiter.wait_if_needed('info', weight=1)
+        return await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+
+    async def create_multiple_orders(self, orders: List[Dict]):
+        """Batch размещение ордеров (для TP1/TP2/TP3)"""
+        results = []
+        for order in orders:
+            try:
+                result = await self.create_safe_order(**order)
+                results.append({'success': True, 'order': result})
+            except Exception as e:
+                results.append({'success': False, 'error': str(e), 'order': order})
+        return results
+
+    # WebSocket поддержка (из рекомендаций Claude)
+    async def subscribe_user_stream(self):
+        """Подписка на обновления аккаунта в реальном времени"""
+        listen_key = await self._get_listen_key()
+
+        async def on_account_update(data):
+            # Обработка обновлений позиций/ордеров
+            if data['e'] == 'ACCOUNT_UPDATE':
+                for position in data['a']['P']:
+                    symbol = position['s']
+                    amount = float(position['pa'])
+                    # Обновляем локальный кеш позиций
+
+        # Запуск WebSocket подключения
+        await self._start_websocket(listen_key, on_account_update)
+
+2.  core/risk_manager.py - интеграция вашей уникальной логики:
+    pythonclass RiskManager:
+    def **init**(self, exchange_client: ExchangeClient): # ... базовый код ...
+
+            # Добавляем из вашего risk_adjuster.py:
+            self.sl_streak_counter = defaultdict(int)
+            self.win_streak_counter = defaultdict(int)
+            self.last_30_trades = deque(maxlen=30)
+
+            # Из fail_stats_tracker.py:
+            self.fail_stats = self._load_fail_stats()
+            self.symbol_blacklist = set()
+            self.temporary_cooldowns = {}
+
+        async def get_adjusted_risk_params(self, symbol: str) -> Dict:
+            """Адаптивные параметры риска из вашего risk_adjuster.py"""
+            base_params = await super().calculate_position_size(symbol, price)
+
+            # SL Streak логика
+            sl_streak = self.sl_streak_counter.get(symbol, 0)
+            if sl_streak >= 3:
+                base_params['size'] *= 0.5
+                base_params['sl_percent'] *= 0.7
+                logger.log_event(f"Risk reduced for {symbol} due to {sl_streak} SL streak")
+
+            # Win Streak бонус
+            win_streak = self.win_streak_counter.get(symbol, 0)
+            if win_streak >= 5:
+                base_params['size'] *= 1.2
+                logger.log_event(f"Risk increased for {symbol} due to {win_streak} win streak")
+
+            # Global drawdown protection (из вашего risk_guard.py)
+            if self.daily_stats['total_pnl'] < -30:
+                base_params['size'] *= 0.3
+                base_params['max_positions'] = 1
+
+            return base_params
+
+        def check_capital_utilization(self) -> Tuple[bool, float]:
+            """Из вашего risk_guard.py"""
+            total_margin = sum(pos['margin'] for pos in self.active_positions.values())
+            utilization = total_margin / self.available_balance
+
+            cfg = config
+            max_util = cfg.get('max_capital_utilization_pct', 0.8)
+
+            return utilization < max_util, utilization
+
+3.  core/unified_logger.py - расширенная аналитика:
+    pythonclass UnifiedLogger: # ... существующий код ...
+
+        def log_trade_extended(self, **kwargs):
+            """Расширенное логирование с вашими полями"""
+            # Добавляем поля из вашего tp_logger.py
+            extended_data = {
+                'signal_score': kwargs.get('signal_score'),
+                'breakdown': json.dumps(kwargs.get('breakdown', {})),
+                'tp1_hit': kwargs.get('tp1_hit', False),
+                'tp2_hit': kwargs.get('tp2_hit', False),
+                'tp3_hit': kwargs.get('tp3_hit', False),
+                'sl_hit': kwargs.get('sl_hit', False),
+                'trail_activated': kwargs.get('trail_activated', False),
+                'risk_factor': kwargs.get('risk_factor', 1.0),
+                'market_volatility': kwargs.get('market_volatility'),
+                'volume_spike': kwargs.get('volume_spike', False)
+            }
+            kwargs.update(extended_data)
+            self.log_trade(**kwargs)
+
+        # Аналитические методы из ваших stats.py и tp_optimizer.py
+        def get_symbol_performance(self, symbol: str, days: int = 7) -> Dict:
+            """Анализ производительности по символу"""
+            with self.get_connection() as conn:
+                query = """
+                    SELECT
+                        COUNT(*) as total_trades,
+                        SUM(CASE WHEN pnl_percent > 0 THEN 1 ELSE 0 END) as wins,
+                        AVG(pnl_percent) as avg_pnl,
+                        SUM(pnl_usd) as total_pnl,
+                        AVG(duration_minutes) as avg_duration,
+                        SUM(CASE WHEN exit_reason = 'tp1_hit' THEN 1 ELSE 0 END) as tp1_hits,
+                        SUM(CASE WHEN exit_reason = 'tp2_hit' THEN 1 ELSE 0 END) as tp2_hits,
+                        SUM(CASE WHEN exit_reason = 'sl_hit' THEN 1 ELSE 0 END) as sl_hits
+                    FROM trades
+                    WHERE symbol = ?
+                    AND timestamp > datetime('now', '-' || ? || ' days')
+                """
+                result = conn.execute(query, (symbol, days)).fetchone()
+                return dict(result) if result else {}
+
+        def get_optimal_tp_levels(self, symbol: str) -> Dict:
+            """Оптимальные TP уровни на основе истории"""
+            # Логика из вашего tp_optimizer.py
+            perf = self.get_symbol_performance(symbol, days=30)
+
+            if perf['total_trades'] < 10:
+                return {'tp1': 0.004, 'tp2': 0.008, 'tp3': 0.012}  # defaults
+
+            # Адаптация на основе hit rate
+            tp1_hit_rate = perf['tp1_hits'] / perf['total_trades']
+            if tp1_hit_rate < 0.3:
+                # TP1 слишком далеко, приближаем
+                return {'tp1': 0.003, 'tp2': 0.006, 'tp3': 0.009}
+            elif tp1_hit_rate > 0.7:
+                # TP1 слишком близко, отдаляем
+                return {'tp1': 0.005, 'tp2': 0.010, 'tp3': 0.015}
+
+4.  strategies/scalping_v1.py - интеграция вашей signal_utils логики:
+    pythonclass ScalpingV1(BaseStrategy):
+    def **init**(self):
+    super().**init**()
+
+            # Параметры из вашего signal_utils.py
+            self.enable_strong_signal_override = True
+            self.filter_tiers = {
+                "tier1": {"min_primary": 2, "min_secondary": 1},
+                "tier2": {"min_primary": 1, "min_secondary": 2},
+                "tier3": {"min_primary": 1, "min_secondary": 1}
+            }
+
+            # HTF analysis параметры
+            self.htf_enabled = True
+            self.htf_timeframes = ['5m', '15m']
+
+        async def analyze(self, symbol: str, data: pd.DataFrame) -> Optional[Dict]:
+            # ... базовый analyze ...
+
+            # Добавляем вашу passes_1plus1 логику
+            breakdown = self._get_signal_breakdown(data)
+
+            if not self._passes_1plus1(breakdown):
+                return None
+
+            # HTF подтверждение (из вашего signal_utils.py)
+            if self.htf_enabled:
+                htf_confirmation = await self._check_htf_alignment(symbol)
+                if not htf_confirmation:
+                    return None
+
+            # Volume spike detection
+            if self._detect_volume_spike(data):
+                breakdown['volume_spike'] = True
+                signal_strength *= 1.3
+
+            return signal
+
+        def _passes_1plus1(self, breakdown: Dict) -> bool:
+            """Ваша гибридная система фильтров"""
+            primary_signals = sum([
+                breakdown.get('macd_bullish', 0),
+                breakdown.get('ema_cross', 0),
+                breakdown.get('rsi_oversold', 0)
+            ])
+
+            secondary_signals = sum([
+                breakdown.get('volume_spike', 0),
+                breakdown.get('bb_squeeze', 0),
+                breakdown.get('momentum', 0)
+            ])
+
+            # Tier-based filtering
+            tier = self._determine_market_tier(breakdown)
+            tier_config = self.filter_tiers[tier]
+
+            return (primary_signals >= tier_config['min_primary'] and
+                    secondary_signals >= tier_config['min_secondary'])
+
+5.  Новый файл - core/monitoring.py (рекомендация Claude):
+    python# core/monitoring.py
+    import asyncio
+    from datetime import datetime
+    from collections import deque
+
+class PerformanceMonitor:
+"""Отслеживание метрик в реальном времени"""
+
+    def __init__(self, logger: UnifiedLogger):
+        self.logger = logger
+        self.metrics = {
+            'order_latencies': deque(maxlen=100),
+            'signal_latencies': deque(maxlen=100),
+            'api_errors': deque(maxlen=50),
+            'websocket_disconnects': 0
+        }
+
+    def track_latency(self, operation: str, duration: float):
+        """Трекинг латентности операций"""
+        if operation == 'order':
+            self.metrics['order_latencies'].append(duration)
+        elif operation == 'signal':
+            self.metrics['signal_latencies'].append(duration)
+
+        # Alert если латентность высокая
+        if duration > 1.0:  # 1 секунда
+            self.logger.log_event(
+                f"High latency detected: {operation} took {duration:.2f}s",
+                level="WARNING"
+            )
+
+    def get_stats(self) -> Dict:
+        """Получить текущую статистику"""
+        return {
+            'avg_order_latency': np.mean(self.metrics['order_latencies']),
+            'avg_signal_latency': np.mean(self.metrics['signal_latencies']),
+            'recent_errors': len(self.metrics['api_errors']),
+            'websocket_health': self.metrics['websocket_disconnects'] < 5
+        }
+
+6. main.py - интеграция всех компонентов:
+   python# Дополнить существующий main.py
+
+class TradingBot:
+def **init**(self): # ... существующий код ...
+self.monitor = PerformanceMonitor(logger)
+self.websocket_task = None
+
+    async def initialize(self):
+        # ... существующий код ...
+
+        # Запуск WebSocket для real-time обновлений
+        if not config.dry_run:
+            self.websocket_task = asyncio.create_task(
+                self.exchange.subscribe_user_stream()
+            )
+
+        # Восстановление состояния из вашего runtime_state.py
+        self._restore_state()
+
+    def _restore_state(self):
+        """Восстановление состояния бота"""
+        try:
+            with open('data/bot_state.json', 'r') as f:
+                state = json.load(f)
+
+            # Восстановление активных сделок
+            for symbol, trade_data in state.get('active_trades', {}).items():
+                self.engine.trade_manager.register_trade(symbol, trade_data)
+
+            logger.log_event(f"Restored {len(state.get('active_trades', {}))} active trades")
+        except:
+            logger.log_event("No previous state to restore")
+
+📋 Рекомендации по приоритетам:
+
+Сначала - доработайте exchange_client.py с WebSocket
+Затем - перенесите вашу risk логику в risk_manager.py
+После - адаптируйте стратегии с вашей signal_utils логикой
+В конце - добавьте monitoring для отслеживания производительности
+
+Эти улучшения сохранят все ваши уникальные наработки и добавят новые возможности!
