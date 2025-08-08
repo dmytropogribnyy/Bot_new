@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.4  # Совпадает с версией в requirements.txt
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+default_stages: [commit, push]

@@ -1,0 +1,149 @@
+# Virtual environment
+venv/
+env/
+.venv/
+ENV/
+venv.bak/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# Ruff
+.ruff.toml
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Data
+data/*.json
+data/*.csv
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+!data/.gitkeep
+!data/runtime_config.example.json
+!data/runtime_config_safe.json
+!data/runtime_config_test.json
+!data/runtime_config_aggressive.json
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Build
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Trading Bot Specific
+backtest_results/
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+temp/
+tmp/
+cache/
+*.bak
+*.backup
+*.old
+
+# Credentials and secrets
+credentials/
+secrets/
+*.pem
+*.key
+*.cert
+*.crt
+
+# Performance profiling
+*.prof
+*.lprof
+
+# Documentation
+docs/_build/
+site/
+
+# Package managers
+poetry.lock
+Pipfile.lock
+
+# C extensions
+*.so
+*.dylib
+*.dll
+
+# Distribution
+.pypirc
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+nosetests.xml
+test-results/
+
+# Reference old bot (не коммитим старый бот)
+reference-from-old-bot/
+
+# Config backups (не коммитим резервные копии конфигураций)
+data/runtime_config_backup_*.json
+
+# Сохраняем пример, но не реальный конфиг
+!data/runtime_config.example.json
+!.env.example
+!data/.gitkeep
+

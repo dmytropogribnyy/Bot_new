@@ -1,0 +1,13 @@
+{
+  "total_trades": 1,
+  "unique_symbols": 1,
+  "date_range": {
+    "start": "2025-08-03T16:42:52.937884",
+    "end": "2025-08-03T16:42:52.937884"
+  },
+  "win_rate": 1.0,
+  "avg_trades_per_day": 1.0,
+  "total_pnl": 0.5,
+  "best_symbol": "BTCUSDC",
+  "worst_symbol": "BTCUSDC"
+}

@@ -1,0 +1,2 @@
+timestamp,symbol,side,qty,entry_price,reason,date
+2025-08-03 16:42:52.937884,BTCUSDC,BUY,0.001,50000.0,TEST,2025-08-03
