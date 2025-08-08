@@ -48,3 +48,26 @@ telegram_log.txt
 # Windows
 desktop.ini
 
+# Keep VS Code JSON tracked
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# Additional caches and data
+.venv/
+env/
+ENV/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+logs/
+data/*.db
+data/*.sqlite
+data/*.parquet
+data/backup/
+data/runtime_config.json
+data/config.json
+!data/*example*.json
+!.env.example
+test-output/
