@@ -1,37 +1,41 @@
-# Binance USDC Futures Bot (v2.3) — Release Candidate (RC1)
+# Binance USDC Futures Bot (v2.4) — Release Candidate (RC1.1)
 
 Лёгкий торговый бот для USDⓈ‑Margined фьючерсов Binance.
 **Prod:** USDC‑контракты. **Testnet:** USDT‑контракты. Все расчёты размеров, баланса и PnL ведутся в **quote‑коине** (USDC/USDT).
 
 Материал носит образовательный характер и **не является инвестиционным советом**.
 
--   Финальная концепция и Roadmap: [`USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md`](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md)
--   **Статус проекта:** RC1 (09.08.2025)
+-   Финальная концепция и Roadmap: [`USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md`](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md) (RC1.1)
+-   **Статус проекта:** RC1.1 (09.08.2025)
 
     -   Тестнет‑прогон: выполнен
     -   Emergency shutdown (Ctrl+C): реализован
     -   Автозакрытие позиций и уборка «висячих» ордеров: реализованы
+    -   TP/SL параметризация: реализована
+    -   RiskGuard: реализован
     -   Продовые WS‑стримы включаются после стабилизации (по умолчанию REST)
 
 ## 🧭 Doc Map
 
--   **Spec:** [USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md)
--   **Execution:** _USDC Futures Bot — Execution Plan (Stages)_
--   **Operator:** _README.md_
+-   **Spec:** [USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md) (RC1.1)
+-   **Execution:** [USDC Futures Bot — Execution Plan (Stages) — RC1.1](USDC%20Futures%20Bot%20%E2%80%94%20Execution%20Plan%20%28Stages%29%20%E2%80%94%20RC1.1.md)
+-   **Operator:** _README.md_ (this file)
 
 ---
 
 ## 📂 Структура
 
 -   `main.py` — точка входа (async), инициализация, основной цикл
+
 -   `core/`
 
     -   `config.py` — конфигурация (Pydantic + .env + runtime JSON)
     -   `exchange_client.py` — слой биржи: `ccxt.binanceusdm`, sandbox/testnet, тайм‑синхронизация, бэкофф/ретраи
-    -   `symbol_utils.py` — нормализация символов: \`perp_symbol(base, coin) -> f"{base}/{coin}:{coin}"
+    -   `symbol_utils.py` — нормализация символов: `perp_symbol(base, coin) -> f"{base}/{coin}:{coin}"`
     -   `symbol_manager.py` — загрузка и фильтрация рынков (contract + settle/quote)
     -   `order_manager.py` — идемпотентные `create/replace/cancel`, `clientOrderId`, логирование
     -   `risk.py` — лимиты: `risk_per_trade_pct`, `daily_drawdown_pct`, `max_concurrent_positions`
+    -   `risk_guard.py` — **RiskGuard**: SL‑streak, daily‑loss блокировки
     -   `sizing.py` — размер позиции в quote‑коине
     -   `unified_logger.py` — логи: консоль/файл/SQLite/Telegram
     -   `trade_engine_v2.py` — скан/сигналы/вход; интеграция со стратегией
@@ -41,7 +45,9 @@
     -   `base_strategy.py`, `scalping_v1.py`
 
 -   `telegram/telegram_bot.py` — уведомления и команды управления
+
 -   `tests/*.py` — базовые и интеграционные тесты
+
 -   `data/` — конфиги и БД (`data/trading_bot.db`, `data/runtime_config.json`)
 
 ---
@@ -50,7 +56,9 @@
 
 -   Асинхронная архитектура (asyncio), модульность
 -   Управление риском: дневной лимит, ограничение одновременно открытых позиций, обязательный SL
+-   **RiskGuard**: блокировка после SL‑streak и при дневном убытке
 -   Ступенчатый TP, уборка зависших ордеров
+-   **Параметризация TP/SL**: выбор limit/market для TP, `workingType` для триггеров
 -   Символы под USDC/USDT: фильтры по контрактности/объёму/волатильности
 -   Telegram‑команды: статус, пауза/резюм, emergency‑стоп
 -   Логи и аналитика: файл, SQLite, агрегаты и runtime‑снапшоты
@@ -60,7 +68,7 @@
 
 ## ✅ Требования
 
--   Python 3.11+
+-   Python 3.12+
 -   `ccxt`, `pydantic`, `websockets`, `python-dotenv`, `uvloop` (Linux/macOS), `ruff`, `mypy`
 
 ---
@@ -91,7 +99,14 @@ RISK_PER_TRADE_PCT=0.5
 DAILY_DRAWDOWN_PCT=3.0
 MAX_CONCURRENT_POSITIONS=2
 MIN_POSITION_SIZE=10.0   # в quote-коине (USDC/USDT)
+
+# RC1.1: Параметры ордеров
+WORKING_TYPE=MARK_PRICE   # MARK_PRICE или CONTRACT_PRICE
+TP_ORDER_STYLE=limit      # limit или market
+MAX_SL_STREAK=3           # макс. число SL подряд
 ```
+
+> Примечание: переменные окружения в UPPER_CASE соответствуют полям Pydantic‑конфига `working_type`, `tp_order_style`, `max_sl_streak`.
 
 ---
 
@@ -149,7 +164,7 @@ python main.py
 
 ## 🧪 Тесты
 
--   Юнит‑тесты: `perp_symbol`, фильтрация рынков, сайзинг/риск.
+-   Юнит‑тесты: `perp_symbol`, фильтрация рынков, сайзинг/риск, RiskGuard.
 -   Интеграционные (Testnet): place/cancel, приём событий WS, реконнект + ресинк.
 
 ---
@@ -169,4 +184,4 @@ python main.py
 
 —
 
-© Binance USDC Futures Bot v2.3 — актуальная документация и статус поддерживаются в этом README и сопроводительных `.md` файлах.
+© Binance USDC Futures Bot v2.4 RC1.1 — актуальная документация и статус поддерживаются в этом README и сопроводительных `.md` файлах.
