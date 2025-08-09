@@ -5,6 +5,7 @@ Simple commands to manage API keys and settings
 """
 
 import sys
+
 from simple_env_manager import SimpleEnvManager
 
 
@@ -81,15 +82,15 @@ def main():
 
     command = sys.argv[1].lower()
 
-    if command == 'help':
+    if command == "help":
         show_help()
-    elif command == 'status':
+    elif command == "status":
         show_status()
-    elif command == 'set-api':
+    elif command == "set-api":
         set_api_keys()
-    elif command == 'set-telegram':
+    elif command == "set-telegram":
         set_telegram_credentials()
-    elif command == 'template':
+    elif command == "template":
         create_template()
     else:
         print(f"❌ Unknown command: {command}")

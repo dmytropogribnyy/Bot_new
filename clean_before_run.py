@@ -8,10 +8,14 @@ FILES_AND_DEFAULTS = {
     "data/cached_missed.json": "[]",
     "data/missed_signals.json": "[]",
     "data/missed_opportunities.json": "{}",
-    "data/component_tracker_log.json": json.dumps({"symbols": {}, "components": {}, "candlestick_rejections": 0}, indent=2),
+    "data/component_tracker_log.json": json.dumps(
+        {"symbols": {}, "components": {}, "candlestick_rejections": 0}, indent=2
+    ),
     "data/fetch_debug.json": "{}",
     "data/filter_tuning_log.json": "[]",
-    "data/entry_log.csv": ("timestamp,symbol,direction,entry_price,notional,type,mode,status,account_balance,commission,expected_profit,priority_pair,account_category,exit_reason\n"),
+    "data/entry_log.csv": (
+        "timestamp,symbol,direction,entry_price,notional,type,mode,status,account_balance,commission,expected_profit,priority_pair,account_category,exit_reason\n"
+    ),
     "data/tp_sl_debug.csv": "timestamp,symbol,level,qty,price,status,reason\n",
     "data/debug_monitoring_summary.json": "{}",
 }

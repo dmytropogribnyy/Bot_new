@@ -11,6 +11,7 @@ import orjson
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -74,11 +75,15 @@ class TradingConfig:
     min_sl_gap_percent: float = 0.005
 
     # Step TP levels (оптимизированы для лучшей прибыльности)
-    step_tp_levels: list[float] = field(default_factory=lambda: [0.005, 0.01, 0.015])  # Увеличены уровни
+    step_tp_levels: list[float] = field(
+        default_factory=lambda: [0.005, 0.01, 0.015]
+    )  # Увеличены уровни
     step_tp_sizes: list[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])
 
     # Auto profit (оптимизировано)
-    auto_profit_threshold: float = 0.5  # Снижен с 0.7 до 0.5 для более быстрого фиксирования прибыли
+    auto_profit_threshold: float = (
+        0.5  # Снижен с 0.7 до 0.5 для более быстрого фиксирования прибыли
+    )
     max_hold_minutes: int = 25  # Снижен с 30 до 25 минут
     soft_exit_minutes: int = 12  # Снижен с 15 до 12 минут
 
@@ -146,13 +151,15 @@ class TradingConfig:
     min_price_filter: float = 0.01
     min_atr_percent: float = 0.4
     blacklisted_symbols: list[str] = field(default_factory=lambda: ["USDCUSDC"])
-    symbol_score_weights: dict[str, int] = field(default_factory=lambda: {
-        "volume": 30,
-        "volatility": 25,
-        "trend": 20,
-        "win_rate": 15,
-        "avg_pnl": 10
-    })
+    symbol_score_weights: dict[str, int] = field(
+        default_factory=lambda: {
+            "volume": 30,
+            "volatility": 25,
+            "trend": 20,
+            "win_rate": 15,
+            "avg_pnl": 10,
+        }
+    )
 
     # --- WebSocket Settings ---
     websocket_enabled: bool = True
@@ -283,7 +290,7 @@ class TradingConfig:
             "volatility": 25,
             "trend": 20,
             "win_rate": 15,
-            "avg_pnl": 10
+            "avg_pnl": 10,
         }
         self.websocket_enabled = True
         self.websocket_reconnect_delay = 5
@@ -317,6 +324,7 @@ class TradingConfig:
             if Path(config_file).exists():
                 with open(config_file, "rb") as f:
                     import json
+
                     data = json.load(f)
 
                 # Обновляем только те поля, которые есть в файле
@@ -433,13 +441,21 @@ class TradingConfig:
 
         # Проверяем переменные окружения в первую очередь
         if is_testnet:
-            env_api_key = os.environ.get('BINANCE_API_KEY') or os.environ.get('BINANCE_TESTNET_API_KEY')
-            env_api_secret = os.environ.get('BINANCE_API_SECRET') or os.environ.get('BINANCE_TESTNET_API_SECRET')
+            env_api_key = os.environ.get("BINANCE_API_KEY") or os.environ.get(
+                "BINANCE_TESTNET_API_KEY"
+            )
+            env_api_secret = os.environ.get("BINANCE_API_SECRET") or os.environ.get(
+                "BINANCE_TESTNET_API_SECRET"
+            )
             if env_api_key and env_api_secret:
                 return env_api_key, env_api_secret
         else:
-            env_api_key = os.environ.get('BINANCE_API_KEY') or os.environ.get('BINANCE_PRODUCTION_API_KEY')
-            env_api_secret = os.environ.get('BINANCE_API_SECRET') or os.environ.get('BINANCE_PRODUCTION_API_SECRET')
+            env_api_key = os.environ.get("BINANCE_API_KEY") or os.environ.get(
+                "BINANCE_PRODUCTION_API_KEY"
+            )
+            env_api_secret = os.environ.get("BINANCE_API_SECRET") or os.environ.get(
+                "BINANCE_PRODUCTION_API_SECRET"
+            )
             if env_api_key and env_api_secret:
                 return env_api_key, env_api_secret
 
@@ -458,8 +474,8 @@ class TradingConfig:
         """
         Получение Telegram ключей из переменных окружения
         """
-        telegram_token = os.environ.get('TELEGRAM_TOKEN', self.telegram_token)
-        telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', self.telegram_chat_id)
+        telegram_token = os.environ.get("TELEGRAM_TOKEN", self.telegram_token)
+        telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", self.telegram_chat_id)
         return telegram_token, telegram_chat_id
 
     def get_logging_config(self) -> dict:
@@ -467,14 +483,13 @@ class TradingConfig:
         Получение настроек логирования из переменных окружения
         """
         return {
-            'log_level': os.environ.get('LOG_LEVEL', self.log_level),
-            'log_verbosity': os.environ.get('LOG_VERBOSITY', 'CLEAN')
+            "log_level": os.environ.get("LOG_LEVEL", self.log_level),
+            "log_verbosity": os.environ.get("LOG_VERBOSITY", "CLEAN"),
         }
 
     def is_testnet_mode(self) -> bool:
         """Проверка, находится ли бот в testnet режиме"""
-        return (self.exchange_mode == "testnet" or
-                hasattr(self, 'use_testnet') and self.use_testnet)
+        return self.exchange_mode == "testnet" or hasattr(self, "use_testnet") and self.use_testnet
 
     def is_production_mode(self) -> bool:
         """Проверка, находится ли бот в production режиме"""
@@ -503,24 +518,26 @@ class TradingConfig:
         return {
             "mode": "testnet" if self.is_testnet_mode() else "production",
             "exchange_mode": self.exchange_mode,
-            "use_testnet": hasattr(self, 'use_testnet') and self.use_testnet,
+            "use_testnet": hasattr(self, "use_testnet") and self.use_testnet,
             "has_api_key": bool(api_key),
             "has_api_secret": bool(api_secret),
             "has_telegram_token": bool(telegram_token),
             "has_telegram_chat_id": bool(telegram_chat_id),
             "api_key_source": self._get_api_key_source(),
             "environment_variables": {
-                "BINANCE_API_KEY": bool(os.environ.get('BINANCE_API_KEY')),
-                "BINANCE_API_SECRET": bool(os.environ.get('BINANCE_API_SECRET')),
-                "BINANCE_TESTNET_API_KEY": bool(os.environ.get('BINANCE_TESTNET_API_KEY')),
-                "BINANCE_TESTNET_API_SECRET": bool(os.environ.get('BINANCE_TESTNET_API_SECRET')),
-                "BINANCE_PRODUCTION_API_KEY": bool(os.environ.get('BINANCE_PRODUCTION_API_KEY')),
-                "BINANCE_PRODUCTION_API_SECRET": bool(os.environ.get('BINANCE_PRODUCTION_API_SECRET')),
-                "TELEGRAM_TOKEN": bool(os.environ.get('TELEGRAM_TOKEN')),
-                "TELEGRAM_CHAT_ID": bool(os.environ.get('TELEGRAM_CHAT_ID')),
-                "LOG_LEVEL": bool(os.environ.get('LOG_LEVEL')),
-                "LOG_VERBOSITY": bool(os.environ.get('LOG_VERBOSITY')),
-            }
+                "BINANCE_API_KEY": bool(os.environ.get("BINANCE_API_KEY")),
+                "BINANCE_API_SECRET": bool(os.environ.get("BINANCE_API_SECRET")),
+                "BINANCE_TESTNET_API_KEY": bool(os.environ.get("BINANCE_TESTNET_API_KEY")),
+                "BINANCE_TESTNET_API_SECRET": bool(os.environ.get("BINANCE_TESTNET_API_SECRET")),
+                "BINANCE_PRODUCTION_API_KEY": bool(os.environ.get("BINANCE_PRODUCTION_API_KEY")),
+                "BINANCE_PRODUCTION_API_SECRET": bool(
+                    os.environ.get("BINANCE_PRODUCTION_API_SECRET")
+                ),
+                "TELEGRAM_TOKEN": bool(os.environ.get("TELEGRAM_TOKEN")),
+                "TELEGRAM_CHAT_ID": bool(os.environ.get("TELEGRAM_CHAT_ID")),
+                "LOG_LEVEL": bool(os.environ.get("LOG_LEVEL")),
+                "LOG_VERBOSITY": bool(os.environ.get("LOG_VERBOSITY")),
+            },
         }
 
     def _get_api_key_source(self) -> str:
@@ -528,14 +545,14 @@ class TradingConfig:
         is_testnet = self.is_testnet_mode()
 
         if is_testnet:
-            if os.environ.get('BINANCE_API_KEY') or os.environ.get('BINANCE_TESTNET_API_KEY'):
+            if os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_TESTNET_API_KEY"):
                 return "environment_variable"
             elif self.testnet_api_key:
                 return "config_file_specific"
             elif self.api_key:
                 return "config_file_general"
         else:
-            if os.environ.get('BINANCE_API_KEY') or os.environ.get('BINANCE_PRODUCTION_API_KEY'):
+            if os.environ.get("BINANCE_API_KEY") or os.environ.get("BINANCE_PRODUCTION_API_KEY"):
                 return "environment_variable"
             elif self.production_api_key:
                 return "config_file_specific"
@@ -561,22 +578,22 @@ class TradingConfig:
                 "description": "Агрессивная торговля для высокой прибыльности",
                 "risk_level": "high",
                 "max_positions": 5,
-                "base_risk_pct": 0.15
+                "base_risk_pct": 0.15,
             },
             "data/runtime_config_safe.json": {
                 "profit_target_hourly": 0.5,
                 "description": "Безопасная торговля для стабильной прибыли",
                 "risk_level": "low",
                 "max_positions": 1,
-                "base_risk_pct": 0.005
+                "base_risk_pct": 0.005,
             },
             "data/runtime_config_test.json": {
                 "profit_target_hourly": 1.0,
                 "description": "Тестовая конфигурация для быстрых сделок",
                 "risk_level": "medium",
                 "max_positions": 1,
-                "base_risk_pct": 0.01
-            }
+                "base_risk_pct": 0.01,
+            },
         }
 
         # Находим конфигурацию, которая лучше всего соответствует цели
@@ -628,12 +645,14 @@ class TradingConfig:
             config = cls(config_path)
             config.profit_target_hourly = target_hourly_profit  # Устанавливаем целевую прибыль
 
-            print(f"[OK] Загружена конфигурация для цели ${target_hourly_profit}/час: {config_path}")
+            print(
+                f"[OK] Загружена конфигурация для цели ${target_hourly_profit}/час: {config_path}"
+            )
             print("Основные параметры:")
             print(f"   • Целевая прибыль в час: ${config.profit_target_hourly}")
             print(f"   • Макс. позиций: {config.max_concurrent_positions}")
-            print(f"   • Базовый риск: {config.base_risk_pct*100:.2f}%")
-            print(f"   • Stop Loss: {config.sl_percent*100:.2f}%")
+            print(f"   • Базовый риск: {config.base_risk_pct * 100:.2f}%")
+            print(f"   • Stop Loss: {config.sl_percent * 100:.2f}%")
 
             return config
 
@@ -648,9 +667,9 @@ class TradingConfig:
             "profit_target_hourly": self.profit_target_hourly,
             "profit_target_daily": self.profit_target_daily,
             "current_config_optimized_for": self.profit_target_hourly,
-            "config_file": getattr(self, '_config_file', 'default'),
+            "config_file": getattr(self, "_config_file", "default"),
             "risk_level": self._get_risk_level(),
-            "expected_hourly_profit": self._calculate_expected_hourly_profit()
+            "expected_hourly_profit": self._calculate_expected_hourly_profit(),
         }
 
     def _get_risk_level(self) -> str:

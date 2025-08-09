@@ -1,1 +1,1 @@
-# Strategies package 
+# Strategies package

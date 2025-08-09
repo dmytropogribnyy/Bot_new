@@ -20,7 +20,9 @@ def fetch_open_interest(symbol):
             return cached_value
 
     try:
-        response = requests.get("https://fapi.binance.com/fapi/v1/openInterest", params={"symbol": binance_symbol}, timeout=5)
+        response = requests.get(
+            "https://fapi.binance.com/fapi/v1/openInterest", params={"symbol": binance_symbol}, timeout=5
+        )
         if response.status_code != 200:
             return 0.0
 

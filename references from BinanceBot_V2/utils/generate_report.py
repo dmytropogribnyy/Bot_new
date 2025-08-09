@@ -51,8 +51,8 @@ class ReportGenerator:
             df = pd.read_sql_query(query, conn)
 
         if not df.empty:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df['date'] = df['timestamp'].dt.date
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["date"] = df["timestamp"].dt.date
 
         return df
 
@@ -63,26 +63,26 @@ class ReportGenerator:
 
         # Базовые метрики
         total_trades = len(df)
-        unique_symbols = df['symbol'].nunique()
+        unique_symbols = df["symbol"].nunique()
 
         # Симулируем PnL (в реальности нужно брать из БД)
-        df['simulated_pnl'] = df.apply(self._simulate_pnl, axis=1)
+        df["simulated_pnl"] = df.apply(self._simulate_pnl, axis=1)
 
         # Рассчитываем метрики
-        total_pnl = df['simulated_pnl'].sum()
-        win_trades = len(df[df['simulated_pnl'] > 0])
+        total_pnl = df["simulated_pnl"].sum()
+        win_trades = len(df[df["simulated_pnl"] > 0])
         win_rate = win_trades / total_trades if total_trades > 0 else 0
 
         # Средние показатели
         avg_pnl_per_trade = total_pnl / total_trades if total_trades > 0 else 0
-        avg_trades_per_day = total_trades / (df['date'].nunique() or 1)
+        avg_trades_per_day = total_trades / (df["date"].nunique() or 1)
 
         # Максимальная просадка (упрощенная)
-        cumulative_pnl = df['simulated_pnl'].cumsum()
+        cumulative_pnl = df["simulated_pnl"].cumsum()
         max_drawdown = (cumulative_pnl - cumulative_pnl.expanding().max()).min()
 
         # Sharpe Ratio (упрощенный)
-        returns = df['simulated_pnl'] / 100  # Предполагаем депозит $100
+        returns = df["simulated_pnl"] / 100  # Предполагаем депозит $100
         sharpe_ratio = returns.mean() / returns.std() if returns.std() > 0 else 0
 
         return {
@@ -97,23 +97,23 @@ class ReportGenerator:
             "profit_factor": self._calculate_profit_factor(df),
             "avg_trade_duration": self._calculate_avg_duration(df),
             "best_symbol": self._find_best_symbol(df),
-            "worst_symbol": self._find_worst_symbol(df)
+            "worst_symbol": self._find_worst_symbol(df),
         }
 
     def _simulate_pnl(self, row: pd.Series) -> float:
         """Симулирует PnL для сделки"""
         # Упрощенная симуляция
         base_pnl = 0.5  # 0.5% средняя прибыль
-        if row['side'] == 'BUY':
+        if row["side"] == "BUY":
             return base_pnl
         else:
             return -base_pnl * 0.3  # 30% убыточных сделок
 
     def _calculate_profit_factor(self, df: pd.DataFrame) -> float:
         """Рассчитывает Profit Factor"""
-        profits = df[df['simulated_pnl'] > 0]['simulated_pnl'].sum()
-        losses = abs(df[df['simulated_pnl'] < 0]['simulated_pnl'].sum())
-        return profits / losses if losses > 0 else float('inf')
+        profits = df[df["simulated_pnl"] > 0]["simulated_pnl"].sum()
+        losses = abs(df[df["simulated_pnl"] < 0]["simulated_pnl"].sum())
+        return profits / losses if losses > 0 else float("inf")
 
     def _calculate_avg_duration(self, df: pd.DataFrame) -> str:
         """Рассчитывает среднюю продолжительность сделки"""
@@ -124,14 +124,14 @@ class ReportGenerator:
         """Находит лучший символ"""
         if df.empty:
             return "N/A"
-        symbol_pnl = df.groupby('symbol')['simulated_pnl'].sum()
+        symbol_pnl = df.groupby("symbol")["simulated_pnl"].sum()
         return symbol_pnl.idxmax() if not symbol_pnl.empty else "N/A"
 
     def _find_worst_symbol(self, df: pd.DataFrame) -> str:
         """Находит худший символ"""
         if df.empty:
             return "N/A"
-        symbol_pnl = df.groupby('symbol')['simulated_pnl'].sum()
+        symbol_pnl = df.groupby("symbol")["simulated_pnl"].sum()
         return symbol_pnl.idxmin() if not symbol_pnl.empty else "N/A"
 
     def _empty_metrics(self) -> dict[str, Any]:
@@ -148,7 +148,7 @@ class ReportGenerator:
             "profit_factor": 0.0,
             "avg_trade_duration": "N/A",
             "best_symbol": "N/A",
-            "worst_symbol": "N/A"
+            "worst_symbol": "N/A",
         }
 
     def generate_html_report(self, metrics: dict[str, Any], days: int) -> str:
@@ -255,9 +255,7 @@ class ReportGenerator:
         """
 
         return Template(template).render(
-            metrics=metrics,
-            days=days,
-            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            metrics=metrics, days=days, timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
 
     def generate_pdf_report(self, metrics: dict[str, Any], days: int) -> str:

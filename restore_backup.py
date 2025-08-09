@@ -4,7 +4,7 @@ import shutil
 backup_dir = "./backup_before_refactor"
 restore_dir = "."
 
-for foldername, subfolders, filenames in os.walk(backup_dir):
+for foldername, _subfolders, filenames in os.walk(backup_dir):
     for filename in filenames:
         backup_path = os.path.join(foldername, filename)
         rel_path = os.path.relpath(backup_path, backup_dir)

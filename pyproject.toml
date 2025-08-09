@@ -8,18 +8,59 @@ exclude = [
     "venv",
     "__pycache__",
     ".ruff_cache",
-    "backup_before_refactor"
+    "backup_before_refactor",
+    "references from BinanceBot_V2"
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
-fixable = ["E", "F", "I", "W"]
+# Включаем основные правила
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+]
 
-[tool.black]
-line-length = 120
-target-version = ["py312"]
+# Исправляем все что можем
+fixable = ["ALL"]
+unfixable = []
+
+# Игнорируем длинные строки - их сложно автоматически исправить
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "strategies", "telegram", "tests"]
+combine-as-imports = true
+force-sort-within-sections = false
+lines-between-types = 0
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+
+[tool.ruff.lint.per-file-ignores]
+# Разрешаем импорты после кода в определенных файлах
+"test_*.py" = ["E402"]
+"debug_*.py" = ["E402"]
+"force_trade.py" = ["E402"]
+"monitor_bot.py" = ["E402"]
+"quick_check.py" = ["E402"]
+"test_shutdown.py" = ["E402", "E722"]
+"test_simple.py" = ["E402"]
+"test_telegram.py" = ["E402"]
+"tools/*.py" = ["E402", "E741"]
+"main.py" = ["E722"]
+"close_position.py" = ["E402", "E722"]
+"check_*.py" = ["E402"]
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15

@@ -5,10 +5,11 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     - проверяет TP/SL, min_profit, min_notional
     - возвращает параметры сделки или None
     """
-    import traceback
     from collections import defaultdict
+    import traceback
 
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
+
     from core.binance_api import convert_symbol, fetch_ohlcv
     from core.exchange_init import exchange
     from core.strategy import should_enter_trade
@@ -35,7 +36,11 @@ def process_symbol(symbol, balance, last_trade_times, lock):
                 return None
 
             margin = exchange.fetch_balance()["info"]
-            avail_margin = float(margin.get("totalMarginBalance", 0)) - float(margin.get("totalPositionInitialMargin", 0)) - float(margin.get("totalOpenOrderInitialMargin", 0))
+            avail_margin = (
+                float(margin.get("totalMarginBalance", 0))
+                - float(margin.get("totalPositionInitialMargin", 0))
+                - float(margin.get("totalOpenOrderInitialMargin", 0))
+            )
             margin_with_buffer = avail_margin * MARGIN_SAFETY_BUFFER
             if margin_with_buffer <= 0:
                 log(f"⚠️ Skipping {symbol} — no available margin", level="ERROR")
@@ -107,22 +112,33 @@ def process_symbol(symbol, balance, last_trade_times, lock):
         symbol_blocked_count[symbol] = 0
 
         try:
-            enough_profit, net_profit_tp1 = check_min_profit(entry, tp1, qty, share_tp1, direction, TAKER_FEE_RATE, get_min_net_profit(balance))
+            enough_profit, net_profit_tp1 = check_min_profit(
+                entry, tp1, qty, share_tp1, direction, TAKER_FEE_RATE, get_min_net_profit(balance)
+            )
             if not enough_profit:
                 log(f"⚠️ Skipping {symbol} — profit ~{net_profit_tp1:.2f} USDC below threshold", level="WARNING")
                 return None
 
             min_profit_required = get_runtime_config().get("min_profit_threshold", 0.06)
             if net_profit_tp1 < min_profit_required:
-                log(f"⚠️ Skipping {symbol} — profit {net_profit_tp1:.2f} < min {min_profit_required:.2f}", level="WARNING")
+                log(
+                    f"⚠️ Skipping {symbol} — profit {net_profit_tp1:.2f} < min {min_profit_required:.2f}",
+                    level="WARNING",
+                )
                 return None
 
         except Exception as e:
             log(f"⚠️ Profit check error for {symbol}: {e}", level="ERROR")
             return None
 
-        log(f"[Confirm] {symbol} TP1={tp1:.4f}, TP2={tp2:.4f}, SL={sl_price:.4f} | Notional=${notional:.2f}", level="DEBUG")
-        log(f"{symbol} => {direction}, qty={qty:.3f}, notional={notional:.2f}, expProfit={net_profit_tp1:.2f}", level="INFO")
+        log(
+            f"[Confirm] {symbol} TP1={tp1:.4f}, TP2={tp2:.4f}, SL={sl_price:.4f} | Notional=${notional:.2f}",
+            level="DEBUG",
+        )
+        log(
+            f"{symbol} => {direction}, qty={qty:.3f}, notional={notional:.2f}, expProfit={net_profit_tp1:.2f}",
+            level="INFO",
+        )
         send_telegram_message(f"🟢 VALID SIGNAL {symbol} {direction} qty={qty:.4f} @ {entry:.4f}")
 
         return {

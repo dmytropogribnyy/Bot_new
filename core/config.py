@@ -7,7 +7,7 @@ Unified configuration with leverage mapping and simplified loading
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
@@ -38,7 +38,7 @@ class TradingConfig(BaseModel):
     volume_threshold: float = Field(default=1000000, description="Minimum 24h volume in USDT")
 
     # Logging Configuration
-    log_level: str = Field(default="INFO", description="Logging level")
+    log_level: str = Field(default="DEBUG", description="Logging level")
     log_to_file: bool = Field(default=True, description="Log to file")
     log_to_console: bool = Field(default=True, description="Log to console")
     log_to_telegram: bool = Field(default=True, description="Log to Telegram")
@@ -69,19 +69,43 @@ class TradingConfig(BaseModel):
     dry_run: bool = Field(default=True, description="Enable dry run mode (no real trades)")
 
     # Leverage Configuration
-    leverage_map: Dict[str, int] = Field(default_factory=lambda: {
-        "BTCUSDT": 5, "ETHUSDT": 5, "BTCUSDC": 5, "ETHUSDC": 5,
-        "DOGEUSDC": 12, "XRPUSDC": 12, "ADAUSDC": 10, "SOLUSDC": 6,
-        "BNBUSDC": 5, "LINKUSDC": 8, "ARBUSDC": 6, "SUIUSDC": 6,
-        "MATICUSDC": 10, "DOTUSDC": 8
-    }, description="Leverage mapping for symbols")
+    leverage_map: dict[str, int] = Field(
+        default_factory=lambda: {
+            "BTCUSDT": 5,
+            "ETHUSDT": 5,
+            "BTCUSDC": 5,
+            "ETHUSDC": 5,
+            "DOGEUSDC": 12,
+            "XRPUSDC": 12,
+            "ADAUSDC": 10,
+            "SOLUSDC": 6,
+            "BNBUSDC": 5,
+            "LINKUSDC": 8,
+            "ARBUSDC": 6,
+            "SUIUSDC": 6,
+            "MATICUSDC": 10,
+            "DOTUSDC": 8,
+        },
+        description="Leverage mapping for symbols",
+    )
 
     # Trading Symbols
     usdt_symbols: list = Field(default=["BTC/USDT"], description="USDT trading pairs")
-    usdc_symbols: list = Field(default=[
-        "BTC/USDC", "ETH/USDC", "XRP/USDC", "ADA/USDC", "SOL/USDC",
-        "BNB/USDC", "LINK/USDC", "ARB/USDC", "DOGE/USDC", "SUI/USDC"
-    ], description="USDC trading pairs")
+    usdc_symbols: list = Field(
+        default=[
+            "BTC/USDC",
+            "ETH/USDC",
+            "XRP/USDC",
+            "ADA/USDC",
+            "SOL/USDC",
+            "BNB/USDC",
+            "LINK/USDC",
+            "ARB/USDC",
+            "DOGE/USDC",
+            "SUI/USDC",
+        ],
+        description="USDC trading pairs",
+    )
 
     # Advanced Trading Settings
     max_concurrent_positions: int = Field(default=3, description="Maximum concurrent positions")
@@ -111,6 +135,7 @@ class TradingConfig(BaseModel):
     bonus_profit_threshold: float = Field(default=2.0, description="Bonus profit threshold")
     max_hold_minutes: int = Field(default=10, description="Maximum hold time")
     min_profit_threshold: float = Field(default=0.06, description="Minimum profit threshold")
+    entry_cooldown_seconds: int = Field(default=300, description="Cooldown between entries on same symbol")
 
     # Order Settings
     min_notional_open: float = Field(default=15.0, description="Minimum notional for opening")
@@ -151,6 +176,7 @@ class TradingConfig(BaseModel):
             # Try to use SimpleEnvManager if available
             try:
                 from simple_env_manager import SimpleEnvManager
+
                 manager = SimpleEnvManager()
                 env_vars = manager.load_env_file()
 
@@ -162,13 +188,13 @@ class TradingConfig(BaseModel):
 
             except ImportError:
                 # Fallback to manual loading
-                env_file = Path('.env')
+                env_file = Path(".env")
                 if env_file.exists():
-                    with open(env_file, 'r', encoding='utf-8') as f:
+                    with open(env_file, encoding="utf-8") as f:
                         for line in f:
                             line = line.strip()
-                            if line and not line.startswith('#') and '=' in line:
-                                key, value = line.split('=', 1)
+                            if line and not line.startswith("#") and "=" in line:
+                                key, value = line.split("=", 1)
                                 os.environ[key.strip()] = value.strip()
                     print("✅ Loaded .env file manually")
 
@@ -177,16 +203,12 @@ class TradingConfig(BaseModel):
 
     def _load_from_file(self):
         """Load configuration from file"""
-        config_files = [
-            "data/runtime_config.json",
-            "data/config.json",
-            "config.json"
-        ]
+        config_files = ["data/runtime_config.json", "data/config.json", "config.json"]
 
         for config_file in config_files:
             if Path(config_file).exists():
                 try:
-                    with open(config_file, 'r', encoding='utf-8') as f:
+                    with open(config_file, encoding="utf-8") as f:
                         file_config = json.load(f)
 
                     # Update only non-empty values
@@ -202,22 +224,22 @@ class TradingConfig(BaseModel):
     def _load_from_env(self):
         """Load configuration from environment variables"""
         env_mapping = {
-            'BINANCE_API_KEY': 'api_key',
-            'BINANCE_API_SECRET': 'api_secret',
-            'BINANCE_TESTNET': 'testnet',
-            'TELEGRAM_TOKEN': 'telegram_token',
-            'TELEGRAM_CHAT_ID': 'telegram_chat_id',
-            'LOG_LEVEL': 'log_level',
-            'DRY_RUN': 'dry_run'
+            "BINANCE_API_KEY": "api_key",
+            "BINANCE_API_SECRET": "api_secret",
+            "BINANCE_TESTNET": "testnet",
+            "TELEGRAM_TOKEN": "telegram_token",
+            "TELEGRAM_CHAT_ID": "telegram_chat_id",
+            "LOG_LEVEL": "log_level",
+            "DRY_RUN": "dry_run",
         }
 
         for env_var, config_key in env_mapping.items():
             env_value = os.getenv(env_var)
             if env_value is not None:
-                if config_key == 'testnet':
-                    setattr(self, config_key, env_value.lower() == 'true')
-                elif config_key == 'dry_run':
-                    setattr(self, config_key, env_value.lower() == 'true')
+                if config_key == "testnet":
+                    setattr(self, config_key, env_value.lower() == "true")
+                elif config_key == "dry_run":
+                    setattr(self, config_key, env_value.lower() == "true")
                 else:
                     setattr(self, config_key, env_value)
 
@@ -227,9 +249,7 @@ class TradingConfig(BaseModel):
 
     def is_telegram_enabled(self) -> bool:
         """Check if Telegram is enabled and configured"""
-        return (self.telegram_enabled and
-                self.telegram_token and
-                self.telegram_chat_id)
+        return self.telegram_enabled and self.telegram_token and self.telegram_chat_id
 
     def get_leverage_for_symbol(self, symbol: str) -> int:
         """Get leverage for a specific symbol"""
@@ -247,7 +267,7 @@ class TradingConfig(BaseModel):
         """Save current configuration to file"""
         try:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(self.dict(), f, indent=2, default=str)
             print(f"Configuration saved to {filepath}")
         except Exception as e:
@@ -277,7 +297,7 @@ class TradingConfig(BaseModel):
 
         return True
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get configuration summary for logging"""
         return {
             "testnet": self.testnet,
@@ -285,7 +305,7 @@ class TradingConfig(BaseModel):
             "max_positions": self.max_positions,
             "strategy": self.strategy_name,
             "telegram_enabled": self.is_telegram_enabled(),
-            "log_level": self.log_level
+            "log_level": self.log_level,
         }
 
 

@@ -7,10 +7,9 @@ Includes startup, runtime monitoring, and shutdown notifications
 import asyncio
 import signal
 import sys
-import requests
 from datetime import datetime
-from dotenv import load_dotenv
-import os
+
+import requests
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
@@ -20,8 +19,8 @@ from core.symbol_manager import SymbolManager
 from core.trading_engine import TradingEngine
 from core.unified_logger import UnifiedLogger
 from core.websocket_manager import WebSocketManager
-from strategies.symbol_selector import SymbolSelector
 from strategies.strategy_manager import StrategyManager
+from strategies.symbol_selector import SymbolSelector
 
 
 class TelegramNotifier:
@@ -40,11 +39,7 @@ class TelegramNotifier:
 
         try:
             url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            data = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": parse_mode
-            }
+            data = {"chat_id": self.chat_id, "text": message, "parse_mode": parse_mode}
             response = requests.post(url, json=data, timeout=10)
             return response.status_code == 200
         except Exception as e:
@@ -57,12 +52,12 @@ class TelegramNotifier:
 🚀 <b>BinanceBot V2 STARTED</b>
 
 📊 <b>Configuration:</b>
-• Target Profit: ${config_info['profit_target_hourly']}/hour
-• Max Positions: {config_info['max_positions']}
-• Risk Level: {config_info['risk_level']}
-• Mode: {config_info['mode']}
+• Target Profit: ${config_info["profit_target_hourly"]}/hour
+• Max Positions: {config_info["max_positions"]}
+• Risk Level: {config_info["risk_level"]}
+• Mode: {config_info["mode"]}
 
-⏰ Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏰ Started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         """
         return self.send_message(message.strip())
 
@@ -72,15 +67,15 @@ class TelegramNotifier:
 📈 <b>Bot Status Update</b>
 
 💰 <b>Performance:</b>
-• Active Positions: {status.get('active_positions', 0)}
-• Total PnL: ${status.get('total_pnl', 0):.2f}
-• Win Rate: {status.get('win_rate', 0):.1f}%
+• Active Positions: {status.get("active_positions", 0)}
+• Total PnL: ${status.get("total_pnl", 0):.2f}
+• Win Rate: {status.get("win_rate", 0):.1f}%
 
 ⚙️ <b>System:</b>
-• Uptime: {status.get('uptime', 'N/A')}
-• Last Trade: {status.get('last_trade', 'N/A')}
+• Uptime: {status.get("uptime", "N/A")}
+• Last Trade: {status.get("last_trade", "N/A")}
 
-⏰ Update: {datetime.now().strftime('%H:%M:%S')}
+⏰ Update: {datetime.now().strftime("%H:%M:%S")}
         """
         return self.send_message(message.strip())
 
@@ -90,12 +85,12 @@ class TelegramNotifier:
 🛑 <b>BinanceBot V2 STOPPED</b>
 
 📊 <b>Final Statistics:</b>
-• Total Trades: {final_stats.get('total_trades', 0)}
-• Total PnL: ${final_stats.get('total_pnl', 0):.2f}
-• Win Rate: {final_stats.get('win_rate', 0):.1f}%
-• Runtime: {final_stats.get('runtime', 'N/A')}
+• Total Trades: {final_stats.get("total_trades", 0)}
+• Total PnL: ${final_stats.get("total_pnl", 0):.2f}
+• Win Rate: {final_stats.get("win_rate", 0):.1f}%
+• Runtime: {final_stats.get("runtime", "N/A")}
 
-⏰ Stopped: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏰ Stopped: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         """
         return self.send_message(message.strip())
 
@@ -111,17 +106,23 @@ async def main():
 
     # Initialize logger
     logger = UnifiedLogger(config)
-    logger.log_event("MAIN", "INFO", f"🚀 Enhanced Bot started with ${config.profit_target_hourly}/hour target")
+    logger.log_event(
+        "MAIN", "INFO", f"🚀 Enhanced Bot started with ${config.profit_target_hourly}/hour target"
+    )
 
     # Initialize Telegram notifier
     telegram = TelegramNotifier(config)
 
     # Send startup message
     config_info = {
-        'profit_target_hourly': config.profit_target_hourly,
-        'max_positions': config.max_concurrent_positions,
-        'risk_level': 'HIGH' if config.base_risk_pct > 0.1 else 'MEDIUM' if config.base_risk_pct > 0.05 else 'LOW',
-        'mode': 'PRODUCTION' if config.is_production_mode() else 'TESTNET'
+        "profit_target_hourly": config.profit_target_hourly,
+        "max_positions": config.max_concurrent_positions,
+        "risk_level": "HIGH"
+        if config.base_risk_pct > 0.1
+        else "MEDIUM"
+        if config.base_risk_pct > 0.05
+        else "LOW",
+        "mode": "PRODUCTION" if config.is_production_mode() else "TESTNET",
     }
 
     if telegram.send_startup_message(config_info):
@@ -164,13 +165,20 @@ async def main():
 
         # Initialize leverage manager
         from core.leverage_manager import LeverageManager
+
         leverage_manager = LeverageManager(config, logger)
 
         # Initialize trading engine
         logger.log_event("MAIN", "INFO", "⚙️ Initializing trading engine...")
         trading_engine = TradingEngine(
-            config, exchange, symbol_selector, leverage_manager, risk_manager, logger,
-            order_manager=order_manager, strategy_manager=strategy_manager
+            config,
+            exchange,
+            symbol_selector,
+            leverage_manager,
+            risk_manager,
+            logger,
+            order_manager=order_manager,
+            strategy_manager=strategy_manager,
         )
 
         logger.log_event("MAIN", "INFO", "✅ Trading engine initialized")
@@ -187,19 +195,19 @@ async def main():
                 try:
                     # Get current status
                     status = {
-                        'active_positions': len(order_manager.active_positions),
-                        'total_pnl': 0.0,  # Will be calculated from positions
-                        'win_rate': 0.0,   # Will be calculated from history
-                        'uptime': 'Running',
-                        'last_trade': 'N/A'
+                        "active_positions": len(order_manager.active_positions),
+                        "total_pnl": 0.0,  # Will be calculated from positions
+                        "win_rate": 0.0,  # Will be calculated from history
+                        "uptime": "Running",
+                        "last_trade": "N/A",
                     }
 
                     # Calculate total PnL from active positions
                     total_pnl = 0.0
                     for symbol, position in order_manager.active_positions.items():
-                        if 'unrealized_pnl' in position:
-                            total_pnl += position['unrealized_pnl']
-                    status['total_pnl'] = total_pnl
+                        if "unrealized_pnl" in position:
+                            total_pnl += position["unrealized_pnl"]
+                    status["total_pnl"] = total_pnl
 
                     telegram.send_runtime_status(status)
                     await asyncio.sleep(300)  # 5 minutes
@@ -224,7 +232,7 @@ async def main():
 ❌ <b>Bot Error</b>
 
 Error: {str(e)}
-Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         """
         telegram.send_message(error_message.strip())
         raise
@@ -235,12 +243,7 @@ async def graceful_shutdown(telegram=None):
     print("\n🛑 Graceful shutdown initiated...")
 
     if telegram:
-        final_stats = {
-            'total_trades': 0,
-            'total_pnl': 0.0,
-            'win_rate': 0.0,
-            'runtime': 'N/A'
-        }
+        final_stats = {"total_trades": 0, "total_pnl": 0.0, "win_rate": 0.0, "runtime": "N/A"}
         telegram.send_shutdown_message(final_stats)
 
     print("✅ Bot shutdown complete")

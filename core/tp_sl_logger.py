@@ -1,6 +1,6 @@
 import csv
-import os
 from datetime import datetime
+import os
 
 from utils_logging import log
 

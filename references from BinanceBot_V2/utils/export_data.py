@@ -21,7 +21,9 @@ class DataExporter:
         self.exports_dir = Path("exports")
         self.exports_dir.mkdir(exist_ok=True)
 
-    def get_trade_data(self, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+    def get_trade_data(
+        self, start_date: str | None = None, end_date: str | None = None
+    ) -> pd.DataFrame:
         """Получает данные о сделках за указанный период"""
         if not self.db_path.exists():
             print("⚠️ Database not found, creating sample data...")
@@ -56,8 +58,8 @@ class DataExporter:
             df = pd.read_sql_query(query, conn, params=params)
 
         if not df.empty:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df['date'] = df['timestamp'].dt.date
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["date"] = df["timestamp"].dt.date
 
         return df
 
@@ -74,18 +76,20 @@ class DataExporter:
 
         for i in range(100):
             trade_date = base_date + timedelta(hours=random.randint(0, 720))
-            data.append({
-                'timestamp': trade_date,
-                'symbol': random.choice(symbols),
-                'side': random.choice(sides),
-                'qty': round(random.uniform(0.001, 0.1), 6),
-                'entry_price': round(random.uniform(20000, 60000), 2),
-                'reason': random.choice(reasons)
-            })
+            data.append(
+                {
+                    "timestamp": trade_date,
+                    "symbol": random.choice(symbols),
+                    "side": random.choice(sides),
+                    "qty": round(random.uniform(0.001, 0.1), 6),
+                    "entry_price": round(random.uniform(20000, 60000), 2),
+                    "reason": random.choice(reasons),
+                }
+            )
 
         df = pd.DataFrame(data)
-        df['date'] = df['timestamp'].dt.date
-        return df.sort_values('timestamp', ascending=False)
+        df["date"] = df["timestamp"].dt.date
+        return df.sort_values("timestamp", ascending=False)
 
     def export_to_csv(self, df: pd.DataFrame, filename: str) -> str:
         """Экспортирует данные в CSV"""
@@ -99,19 +103,19 @@ class DataExporter:
 
         # Конвертируем DataFrame в JSON-совместимый формат
         data = {
-            'metadata': {
-                'export_date': datetime.now().isoformat(),
-                'total_trades': len(df),
-                'symbols': df['symbol'].unique().tolist(),
-                'date_range': {
-                    'start': df['timestamp'].min().isoformat() if not df.empty else None,
-                    'end': df['timestamp'].max().isoformat() if not df.empty else None
-                }
+            "metadata": {
+                "export_date": datetime.now().isoformat(),
+                "total_trades": len(df),
+                "symbols": df["symbol"].unique().tolist(),
+                "date_range": {
+                    "start": df["timestamp"].min().isoformat() if not df.empty else None,
+                    "end": df["timestamp"].max().isoformat() if not df.empty else None,
+                },
             },
-            'trades': df.to_dict('records')
+            "trades": df.to_dict("records"),
         }
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str)
 
         return str(filepath)
@@ -120,27 +124,36 @@ class DataExporter:
         """Экспортирует данные в Excel"""
         filepath = self.exports_dir / f"{filename}.xlsx"
 
-        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+        with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
             # Основные данные
-            df.to_excel(writer, sheet_name='Trades', index=False)
+            df.to_excel(writer, sheet_name="Trades", index=False)
 
             # Сводка по символам
             if not df.empty:
-                symbol_summary = df.groupby('symbol').agg({
-                    'side': 'count',
-                    'qty': 'sum',
-                    'entry_price': ['mean', 'min', 'max']
-                }).round(4)
-                symbol_summary.columns = ['Total_Trades', 'Total_Quantity', 'Avg_Price', 'Min_Price', 'Max_Price']
-                symbol_summary.to_excel(writer, sheet_name='Symbol_Summary')
+                symbol_summary = (
+                    df.groupby("symbol")
+                    .agg({"side": "count", "qty": "sum", "entry_price": ["mean", "min", "max"]})
+                    .round(4)
+                )
+                symbol_summary.columns = [
+                    "Total_Trades",
+                    "Total_Quantity",
+                    "Avg_Price",
+                    "Min_Price",
+                    "Max_Price",
+                ]
+                symbol_summary.to_excel(writer, sheet_name="Symbol_Summary")
 
                 # Сводка по дням
-                daily_summary = df.groupby('date').agg({
-                    'symbol': 'count',
-                    'side': lambda x: (x == 'BUY').sum()
-                }).rename(columns={'symbol': 'Total_Trades', 'side': 'Buy_Trades'})
-                daily_summary['Sell_Trades'] = daily_summary['Total_Trades'] - daily_summary['Buy_Trades']
-                daily_summary.to_excel(writer, sheet_name='Daily_Summary')
+                daily_summary = (
+                    df.groupby("date")
+                    .agg({"symbol": "count", "side": lambda x: (x == "BUY").sum()})
+                    .rename(columns={"symbol": "Total_Trades", "side": "Buy_Trades"})
+                )
+                daily_summary["Sell_Trades"] = (
+                    daily_summary["Total_Trades"] - daily_summary["Buy_Trades"]
+                )
+                daily_summary.to_excel(writer, sheet_name="Daily_Summary")
 
         return str(filepath)
 
@@ -148,35 +161,37 @@ class DataExporter:
         """Экспортирует сводку метрик"""
         if df.empty:
             metrics = {
-                'total_trades': 0,
-                'unique_symbols': 0,
-                'date_range': None,
-                'win_rate': 0.0,
-                'avg_trades_per_day': 0.0
+                "total_trades": 0,
+                "unique_symbols": 0,
+                "date_range": None,
+                "win_rate": 0.0,
+                "avg_trades_per_day": 0.0,
             }
         else:
             # Симулируем PnL для расчета метрик
-            df['simulated_pnl'] = df.apply(self._simulate_pnl, axis=1)
+            df["simulated_pnl"] = df.apply(self._simulate_pnl, axis=1)
 
             total_trades = len(df)
-            win_trades = len(df[df['simulated_pnl'] > 0])
+            win_trades = len(df[df["simulated_pnl"] > 0])
 
             metrics = {
-                'total_trades': total_trades,
-                'unique_symbols': df['symbol'].nunique(),
-                'date_range': {
-                    'start': df['timestamp'].min().isoformat(),
-                    'end': df['timestamp'].max().isoformat()
+                "total_trades": total_trades,
+                "unique_symbols": df["symbol"].nunique(),
+                "date_range": {
+                    "start": df["timestamp"].min().isoformat(),
+                    "end": df["timestamp"].max().isoformat(),
                 },
-                'win_rate': win_trades / total_trades if total_trades > 0 else 0,
-                'avg_trades_per_day': total_trades / df['date'].nunique() if df['date'].nunique() > 0 else 0,
-                'total_pnl': df['simulated_pnl'].sum(),
-                'best_symbol': self._find_best_symbol(df),
-                'worst_symbol': self._find_worst_symbol(df)
+                "win_rate": win_trades / total_trades if total_trades > 0 else 0,
+                "avg_trades_per_day": total_trades / df["date"].nunique()
+                if df["date"].nunique() > 0
+                else 0,
+                "total_pnl": df["simulated_pnl"].sum(),
+                "best_symbol": self._find_best_symbol(df),
+                "worst_symbol": self._find_worst_symbol(df),
             }
 
         filepath = self.exports_dir / f"{filename}_metrics.json"
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2, default=str)
 
         return str(filepath)
@@ -184,7 +199,7 @@ class DataExporter:
     def _simulate_pnl(self, row: pd.Series) -> float:
         """Симулирует PnL для сделки"""
         base_pnl = 0.5  # 0.5% средняя прибыль
-        if row['side'] == 'BUY':
+        if row["side"] == "BUY":
             return base_pnl
         else:
             return -base_pnl * 0.3
@@ -193,16 +208,16 @@ class DataExporter:
         """Находит лучший символ"""
         if df.empty:
             return "N/A"
-        df['simulated_pnl'] = df.apply(self._simulate_pnl, axis=1)
-        symbol_pnl = df.groupby('symbol')['simulated_pnl'].sum()
+        df["simulated_pnl"] = df.apply(self._simulate_pnl, axis=1)
+        symbol_pnl = df.groupby("symbol")["simulated_pnl"].sum()
         return symbol_pnl.idxmax() if not symbol_pnl.empty else "N/A"
 
     def _find_worst_symbol(self, df: pd.DataFrame) -> str:
         """Находит худший символ"""
         if df.empty:
             return "N/A"
-        df['simulated_pnl'] = df.apply(self._simulate_pnl, axis=1)
-        symbol_pnl = df.groupby('symbol')['simulated_pnl'].sum()
+        df["simulated_pnl"] = df.apply(self._simulate_pnl, axis=1)
+        symbol_pnl = df.groupby("symbol")["simulated_pnl"].sum()
         return symbol_pnl.idxmin() if not symbol_pnl.empty else "N/A"
 
     def export_for_validation(self, df: pd.DataFrame, filename: str) -> dict[str, str]:
@@ -211,19 +226,19 @@ class DataExporter:
 
         # CSV для общих платформ
         csv_file = self.export_to_csv(df, f"{filename}_validation")
-        exported_files['csv'] = csv_file
+        exported_files["csv"] = csv_file
 
         # JSON для API интеграций
         json_file = self.export_to_json(df, f"{filename}_api")
-        exported_files['json'] = json_file
+        exported_files["json"] = json_file
 
         # Excel для детального анализа
         excel_file = self.export_to_excel(df, f"{filename}_detailed")
-        exported_files['excel'] = excel_file
+        exported_files["excel"] = excel_file
 
         # Метрики для быстрой оценки
         metrics_file = self.export_metrics_summary(df, filename)
-        exported_files['metrics'] = metrics_file
+        exported_files["metrics"] = metrics_file
 
         return exported_files
 
@@ -234,22 +249,24 @@ class DataExporter:
 
         # Формат для копитрейдинг платформ
         copy_trading_data = {
-            'bot_info': {
-                'name': 'BinanceBot_V2',
-                'version': '2.0.0',
-                'strategy': 'OptiFlow HFT',
-                'exchange': 'Binance USDC Futures'
+            "bot_info": {
+                "name": "BinanceBot_V2",
+                "version": "2.0.0",
+                "strategy": "OptiFlow HFT",
+                "exchange": "Binance USDC Futures",
             },
-            'performance': {
-                'total_trades': len(df),
-                'win_rate': len(df[df['side'] == 'BUY']) / len(df) if len(df) > 0 else 0,
-                'avg_trades_per_day': len(df) / df['date'].nunique() if df['date'].nunique() > 0 else 0
+            "performance": {
+                "total_trades": len(df),
+                "win_rate": len(df[df["side"] == "BUY"]) / len(df) if len(df) > 0 else 0,
+                "avg_trades_per_day": len(df) / df["date"].nunique()
+                if df["date"].nunique() > 0
+                else 0,
             },
-            'trades': df.to_dict('records')
+            "trades": df.to_dict("records"),
         }
 
         filepath = self.exports_dir / f"{filename}_copy_trading.json"
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(copy_trading_data, f, indent=2, default=str)
 
         return str(filepath)
@@ -261,30 +278,30 @@ class DataExporter:
 
         # Формат для маркетплейса сигналов
         signal_data = {
-            'provider': {
-                'name': 'BinanceBot_V2',
-                'description': 'High-Frequency Trading Bot for Binance USDC Futures',
-                'rating': 4.8,
-                'subscribers': 150
+            "provider": {
+                "name": "BinanceBot_V2",
+                "description": "High-Frequency Trading Bot for Binance USDC Futures",
+                "rating": 4.8,
+                "subscribers": 150,
             },
-            'signals': []
+            "signals": [],
         }
 
         # Конвертируем сделки в сигналы
         for _, trade in df.iterrows():
             signal = {
-                'timestamp': trade['timestamp'].isoformat(),
-                'symbol': trade['symbol'],
-                'action': trade['side'],
-                'entry_price': trade['entry_price'],
-                'quantity': trade['qty'],
-                'confidence': 0.85,  # Симулированная уверенность
-                'strategy': trade['reason']
+                "timestamp": trade["timestamp"].isoformat(),
+                "symbol": trade["symbol"],
+                "action": trade["side"],
+                "entry_price": trade["entry_price"],
+                "quantity": trade["qty"],
+                "confidence": 0.85,  # Симулированная уверенность
+                "strategy": trade["reason"],
             }
-            signal_data['signals'].append(signal)
+            signal_data["signals"].append(signal)
 
         filepath = self.exports_dir / f"{filename}_signals.json"
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(signal_data, f, indent=2, default=str)
 
         return str(filepath)
@@ -295,8 +312,15 @@ def main():
     parser = argparse.ArgumentParser(description="Export trading data")
     parser.add_argument("--start-date", help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", help="End date (YYYY-MM-DD)")
-    parser.add_argument("--format", choices=["csv", "json", "excel", "all"], default="all", help="Export format")
-    parser.add_argument("--purpose", choices=["validation", "copy_trading", "signals", "analysis"], default="validation", help="Export purpose")
+    parser.add_argument(
+        "--format", choices=["csv", "json", "excel", "all"], default="all", help="Export format"
+    )
+    parser.add_argument(
+        "--purpose",
+        choices=["validation", "copy_trading", "signals", "analysis"],
+        default="validation",
+        help="Export purpose",
+    )
     parser.add_argument("--output", default=None, help="Output filename (without extension)")
 
     args = parser.parse_args()

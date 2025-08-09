@@ -60,7 +60,9 @@ async def start_bot():
             logger.log_event("BALANCE", "INFO", f"💰 Доступно: {available:.2f} USDC")
 
             # Отправляем баланс в Telegram
-            await telegram_bot.send_notification(f"💰 Баланс: {balance:.2f} USDC\n💰 Доступно: {available:.2f} USDC")
+            await telegram_bot.send_notification(
+                f"💰 Баланс: {balance:.2f} USDC\n💰 Доступно: {available:.2f} USDC"
+            )
 
             # Проверяем IP
             current_ip = await ip_monitor.get_current_ip()
@@ -100,11 +102,12 @@ async def start_bot():
 
     except Exception as e:
         print(f"\n❌ Ошибка запуска: {e}")
-        if 'logger' in locals():
+        if "logger" in locals():
             logger.log_event("SYSTEM", "ERROR", f"❌ Ошибка запуска: {e}")
-        if 'telegram_bot' in locals():
+        if "telegram_bot" in locals():
             await telegram_bot.send_notification(f"❌ Ошибка запуска: {e}")
         return False
+
 
 if __name__ == "__main__":
     try:

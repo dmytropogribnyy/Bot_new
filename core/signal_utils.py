@@ -174,12 +174,20 @@ def passes_1plus1(breakdown):
     if not result and enable_override:
         if macd_strength >= macd_override or rsi_strength >= rsi_override:
             result = True
-            log(f"[1plus1] 🚨 Strong signal override: macd_strength={macd_strength:.2f}, rsi_strength={rsi_strength:.2f} → ✅ OVERRIDE PASS", level="DEBUG")
+            log(
+                f"[1plus1] 🚨 Strong signal override: macd_strength={macd_strength:.2f}, rsi_strength={rsi_strength:.2f} → ✅ OVERRIDE PASS",
+                level="DEBUG",
+            )
         else:
-            log(f"[1plus1] ⛔ Override check failed: macd={macd_strength:.2f}, rsi={rsi_strength:.2f} (thresholds: {macd_override}/{rsi_override})", level="DEBUG")
+            log(
+                f"[1plus1] ⛔ Override check failed: macd={macd_strength:.2f}, rsi={rsi_strength:.2f} (thresholds: {macd_override}/{rsi_override})",
+                level="DEBUG",
+            )
 
     log(
-        f"[1plus1] ➕ PRIMARY: {primary_components} = {primary_sum} | " f"🔧 SECONDARY: {secondary_components} = {secondary_sum} | " f"🧠 Mode={mode} | ✅ RESULT: {result}",
+        f"[1plus1] ➕ PRIMARY: {primary_components} = {primary_sum} | "
+        f"🔧 SECONDARY: {secondary_components} = {secondary_sum} | "
+        f"🧠 Mode={mode} | ✅ RESULT: {result}",
         level="DEBUG",
     )
 

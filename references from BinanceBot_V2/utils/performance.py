@@ -4,7 +4,6 @@
 Использует Numba JIT для критических вычислений
 """
 
-
 import numpy as np
 
 try:

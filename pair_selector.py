@@ -2,13 +2,11 @@
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-import time
-from pathlib import Path
 from threading import Lock
-
-import pandas as pd
+import time
 
 from common.config_loader import (
     FIXED_PAIRS,
@@ -17,6 +15,8 @@ from common.config_loader import (
     USE_TESTNET,
     get_priority_small_balance_pairs,
 )
+import pandas as pd
+
 from constants import SIGNAL_FAILURES_FILE, SYMBOLS_FILE
 from core.binance_api import convert_symbol
 from core.exchange_init import exchange
@@ -50,7 +50,7 @@ LOW_VOLUME_FILE = "data/low_volume_hits.json"
 def load_blocked_symbols():
     try:
         if os.path.exists(BLOCKED_SYMBOLS_FILE):
-            with open(BLOCKED_SYMBOLS_FILE, "r") as f:
+            with open(BLOCKED_SYMBOLS_FILE) as f:
                 return json.load(f)
     except Exception as e:
         log(f"[Blocked] Failed to load blocked symbols: {e}", level="WARNING")
@@ -69,7 +69,7 @@ def save_blocked_symbols(data):
 def load_low_volume_hits():
     try:
         if os.path.exists(LOW_VOLUME_FILE):
-            with open(LOW_VOLUME_FILE, "r") as f:
+            with open(LOW_VOLUME_FILE) as f:
                 return json.load(f)
     except Exception as e:
         log(f"[LowVolume] Failed to load low_volume_hits: {e}", level="WARNING")
@@ -152,7 +152,7 @@ def load_valid_usdc_symbols():
 
 def load_failure_stats():
     try:
-        with open(FAIL_STATS_FILE, "r") as f:
+        with open(FAIL_STATS_FILE) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -234,7 +234,7 @@ def calculate_correlation(price_data):
         return None
 
     # 🔒 Проверка длины массивов
-    lengths = [len(v) for v in price_data.values() if isinstance(v, (list, np.ndarray)) and len(v) >= 2]
+    lengths = [len(v) for v in price_data.values() if isinstance(v, list | np.ndarray) and len(v) >= 2]
     if not lengths:
         log("[CorrMatrix] No valid price data arrays found", level="WARNING")
         return None
@@ -246,7 +246,7 @@ def calculate_correlation(price_data):
     # 🧹 Обрезаем все массивы до одинаковой длины
     normalized_data = {}
     for k, v in price_data.items():
-        if isinstance(v, (list, np.ndarray)) and len(v) >= min_len:
+        if isinstance(v, list | np.ndarray) and len(v) >= min_len:
             normalized_data[k] = v[-min_len:]
 
     if len(normalized_data) < 2:
@@ -341,16 +341,24 @@ def select_active_symbols():
 
     excluded_lv = [s for s, v in low_volume_hits.items() if v["count"] >= 4]
     if excluded_lv:
-        log(f"[LowVolume] ❌ Excluding {len(excluded_lv)} low-volume repeat offenders: {', '.join(excluded_lv)}", level="WARNING")
+        log(
+            f"[LowVolume] ❌ Excluding {len(excluded_lv)} low-volume repeat offenders: {', '.join(excluded_lv)}",
+            level="WARNING",
+        )
         for s in excluded_lv:
             sym_data.pop(s, None)
 
     # Фильтруем multi-tier
     filtered_data = {}
     for tier in tiers:
-        filtered_data = {s: info for s, info in sym_data.items() if info["atr"] >= tier["atr"] and info["volume"] >= tier["volume"]}
+        filtered_data = {
+            s: info for s, info in sym_data.items() if info["atr"] >= tier["atr"] and info["volume"] >= tier["volume"]
+        }
         if len(filtered_data) >= min_dyn:
-            log(f"[FilterTier] {len(filtered_data)} symbols passed ATR≥{tier['atr']} / VOL≥{tier['volume']}", level="INFO")
+            log(
+                f"[FilterTier] {len(filtered_data)} symbols passed ATR≥{tier['atr']} / VOL≥{tier['volume']}",
+                level="INFO",
+            )
             break
         else:
             log(f"[FilterTier] Only {len(filtered_data)} passed => next tier...", level="INFO")
@@ -390,7 +398,7 @@ def select_active_symbols():
                 final_list.append(p)
                 added.add(p)
 
-        for s, sc in entries:
+        for s, _sc in entries:
             if len(final_list) >= max_dyn:
                 break
             if s not in added:
@@ -408,10 +416,12 @@ def select_active_symbols():
         uncorrelated = []
         added = set()
 
-        for sym, sc in pairs_with_scores:
+        for sym, _sc in pairs_with_scores:
             if len(uncorrelated) >= max_dyn:
                 break
-            if corr_matrix is not None and any(abs(corr_matrix.loc[sym, a_]) > 0.9 for a_ in added if sym in corr_matrix and a_ in corr_matrix):
+            if corr_matrix is not None and any(
+                abs(corr_matrix.loc[sym, a_]) > 0.9 for a_ in added if sym in corr_matrix and a_ in corr_matrix
+            ):
                 continue
             uncorrelated.append(sym)
             added.add(sym)
@@ -421,7 +431,10 @@ def select_active_symbols():
 
     # 🔔 Уведомление, если не хватило пар
     if len(dynamic_list) < min_dyn:
-        send_telegram_message(f"⚠️ Only {len(dynamic_list)} dynamic pairs selected (min required: {min_dyn}) — check volume/atr tiers.", force=True)
+        send_telegram_message(
+            f"⚠️ Only {len(dynamic_list)} dynamic pairs selected (min required: {min_dyn}) — check volume/atr tiers.",
+            force=True,
+        )
 
     # Финальный список символов
     final_symbols_list = [{"symbol": fsym, "type": "fixed"} for fsym in fixed]
@@ -443,7 +456,10 @@ def select_active_symbols():
     msg = f"🔄 Symbol rotation:\nBalance: {balance:.1f} USDC\nFiltered: {len(filtered_data)}\nFixed: {len(fixed)} | Dynamic: {len(dynamic_list)}\nActive total: {len(final_symbols_list)}"
     send_telegram_message(msg, force=True)
 
-    log(f"[Selector] Selected {len(final_symbols_list)} total symbols ({len(fixed)} fixed, {len(dynamic_list)} dynamic)", level="INFO")
+    log(
+        f"[Selector] Selected {len(final_symbols_list)} total symbols ({len(fixed)} fixed, {len(dynamic_list)} dynamic)",
+        level="INFO",
+    )
     log(f"[Selector] Top dynamic symbols: {', '.join(dynamic_list[:5])}", level="DEBUG")
 
     return final_symbols_list
@@ -601,7 +617,7 @@ def track_missed_opportunities():
             with CACHE_LOCK:
                 cache = []
                 if os.path.exists(CACHE_FILE):
-                    with open(CACHE_FILE, "r") as f:
+                    with open(CACHE_FILE) as f:
                         try:
                             cache = json.load(f)
                         except json.JSONDecodeError:

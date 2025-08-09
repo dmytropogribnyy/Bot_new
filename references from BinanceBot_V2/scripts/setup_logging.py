@@ -14,7 +14,6 @@ from typing import Any
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-
 class LoggingSetup:
     """Настройка логирования для разных сред"""
 
@@ -29,7 +28,7 @@ class LoggingSetup:
             return {}
 
         try:
-            with open(self.config_path, encoding='utf-8') as f:
+            with open(self.config_path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             print(f"❌ Ошибка загрузки конфигурации: {e}")
@@ -37,12 +36,12 @@ class LoggingSetup:
 
     def setup_environment(self, environment: str):
         """Настраивает логирование для указанной среды"""
-        if environment not in self.logging_config.get('environments', {}):
+        if environment not in self.logging_config.get("environments", {}):
             print(f"❌ Неизвестная среда: {environment}")
             print(f"Доступные среды: {list(self.logging_config.get('environments', {}).keys())}")
             return False
 
-        env_config = self.logging_config['environments'][environment]
+        env_config = self.logging_config["environments"][environment]
         print(f"🔧 Настройка логирования для среды: {environment}")
         print(f"📋 Описание: {env_config.get('description', 'N/A')}")
 
@@ -63,28 +62,34 @@ class LoggingSetup:
         print("🔧 Настройка переменных окружения...")
 
         # Основные настройки
-        os.environ['LOGGING_ENVIRONMENT'] = environment
-        os.environ['LOG_LEVEL'] = config.get('file_logging', {}).get('log_level', 'INFO')
+        os.environ["LOGGING_ENVIRONMENT"] = environment
+        os.environ["LOG_LEVEL"] = config.get("file_logging", {}).get("log_level", "INFO")
 
         # Внешние сервисы
-        external_services = config.get('external_services', {})
-        if external_services.get('enabled', False):
+        external_services = config.get("external_services", {})
+        if external_services.get("enabled", False):
             # AWS CloudWatch
-            if external_services.get('aws_cloudwatch', {}).get('enabled', False):
-                os.environ['AWS_CLOUDWATCH_ENABLED'] = 'true'
-                os.environ['AWS_CLOUDWATCH_LOG_GROUP'] = external_services['aws_cloudwatch'].get('log_group', 'binance-bot')
-                os.environ['AWS_DEFAULT_REGION'] = external_services['aws_cloudwatch'].get('region', 'us-east-1')
+            if external_services.get("aws_cloudwatch", {}).get("enabled", False):
+                os.environ["AWS_CLOUDWATCH_ENABLED"] = "true"
+                os.environ["AWS_CLOUDWATCH_LOG_GROUP"] = external_services["aws_cloudwatch"].get(
+                    "log_group", "binance-bot"
+                )
+                os.environ["AWS_DEFAULT_REGION"] = external_services["aws_cloudwatch"].get(
+                    "region", "us-east-1"
+                )
 
             # GCP StackDriver
-            if external_services.get('gcp_stackdriver', {}).get('enabled', False):
-                os.environ['GCP_STACKDRIVER_ENABLED'] = 'true'
-                os.environ['GCP_STACKDRIVER_LOG_NAME'] = 'binance-bot'
-                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/path/to/service-account.json'
+            if external_services.get("gcp_stackdriver", {}).get("enabled", False):
+                os.environ["GCP_STACKDRIVER_ENABLED"] = "true"
+                os.environ["GCP_STACKDRIVER_LOG_NAME"] = "binance-bot"
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/path/to/service-account.json"
 
             # Azure Monitor
-            if external_services.get('azure_monitor', {}).get('enabled', False):
-                os.environ['AZURE_MONITOR_ENABLED'] = 'true'
-                os.environ['AZURE_MONITOR_CONNECTION_STRING'] = external_services['azure_monitor'].get('connection_string', '')
+            if external_services.get("azure_monitor", {}).get("enabled", False):
+                os.environ["AZURE_MONITOR_ENABLED"] = "true"
+                os.environ["AZURE_MONITOR_CONNECTION_STRING"] = external_services[
+                    "azure_monitor"
+                ].get("connection_string", "")
 
         print("✅ Переменные окружения настроены")
 
@@ -103,7 +108,7 @@ class LoggingSetup:
         print(f"✅ Создана директория: {data_dir}")
 
         # Для VPS/Cloud/Production - создаем системные директории
-        if config.get('database', {}).get('path', '').startswith('/var/log'):
+        if config.get("database", {}).get("path", "").startswith("/var/log"):
             try:
                 system_log_dir = Path("/var/log/binance-bot")
                 system_log_dir.mkdir(parents=True, exist_ok=True)
@@ -121,18 +126,22 @@ class LoggingSetup:
         runtime_config_path = Path("data/runtime_config.json")
         if runtime_config_path.exists():
             try:
-                with open(runtime_config_path, encoding='utf-8') as f:
+                with open(runtime_config_path, encoding="utf-8") as f:
                     runtime_config = json.load(f)
 
                 # Обновляем настройки логирования
-                runtime_config.update({
-                    'max_log_size_mb': config.get('file_logging', {}).get('max_size_mb', 100),
-                    'log_retention_days': config.get('file_logging', {}).get('retention_days', 30),
-                    'db_path': config.get('database', {}).get('path', 'data/trading_log.db'),
-                    'telegram_enabled': config.get('telegram', {}).get('enabled', True)
-                })
+                runtime_config.update(
+                    {
+                        "max_log_size_mb": config.get("file_logging", {}).get("max_size_mb", 100),
+                        "log_retention_days": config.get("file_logging", {}).get(
+                            "retention_days", 30
+                        ),
+                        "db_path": config.get("database", {}).get("path", "data/trading_log.db"),
+                        "telegram_enabled": config.get("telegram", {}).get("enabled", True),
+                    }
+                )
 
-                with open(runtime_config_path, 'w', encoding='utf-8') as f:
+                with open(runtime_config_path, "w", encoding="utf-8") as f:
                     json.dump(runtime_config, f, indent=2, ensure_ascii=False)
 
                 print(f"✅ Обновлен файл конфигурации: {runtime_config_path}")
@@ -144,37 +153,37 @@ class LoggingSetup:
         env_file = Path(".env")
         env_content = f"""# Logging Environment Configuration
 LOGGING_ENVIRONMENT={environment}
-LOG_LEVEL={config.get('file_logging', {}).get('log_level', 'INFO')}
+LOG_LEVEL={config.get("file_logging", {}).get("log_level", "INFO")}
 
 # Database Configuration
-DB_PATH={config.get('database', {}).get('path', 'data/trading_log.db')}
+DB_PATH={config.get("database", {}).get("path", "data/trading_log.db")}
 
 # Telegram Configuration
-TELEGRAM_ENABLED={str(config.get('telegram', {}).get('enabled', True)).lower()}
+TELEGRAM_ENABLED={str(config.get("telegram", {}).get("enabled", True)).lower()}
 
 # External Services
-AWS_CLOUDWATCH_ENABLED={str(config.get('external_services', {}).get('enabled', False)).lower()}
-GCP_STACKDRIVER_ENABLED={str(config.get('external_services', {}).get('enabled', False)).lower()}
-AZURE_MONITOR_ENABLED={str(config.get('external_services', {}).get('enabled', False)).lower()}
+AWS_CLOUDWATCH_ENABLED={str(config.get("external_services", {}).get("enabled", False)).lower()}
+GCP_STACKDRIVER_ENABLED={str(config.get("external_services", {}).get("enabled", False)).lower()}
+AZURE_MONITOR_ENABLED={str(config.get("external_services", {}).get("enabled", False)).lower()}
 """
 
-        with open(env_file, 'w', encoding='utf-8') as f:
+        with open(env_file, "w", encoding="utf-8") as f:
             f.write(env_content)
 
         print(f"✅ Создан файл переменных окружения: {env_file}")
 
     def show_environment_info(self, environment: str):
         """Показывает информацию о настройках среды"""
-        if environment not in self.logging_config.get('environments', {}):
+        if environment not in self.logging_config.get("environments", {}):
             print(f"❌ Неизвестная среда: {environment}")
             return
 
-        env_config = self.logging_config['environments'][environment]
+        env_config = self.logging_config["environments"][environment]
         print(f"\n📊 Информация о среде: {environment}")
         print(f"📋 Описание: {env_config.get('description', 'N/A')}")
 
         # Файловое логирование
-        file_logging = env_config.get('file_logging', {})
+        file_logging = env_config.get("file_logging", {})
         print("\n📁 Файловое логирование:")
         print(f"   • Включено: {file_logging.get('enabled', True)}")
         print(f"   • Уровень: {file_logging.get('log_level', 'INFO')}")
@@ -182,32 +191,32 @@ AZURE_MONITOR_ENABLED={str(config.get('external_services', {}).get('enabled', Fa
         print(f"   • Хранение: {file_logging.get('retention_days', 30)} дней")
 
         # Консольное логирование
-        console_logging = env_config.get('console_logging', {})
+        console_logging = env_config.get("console_logging", {})
         print("\n🖥️ Консольное логирование:")
         print(f"   • Включено: {console_logging.get('enabled', True)}")
         print(f"   • Цвета: {console_logging.get('colors', True)}")
         print(f"   • Эмодзи: {console_logging.get('emojis', True)}")
 
         # Telegram
-        telegram = env_config.get('telegram', {})
+        telegram = env_config.get("telegram", {})
         print("\n📱 Telegram:")
         print(f"   • Включено: {telegram.get('enabled', True)}")
         print(f"   • Уведомления: {telegram.get('notifications', [])}")
 
         # Внешние сервисы
-        external_services = env_config.get('external_services', {})
+        external_services = env_config.get("external_services", {})
         print("\n☁️ Внешние сервисы:")
         print(f"   • Включено: {external_services.get('enabled', False)}")
-        if external_services.get('enabled', False):
-            if external_services.get('aws_cloudwatch', {}).get('enabled', False):
+        if external_services.get("enabled", False):
+            if external_services.get("aws_cloudwatch", {}).get("enabled", False):
                 print("   • AWS CloudWatch: ✅")
-            if external_services.get('gcp_stackdriver', {}).get('enabled', False):
+            if external_services.get("gcp_stackdriver", {}).get("enabled", False):
                 print("   • GCP StackDriver: ✅")
-            if external_services.get('azure_monitor', {}).get('enabled', False):
+            if external_services.get("azure_monitor", {}).get("enabled", False):
                 print("   • Azure Monitor: ✅")
 
         # База данных
-        database = env_config.get('database', {})
+        database = env_config.get("database", {})
         print("\n🗄️ База данных:")
         print(f"   • Путь: {database.get('path', 'data/trading_log.db')}")
         print(f"   • Резервное копирование: {database.get('backup_enabled', True)}")
@@ -217,7 +226,7 @@ def main():
     """Главная функция"""
     if len(sys.argv) < 2:
         print("🚀 Скрипт настройки логирования")
-        print("="*50)
+        print("=" * 50)
         print("Использование:")
         print("  python scripts/setup_logging.py <environment>")
         print("  python scripts/setup_logging.py info <environment>")
@@ -233,7 +242,7 @@ def main():
 
     setup = LoggingSetup()
 
-    if sys.argv[1] == 'info':
+    if sys.argv[1] == "info":
         if len(sys.argv) < 3:
             print("❌ Укажите среду для просмотра информации")
             return

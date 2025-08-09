@@ -2,17 +2,13 @@
 
 import asyncio
 import time
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 
 async def safe_call_retry_async(
-    func: Callable, 
-    *args, 
-    tries: int = 3, 
-    delay: float = 1.0, 
-    label: str = "API call", 
-    **kwargs
-) -> Optional[Any]:
+    func: Callable, *args, tries: int = 3, delay: float = 1.0, label: str = "API call", **kwargs
+) -> Any | None:
     """
     Безопасный асинхронный вызов с повторными попытками.
     Адаптировано из старого бота.
@@ -23,7 +19,7 @@ async def safe_call_retry_async(
                 result = await func(*args, **kwargs)
             else:
                 result = func(*args, **kwargs)
-                
+
             if result is None:
                 raise ValueError(f"{label} returned None")
 
@@ -36,7 +32,7 @@ async def safe_call_retry_async(
             print(f"❌ {label} failed (attempt {attempt + 1}/{tries}): {e}")
 
             if attempt < tries - 1:
-                sleep_time = delay * (2 ** attempt)
+                sleep_time = delay * (2**attempt)
                 print(f"⏳ {label} retrying in {sleep_time} s...")
                 await asyncio.sleep(sleep_time)
             else:
@@ -45,13 +41,8 @@ async def safe_call_retry_async(
 
 
 def safe_call_retry_sync(
-    func: Callable, 
-    *args, 
-    tries: int = 3, 
-    delay: float = 1.0, 
-    label: str = "API call", 
-    **kwargs
-) -> Optional[Any]:
+    func: Callable, *args, tries: int = 3, delay: float = 1.0, label: str = "API call", **kwargs
+) -> Any | None:
     """
     Безопасный синхронный вызов с повторными попытками.
     Адаптировано из старого бота.
@@ -59,7 +50,7 @@ def safe_call_retry_sync(
     for attempt in range(tries):
         try:
             result = func(*args, **kwargs)
-            
+
             if result is None:
                 raise ValueError(f"{label} returned None")
 
@@ -72,7 +63,7 @@ def safe_call_retry_sync(
             print(f"❌ {label} failed (attempt {attempt + 1}/{tries}): {e}")
 
             if attempt < tries - 1:
-                sleep_time = delay * (2 ** attempt)
+                sleep_time = delay * (2**attempt)
                 print(f"⏳ {label} retrying in {sleep_time} s...")
                 time.sleep(sleep_time)
             else:
@@ -113,13 +104,13 @@ def normalize_symbol(symbol: str) -> str:
     """
     if not symbol:
         return ""
-    
+
     # Убираем лишние пробелы
     symbol = symbol.strip().upper()
-    
+
     # Заменяем разделители
     symbol = symbol.replace(" ", "").replace("-", "").replace("_", "")
-    
+
     return symbol
 
 
@@ -130,9 +121,9 @@ def extract_symbol(symbol: str) -> str:
     """
     if not symbol:
         return ""
-    
+
     # Убираем суффиксы
     symbol = symbol.replace(":USDC", "").replace(":USDT", "")
     symbol = symbol.replace("/USDC", "").replace("/USDT", "")
-    
-    return symbol.strip().upper() 
+
+    return symbol.strip().upper()

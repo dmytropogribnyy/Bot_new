@@ -1,9 +1,6 @@
-import os
 from datetime import datetime, timedelta
 from math import ceil
-
-import matplotlib.pyplot as plt
-import pandas as pd
+import os
 
 from common.config_loader import (
     DAILY_PROFIT_TARGET,
@@ -14,6 +11,9 @@ from common.config_loader import (
     trade_stats,
     trade_stats_lock,
 )
+import matplotlib.pyplot as plt
+import pandas as pd
+
 from core.risk_utils import get_max_risk, set_max_risk
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance
@@ -187,7 +187,10 @@ def export_trade_log():
     try:
         with open("data/trade_log.txt", "a") as f:
             timestamp = now_with_timezone().strftime("%Y-%m-%d %H:%M")
-            f.write(f"[{timestamp}] Total: {stats['total']}, Wins: {stats['wins']}, " f"Losses: {stats['losses']}, PnL: {stats['pnl']}, Withdrawals: {stats['withdrawals']}\n")
+            f.write(
+                f"[{timestamp}] Total: {stats['total']}, Wins: {stats['wins']}, "
+                f"Losses: {stats['losses']}, PnL: {stats['pnl']}, Withdrawals: {stats['withdrawals']}\n"
+            )
         send_telegram_message(escape_markdown_v2("Trade log exported."), force=True)
         if LOG_LEVEL == "DEBUG":
             log("Trade log exported successfully.", level="DEBUG")
@@ -313,6 +316,7 @@ def generate_daily_report(days=1):
     """
     try:
         from common.config_loader import get_priority_small_balance_pairs
+
         from utils_core import get_cached_balance
 
         if not os.path.exists(EXPORT_PATH):
@@ -552,7 +556,7 @@ def check_performance_circuit_breaker():
         return {"status": "insufficient_data"}
 
     log(
-        f"Performance circuit breaker: Win rate {recent_stats['win_rate']*100:.1f}%, "
+        f"Performance circuit breaker: Win rate {recent_stats['win_rate'] * 100:.1f}%, "
         f"PF {recent_stats['profit_factor']:.2f}, Wins {recent_stats['wins']}, Losses {recent_stats['losses']}",
         level="DEBUG",
     )
@@ -561,7 +565,10 @@ def check_performance_circuit_breaker():
         current_max_risk = get_max_risk()
         new_max_risk = current_max_risk * 0.6
         set_max_risk(new_max_risk)
-        msg = f"⚠️ PERFORMANCE ALERT: Win rate {recent_stats['win_rate']*100:.1f}%, " f"PF {recent_stats['profit_factor']:.2f}.\nRisk reduced to {new_max_risk*100:.1f}%."
+        msg = (
+            f"⚠️ PERFORMANCE ALERT: Win rate {recent_stats['win_rate'] * 100:.1f}%, "
+            f"PF {recent_stats['profit_factor']:.2f}.\nRisk reduced to {new_max_risk * 100:.1f}%."
+        )
         log(msg, level="WARNING")
         send_telegram_message(msg, force=True)
         return {
@@ -575,7 +582,10 @@ def check_performance_circuit_breaker():
         current_max_risk = get_max_risk()
         if current_max_risk < 0.03:
             set_max_risk(0.03)
-            msg = f"✅ PERFORMANCE RECOVERY: Win rate {recent_stats['win_rate']*100:.1f}%, " f"PF {recent_stats['profit_factor']:.2f}.\nRisk restored to 3.0%."
+            msg = (
+                f"✅ PERFORMANCE RECOVERY: Win rate {recent_stats['win_rate'] * 100:.1f}%, "
+                f"PF {recent_stats['profit_factor']:.2f}.\nRisk restored to 3.0%."
+            )
             log(msg, level="INFO")
             send_telegram_message(msg, force=True)
             return {

@@ -1,6 +1,4 @@
 # Import Windows compatibility error handling
-import core.windows_compatibility
-
 import asyncio
 import statistics
 import time
@@ -10,6 +8,7 @@ from typing import Any
 import aiohttp
 import ccxt
 
+import core.windows_compatibility
 from core.config import TradingConfig
 from core.rate_limiter import RateLimiter
 from core.unified_logger import UnifiedLogger
@@ -38,59 +37,61 @@ class OptimizedExchangeClient:
 
         # Intelligent retry mechanism
         self._retry_config = {
-            'max_retries': 3,
-            'base_delay': 1.0,
-            'max_delay': 30.0,
-            'backoff_factor': 2.0
+            "max_retries": 3,
+            "base_delay": 1.0,
+            "max_delay": 30.0,
+            "backoff_factor": 2.0,
         }
 
         # Adaptive rate limiting
         self._adaptive_limits = {
-            'current_weight_limit': config.weight_limit_per_minute,
-            'current_request_limit': config.order_rate_limit_per_second,
-            'performance_threshold': 0.95,  # 95% success rate
-            'adjustment_factor': 0.1
+            "current_weight_limit": config.weight_limit_per_minute,
+            "current_request_limit": config.order_rate_limit_per_second,
+            "performance_threshold": 0.95,  # 95% success rate
+            "adjustment_factor": 0.1,
         }
 
         # Enhanced caching with TTL
         self._cache = {}
         self._cache_ttl = {
-            'balance': 5,
-            'positions': 3,
-            'orders': 2,
-            'ticker': 1,
-            'markets': 3600  # 1 hour
+            "balance": 5,
+            "positions": 3,
+            "orders": 2,
+            "ticker": 1,
+            "markets": 3600,  # 1 hour
         }
 
         # Initialize CCXT with optimized settings
         api_key, api_secret = config.get_api_credentials()
 
-        self.exchange = ccxt.binance({
-            "apiKey": api_key,
-            "secret": api_secret,
-            "enableRateLimit": True,
-            "options": {
-                "defaultType": "future",
-                "adjustForTimeDifference": True,
-                "recvWindow": 60000,  # Increased receive window
-                "warnOnFetchOpenOrdersWithoutSymbol": False,
-            },
-        })
+        self.exchange = ccxt.binance(
+            {
+                "apiKey": api_key,
+                "secret": api_secret,
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "future",
+                    "adjustForTimeDifference": True,
+                    "recvWindow": 60000,  # Increased receive window
+                    "warnOnFetchOpenOrdersWithoutSymbol": False,
+                },
+            }
+        )
 
         # Configure testnet if enabled
         if config.is_testnet_mode():
             self.exchange.set_sandbox_mode(True)
-            self.exchange.options['sandbox'] = True
+            self.exchange.options["sandbox"] = True
             self.logger.log_event("EXCHANGE", "INFO", "🧪 Testnet mode enabled")
         else:
-            self.exchange.options['sandbox'] = False
+            self.exchange.options["sandbox"] = False
             self.logger.log_event("EXCHANGE", "INFO", "🚀 Production mode enabled")
 
         # Enhanced rate limiter
         self.rate_limiter = RateLimiter(
             weight_limit_per_minute=config.weight_limit_per_minute,
             request_limit_per_second=config.order_rate_limit_per_second,
-            buffer_pct=config.rate_limit_buffer_pct
+            buffer_pct=config.rate_limit_buffer_pct,
         )
 
         # Async semaphore for connection control
@@ -99,7 +100,9 @@ class OptimizedExchangeClient:
     async def initialize(self) -> bool:
         """Enhanced initialization with connection pooling"""
         try:
-            self.logger.log_event("EXCHANGE", "INFO", "🔌 Initializing Optimized Exchange Client...")
+            self.logger.log_event(
+                "EXCHANGE", "INFO", "🔌 Initializing Optimized Exchange Client..."
+            )
 
             # Initialize connection pool
             await self._initialize_connection_pool()
@@ -109,13 +112,18 @@ class OptimizedExchangeClient:
 
             # Test connection (skip balance check on Windows)
             if core.windows_compatibility.IS_WINDOWS:
-                self.logger.log_event("EXCHANGE", "INFO", "✅ Connection established (Windows compatibility)")
+                self.logger.log_event(
+                    "EXCHANGE", "INFO", "✅ Connection established (Windows compatibility)"
+                )
                 return True
             else:
                 balance = await self.get_balance()
                 if balance is not None:
-                    self.logger.log_event("EXCHANGE", "INFO",
-                        f"✅ Optimized connection established. Balance: {balance:.2f} USDC")
+                    self.logger.log_event(
+                        "EXCHANGE",
+                        "INFO",
+                        f"✅ Optimized connection established. Balance: {balance:.2f} USDC",
+                    )
                     return True
                 else:
                     self.logger.log_event("EXCHANGE", "ERROR", "❌ Failed to establish connection")
@@ -133,28 +141,29 @@ class OptimizedExchangeClient:
                 limit_per_host=10,
                 ttl_dns_cache=300,
                 use_dns_cache=True,
-                keepalive_timeout=30
+                keepalive_timeout=30,
             )
 
             timeout = aiohttp.ClientTimeout(
-                total=self._request_timeout,
-                connect=self._connection_timeout
+                total=self._request_timeout, connect=self._connection_timeout
             )
 
-            self._session = aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout
-            )
+            self._session = aiohttp.ClientSession(connector=connector, timeout=timeout)
 
-            self.logger.log_event("EXCHANGE", "INFO",
-                f"🔗 Connection pool initialized with {self._max_connections} connections")
+            self.logger.log_event(
+                "EXCHANGE",
+                "INFO",
+                f"🔗 Connection pool initialized with {self._max_connections} connections",
+            )
 
         except Exception as e:
-            self.logger.log_event("EXCHANGE", "ERROR", f"❌ Connection pool initialization failed: {e}")
+            self.logger.log_event(
+                "EXCHANGE", "ERROR", f"❌ Connection pool initialization failed: {e}"
+            )
 
     async def _load_markets_with_retry(self) -> None:
         """Load markets with intelligent retry mechanism"""
-        for attempt in range(self._retry_config['max_retries']):
+        for attempt in range(self._retry_config["max_retries"]):
             try:
                 async with self._async_semaphore:
                     await self.rate_limiter.acquire(1)
@@ -165,26 +174,35 @@ class OptimizedExchangeClient:
                     response_time = time.time() - start_time
                     self._response_times.append(response_time)
 
-                    self._cache['markets'] = markets
-                    self._cache['markets_time'] = time.time()
+                    self._cache["markets"] = markets
+                    self._cache["markets_time"] = time.time()
 
-                    self.logger.log_event("EXCHANGE", "INFO",
-                        f"📊 Loaded {len(markets)} markets in {response_time:.3f}s")
+                    self.logger.log_event(
+                        "EXCHANGE",
+                        "INFO",
+                        f"📊 Loaded {len(markets)} markets in {response_time:.3f}s",
+                    )
                     return
 
             except Exception as e:
                 delay = min(
-                    self._retry_config['base_delay'] * (self._retry_config['backoff_factor'] ** attempt),
-                    self._retry_config['max_delay']
+                    self._retry_config["base_delay"]
+                    * (self._retry_config["backoff_factor"] ** attempt),
+                    self._retry_config["max_delay"],
                 )
 
-                self.logger.log_event("EXCHANGE", "WARNING",
-                    f"⚠️ Market loading attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
+                self.logger.log_event(
+                    "EXCHANGE",
+                    "WARNING",
+                    f"⚠️ Market loading attempt {attempt + 1} failed: {e}. Retrying in {delay}s...",
+                )
 
-                if attempt < self._retry_config['max_retries'] - 1:
+                if attempt < self._retry_config["max_retries"] - 1:
                     await asyncio.sleep(delay)
                 else:
-                    self.logger.log_event("EXCHANGE", "ERROR", "❌ Failed to load markets after all retries")
+                    self.logger.log_event(
+                        "EXCHANGE", "ERROR", "❌ Failed to load markets after all retries"
+                    )
 
     async def _execute_with_retry(self, operation, *args, **kwargs):
         """Execute operation with intelligent retry mechanism and safe API calls"""
@@ -193,10 +211,10 @@ class OptimizedExchangeClient:
             self._execute_operation_with_rate_limit,
             operation,
             *args,
-            tries=self._retry_config['max_retries'],
-            delay=self._retry_config['base_delay'],
+            tries=self._retry_config["max_retries"],
+            delay=self._retry_config["base_delay"],
             label=f"{operation.__name__}",
-            **kwargs
+            **kwargs,
         )
 
         if result is not None:
@@ -245,19 +263,30 @@ class OptimizedExchangeClient:
         success_rate = self._calculate_success_rate()
 
         # Adjust limits based on performance
-        if success_rate > self._adaptive_limits['performance_threshold'] and avg_response_time < 1.0:
+        if (
+            success_rate > self._adaptive_limits["performance_threshold"]
+            and avg_response_time < 1.0
+        ):
             # Increase limits if performing well
-            self._adaptive_limits['current_weight_limit'] *= (1 + self._adaptive_limits['adjustment_factor'])
-            self._adaptive_limits['current_request_limit'] *= (1 + self._adaptive_limits['adjustment_factor'])
+            self._adaptive_limits["current_weight_limit"] *= (
+                1 + self._adaptive_limits["adjustment_factor"]
+            )
+            self._adaptive_limits["current_request_limit"] *= (
+                1 + self._adaptive_limits["adjustment_factor"]
+            )
         elif success_rate < 0.8 or avg_response_time > 5.0:
             # Decrease limits if performing poorly
-            self._adaptive_limits['current_weight_limit'] *= (1 - self._adaptive_limits['adjustment_factor'])
-            self._adaptive_limits['current_request_limit'] *= (1 - self._adaptive_limits['adjustment_factor'])
+            self._adaptive_limits["current_weight_limit"] *= (
+                1 - self._adaptive_limits["adjustment_factor"]
+            )
+            self._adaptive_limits["current_request_limit"] *= (
+                1 - self._adaptive_limits["adjustment_factor"]
+            )
 
         # Update rate limiter with new limits
         self.rate_limiter.update_limits(
-            self._adaptive_limits['current_weight_limit'],
-            self._adaptive_limits['current_request_limit']
+            self._adaptive_limits["current_weight_limit"],
+            self._adaptive_limits["current_request_limit"],
         )
 
     def _calculate_success_rate(self) -> float:
@@ -290,7 +319,7 @@ class OptimizedExchangeClient:
 
     async def get_balance(self) -> float | None:
         """Enhanced balance retrieval with intelligent caching"""
-        cached_balance = self._get_cached_data('balance')
+        cached_balance = self._get_cached_data("balance")
         if cached_balance is not None:
             return cached_balance
 
@@ -309,7 +338,7 @@ class OptimizedExchangeClient:
 
         try:
             balance = await self._execute_with_retry(_fetch_balance)
-            self._set_cached_data('balance', balance)
+            self._set_cached_data("balance", balance)
             return balance
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to get balance: {e}")
@@ -317,7 +346,7 @@ class OptimizedExchangeClient:
 
     async def get_positions(self) -> list[dict[str, Any]]:
         """Enhanced position retrieval with intelligent caching"""
-        cached_positions = self._get_cached_data('positions')
+        cached_positions = self._get_cached_data("positions")
         if cached_positions is not None:
             return cached_positions
 
@@ -325,11 +354,11 @@ class OptimizedExchangeClient:
             async with self._async_semaphore:
                 await self.rate_limiter.acquire(5)
                 positions = self.exchange.fetch_positions()
-                return [pos for pos in positions if pos.get('size', 0) != 0]
+                return [pos for pos in positions if pos.get("size", 0) != 0]
 
         try:
             positions = await self._execute_with_retry(_fetch_positions)
-            self._set_cached_data('positions', positions)
+            self._set_cached_data("positions", positions)
             return positions
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to get positions: {e}")
@@ -347,13 +376,14 @@ class OptimizedExchangeClient:
         success_rate = self._calculate_success_rate()
 
         return {
-            'avg_response_time': avg_response_time,
-            'success_rate': success_rate,
-            'total_operations': sum(self._success_counts.values()) + sum(self._error_counts.values()),
-            'current_weight_limit': self._adaptive_limits['current_weight_limit'],
-            'current_request_limit': self._adaptive_limits['current_request_limit'],
-            'cache_hit_rate': self._calculate_cache_hit_rate(),
-            'last_updated': current_time
+            "avg_response_time": avg_response_time,
+            "success_rate": success_rate,
+            "total_operations": sum(self._success_counts.values())
+            + sum(self._error_counts.values()),
+            "current_weight_limit": self._adaptive_limits["current_weight_limit"],
+            "current_request_limit": self._adaptive_limits["current_request_limit"],
+            "cache_hit_rate": self._calculate_cache_hit_rate(),
+            "last_updated": current_time,
         }
 
     def _calculate_cache_hit_rate(self) -> float:
@@ -370,7 +400,7 @@ class OptimizedExchangeClient:
 
     async def get_available_balance(self) -> float | None:
         """Enhanced available balance retrieval with intelligent caching"""
-        cached_balance = self._get_cached_data('available_balance')
+        cached_balance = self._get_cached_data("available_balance")
         if cached_balance is not None:
             return cached_balance
 
@@ -403,7 +433,7 @@ class OptimizedExchangeClient:
 
         try:
             balance = await self._execute_with_retry(_fetch_available_balance)
-            self._set_cached_data('available_balance', balance)
+            self._set_cached_data("available_balance", balance)
             return balance
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to get available balance: {e}")
@@ -411,6 +441,7 @@ class OptimizedExchangeClient:
 
     async def get_open_orders(self) -> list[dict[str, Any]]:
         """Get all open orders"""
+
         async def _fetch_orders():
             async with self._async_semaphore:
                 await self.rate_limiter.acquire(1)
@@ -425,6 +456,7 @@ class OptimizedExchangeClient:
 
     async def fetch_open_orders(self, symbol: str = None) -> list[dict[str, Any]]:
         """Get open orders for specific symbol or all symbols"""
+
         async def _fetch_orders():
             async with self._async_semaphore:
                 await self.rate_limiter.acquire(1)
@@ -437,36 +469,48 @@ class OptimizedExchangeClient:
             orders = await self._execute_with_retry(_fetch_orders)
             return orders or []
         except Exception as e:
-            self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to fetch open orders for {symbol}: {e}")
+            self.logger.log_event(
+                "EXCHANGE", "ERROR", f"❌ Failed to fetch open orders for {symbol}: {e}"
+            )
             return []
 
     async def get_usdc_symbols(self) -> list[str]:
         """Enhanced USDC symbols retrieval with intelligent caching"""
-        cached_symbols = self._get_cached_data('usdc_symbols')
+        cached_symbols = self._get_cached_data("usdc_symbols")
         if cached_symbols is not None:
             return cached_symbols
 
         async def _fetch_symbols():
-            if not self._cache.get('markets'):
+            if not self._cache.get("markets"):
                 await self._load_markets_with_retry()
 
-            markets = self._cache.get('markets', {})
+            markets = self._cache.get("markets", {})
             self.logger.log_event("EXCHANGE", "DEBUG", f"Total markets loaded: {len(markets)}")
 
             usdc_symbols = []
 
             for symbol, market_info in markets.items():
                 # Проверяем, что это USDC фьючерс
-                if (symbol.endswith(':USDC') and
-                    market_info.get('type') == 'swap' and
-                    market_info.get('quote') == 'USDC' and
-                    market_info.get('active', True)):
-
+                if (
+                    symbol.endswith(":USDC")
+                    and market_info.get("type") == "swap"
+                    and market_info.get("quote") == "USDC"
+                    and market_info.get("active", True)
+                ):
                     # Исключаем только явно проблемные символы
-                    if any(excluded in symbol.upper() for excluded in [
-                        'UPUSDT', 'DOWNUSDT', 'BEARUSDT', 'BULLUSDT',
-                        'HEDGE', 'HEDGED', 'PERP', 'TEST'
-                    ]):
+                    if any(
+                        excluded in symbol.upper()
+                        for excluded in [
+                            "UPUSDT",
+                            "DOWNUSDT",
+                            "BEARUSDT",
+                            "BULLUSDT",
+                            "HEDGE",
+                            "HEDGED",
+                            "PERP",
+                            "TEST",
+                        ]
+                    ):
                         continue
 
                     usdc_symbols.append(symbol)
@@ -481,8 +525,8 @@ class OptimizedExchangeClient:
 
                 for symbol in usdc_symbols:
                     ticker = tickers.get(symbol)
-                    if ticker and ticker.get('quoteVolume'):
-                        volume_data[symbol] = float(ticker['quoteVolume'])
+                    if ticker and ticker.get("quoteVolume"):
+                        volume_data[symbol] = float(ticker["quoteVolume"])
                     else:
                         volume_data[symbol] = 0.0
 
@@ -490,14 +534,18 @@ class OptimizedExchangeClient:
                 usdc_symbols.sort(key=lambda x: volume_data.get(x, 0), reverse=True)
 
             except Exception as e:
-                self.logger.log_event("EXCHANGE", "WARNING", f"Failed to sort symbols by volume: {e}")
+                self.logger.log_event(
+                    "EXCHANGE", "WARNING", f"Failed to sort symbols by volume: {e}"
+                )
 
-            self.logger.log_event("EXCHANGE", "INFO", f"Found {len(usdc_symbols)} USDC futures symbols")
+            self.logger.log_event(
+                "EXCHANGE", "INFO", f"Found {len(usdc_symbols)} USDC futures symbols"
+            )
             return usdc_symbols
 
         try:
             symbols = await self._execute_with_retry(_fetch_symbols)
-            self._set_cached_data('usdc_symbols', symbols)
+            self._set_cached_data("usdc_symbols", symbols)
             return symbols
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to get USDC symbols: {e}")
@@ -505,7 +553,7 @@ class OptimizedExchangeClient:
 
     async def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         """Enhanced ticker retrieval with intelligent caching"""
-        cache_key = f'ticker_{symbol}'
+        cache_key = f"ticker_{symbol}"
         cached_ticker = self._get_cached_data(cache_key)
         if cached_ticker is not None:
             return cached_ticker
@@ -526,8 +574,10 @@ class OptimizedExchangeClient:
                     "bid": float(ticker["bid"]) if ticker.get("bid") else 0.0,
                     "ask": float(ticker["ask"]) if ticker.get("ask") else 0.0,
                     "volume": float(ticker["baseVolume"]) if ticker.get("baseVolume") else 0.0,
-                    "quoteVolume": float(ticker["quoteVolume"]) if ticker.get("quoteVolume") else 0.0,
-                    "timestamp": ticker.get("timestamp", 0)
+                    "quoteVolume": float(ticker["quoteVolume"])
+                    if ticker.get("quoteVolume")
+                    else 0.0,
+                    "timestamp": ticker.get("timestamp", 0),
                 }
 
         try:
@@ -539,9 +589,11 @@ class OptimizedExchangeClient:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to get ticker {symbol}: {e}")
             return None
 
-    async def get_ohlcv(self, symbol: str, timeframe: str = "15m", limit: int = 100) -> list[dict[str, Any]] | None:
+    async def get_ohlcv(
+        self, symbol: str, timeframe: str = "15m", limit: int = 100
+    ) -> list[dict[str, Any]] | None:
         """Enhanced OHLCV data retrieval with intelligent caching"""
-        cache_key = f'ohlcv_{symbol}_{timeframe}_{limit}'
+        cache_key = f"ohlcv_{symbol}_{timeframe}_{limit}"
         cached_ohlcv = self._get_cached_data(cache_key)
         if cached_ohlcv is not None:
             return cached_ohlcv
@@ -555,7 +607,7 @@ class OptimizedExchangeClient:
                     "high": float(candle[2]),
                     "low": float(candle[3]),
                     "close": float(candle[4]),
-                    "volume": float(candle[5])
+                    "volume": float(candle[5]),
                 }
                 for candle in ohlcv
             ]
@@ -568,8 +620,17 @@ class OptimizedExchangeClient:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to get OHLCV {symbol}: {e}")
             return None
 
-    async def create_order(self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None, params: dict = None) -> dict[str, Any] | None:
+    async def create_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        params: dict = None,
+    ) -> dict[str, Any] | None:
         """Enhanced order creation with intelligent retry and cache invalidation"""
+
         async def _create_order():
             async with self._async_semaphore:
                 await self.rate_limiter.acquire(1)  # Order creation weighs 1
@@ -579,34 +640,53 @@ class OptimizedExchangeClient:
                 order = self.exchange.create_order(symbol, order_type, side, amount, price, params)
 
                 # Invalidate order cache
-                self._cache.pop('orders', None)
-                self._cache.pop('orders_time', None)
+                self._cache.pop("orders", None)
+                self._cache.pop("orders_time", None)
 
-                self.logger.log_event("EXCHANGE", "INFO", f"✅ Order created: {symbol} {side} {amount}")
+                self.logger.log_event(
+                    "EXCHANGE", "INFO", f"✅ Order created: {symbol} {side} {amount}"
+                )
                 return order
 
         try:
             result = await self._execute_with_retry(_create_order)
             if not result:
                 # Если результат None, возвращаем минимальную структуру ответа
-                self.logger.log_event("EXCHANGE", "WARNING", f"Order returned None for {symbol}, creating fallback response")
-                return {'status': 'FAILED', 'symbol': symbol, 'side': side, 'amount': amount, 'error': 'Order execution failed'}
+                self.logger.log_event(
+                    "EXCHANGE",
+                    "WARNING",
+                    f"Order returned None for {symbol}, creating fallback response",
+                )
+                return {
+                    "status": "FAILED",
+                    "symbol": symbol,
+                    "side": side,
+                    "amount": amount,
+                    "error": "Order execution failed",
+                }
             return result
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to create order {symbol}: {e}")
             # Возвращаем структуру ошибки вместо None
-            return {'status': 'ERROR', 'symbol': symbol, 'side': side, 'amount': amount, 'error': str(e)}
+            return {
+                "status": "ERROR",
+                "symbol": symbol,
+                "side": side,
+                "amount": amount,
+                "error": str(e),
+            }
 
     async def cancel_order(self, order_id: str, symbol: str) -> bool:
         """Enhanced order cancellation with intelligent retry and cache invalidation"""
+
         async def _cancel_order():
             async with self._async_semaphore:
                 await self.rate_limiter.acquire(1)  # Order cancellation weighs 1
                 self.exchange.cancel_order(order_id, symbol)
 
                 # Invalidate order cache
-                self._cache.pop('orders', None)
-                self._cache.pop('orders_time', None)
+                self._cache.pop("orders", None)
+                self._cache.pop("orders_time", None)
 
                 self.logger.log_event("EXCHANGE", "INFO", f"✅ Order cancelled: {order_id}")
                 return True
@@ -619,6 +699,7 @@ class OptimizedExchangeClient:
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Enhanced leverage setting with intelligent retry"""
+
         async def _set_leverage():
             # Используем стандартный метод CCXT вместо прямого API
             self.exchange.set_leverage(leverage, symbol)
@@ -631,16 +712,26 @@ class OptimizedExchangeClient:
             self.logger.log_event("EXCHANGE", "ERROR", f"❌ Failed to set leverage {symbol}: {e}")
             return False
 
-    async def place_order(self, symbol: str, side: str, order_type: str, amount: float = None, price: float = None, **kwargs) -> dict[str, Any] | None:
+    async def place_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float = None,
+        price: float = None,
+        **kwargs,
+    ) -> dict[str, Any] | None:
         """Place an order (alias for create_order) with flexible parameters"""
         # Обрабатываем разные варианты параметров
         if amount is None:
-            if 'quantity' in kwargs:
-                amount = kwargs['quantity']
-            elif 'qty' in kwargs:
-                amount = kwargs['qty']
+            if "quantity" in kwargs:
+                amount = kwargs["quantity"]
+            elif "qty" in kwargs:
+                amount = kwargs["qty"]
             else:
-                self.logger.log_event("EXCHANGE", "ERROR", f"No amount specified for order {symbol}")
+                self.logger.log_event(
+                    "EXCHANGE", "ERROR", f"No amount specified for order {symbol}"
+                )
                 return None
 
         return await self.create_order(symbol, side, order_type, amount, price, **kwargs)
@@ -649,4 +740,5 @@ class OptimizedExchangeClient:
 # Keep the original ExchangeClient for backward compatibility
 class ExchangeClient(OptimizedExchangeClient):
     """Backward compatibility wrapper"""
+
     pass

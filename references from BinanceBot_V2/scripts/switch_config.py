@@ -17,7 +17,7 @@ def switch_config(config_type):
         "safe": "data/runtime_config_safe.json",
         "test": "data/runtime_config_test.json",
         "aggressive": "data/runtime_config.json",
-        "default": "data/runtime_config.json"
+        "default": "data/runtime_config.json",
     }
 
     if config_type not in config_files:
@@ -49,8 +49,8 @@ def switch_config(config_type):
 
         print(f"\n📊 Основные параметры ({config_type}):")
         print(f"   • Макс. позиций: {config['max_concurrent_positions']}")
-        print(f"   • Риск: {config['base_risk_pct']*100:.2f}%")
-        print(f"   • Stop Loss: {config['sl_percent']*100:.2f}%")
+        print(f"   • Риск: {config['base_risk_pct'] * 100:.2f}%")
+        print(f"   • Stop Loss: {config['sl_percent'] * 100:.2f}%")
         print(f"   • Макс. время удержания: {config['max_hold_minutes']} мин")
         print(f"   • Макс. размер позиции: {config['max_position_size_usdc']} USDC")
 
@@ -60,6 +60,7 @@ def switch_config(config_type):
         print(f"❌ Ошибка переключения конфигурации: {e}")
         return False
 
+
 def show_available_configs():
     """Показывает доступные конфигурации"""
 
@@ -68,26 +69,26 @@ def show_available_configs():
             "description": "Безопасная торговля - низкий риск, стабильная прибыль",
             "risk": "0.5%",
             "positions": "1",
-            "hold_time": "15 мин"
+            "hold_time": "15 мин",
         },
         "test": {
             "description": "Быстрые тесты - короткие позиции, быстрые результаты",
             "risk": "1.0%",
             "positions": "1",
-            "hold_time": "2 мин"
+            "hold_time": "2 мин",
         },
         "aggressive": {
             "description": "Агрессивная торговля - высокий риск, высокая прибыль",
             "risk": "2.0%",
             "positions": "3",
-            "hold_time": "8 мин"
+            "hold_time": "8 мин",
         },
         "default": {
             "description": "Текущая конфигурация (тестовая)",
             "risk": "1.0%",
             "positions": "1",
-            "hold_time": "2 мин"
-        }
+            "hold_time": "2 мин",
+        },
     }
 
     print("📋 ДОСТУПНЫЕ КОНФИГУРАЦИИ:")
@@ -99,6 +100,7 @@ def show_available_configs():
         print(f"   ⚠️  Риск: {info['risk']}")
         print(f"   📊 Позиций: {info['positions']}")
         print(f"   ⏱️  Время удержания: {info['hold_time']}")
+
 
 if __name__ == "__main__":
     import time

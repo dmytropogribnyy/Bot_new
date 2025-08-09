@@ -28,7 +28,9 @@ def check_entry_allowed(balance):
     # === Реальные позиции из кеша (быстрее и надёжнее)
     try:
         positions = get_cached_positions()
-        actual_positions = len([p for p in positions if abs(float(p.get("contracts", p.get("positionAmt", 0)) or 0)) > 0])
+        actual_positions = len(
+            [p for p in positions if abs(float(p.get("contracts", p.get("positionAmt", 0)) or 0)) > 0]
+        )
     except Exception as e:
         log(f"[EntryCheck] ⚠️ Failed to get cached positions: {e}", level="WARNING")
         actual_positions = max_positions + 1  # fallback — запретить вход
@@ -91,7 +93,10 @@ def check_entry_allowed(balance):
             log(f"[EntryCheck] ❌ Hourly trade limit reached: {recent_entries}/{hourly_limit}", level="INFO")
             return False, "hourly_limit_reached"
 
-    log(f"[EntryCheck] ✅ Allowed to enter. Positions: {current_positions}/{max_positions}, Capital used: {cap_utilization:.2%}", level="DEBUG")
+    log(
+        f"[EntryCheck] ✅ Allowed to enter. Positions: {current_positions}/{max_positions}, Capital used: {cap_utilization:.2%}",
+        level="DEBUG",
+    )
     return True, None
 
 
@@ -129,7 +134,9 @@ def can_increase_position(symbol, additional_qty):
 
         # 🔍 Логируем лимиты по позиции
         log(
-            f"[DEBUG] Increase check for {symbol} → current_value={current_value:.2f}, " f"add={additional_value:.2f}, new_total={new_total:.2f}, max={max_position_value:.2f}", level="DEBUG"
+            f"[DEBUG] Increase check for {symbol} → current_value={current_value:.2f}, "
+            f"add={additional_value:.2f}, new_total={new_total:.2f}, max={max_position_value:.2f}",
+            level="DEBUG",
         )
 
         if new_total > max_position_value:
@@ -202,7 +209,9 @@ def execute_partial_close(symbol, side, reduction_qty):
 
         log(f"[DEBUG] Executing partial close: {symbol}, side={close_side}, qty={reduction_qty}", level="DEBUG")
 
-        order = safe_call_retry(exchange.create_order, symbol=symbol, type=order_type, side=close_side, amount=reduction_qty)
+        order = safe_call_retry(
+            exchange.create_order, symbol=symbol, type=order_type, side=close_side, amount=reduction_qty
+        )
 
         log(f"[Position] {symbol} 🔒 Частично закрыто: {reduction_qty} через {close_side} {order_type}", level="INFO")
         log(f"[DEBUG] Order result: {order}", level="DEBUG")

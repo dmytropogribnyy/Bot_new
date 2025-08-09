@@ -36,7 +36,7 @@ class SymbolSelector:
             "volatility": 25,
             "trend": 20,
             "win_rate": 15,
-            "avg_pnl": 10
+            "avg_pnl": 10,
         }
 
         # 🚀 ОПТИМИЗАЦИЯ: Исторические данные для ML
@@ -61,26 +61,36 @@ class SymbolSelector:
 
     async def update_selected_symbols(self):
         """Обновляет выбранные символы с продвинутыми алгоритмами"""
-        
+
         # 🚀 АДАПТАЦИЯ: Принудительно обновляем символы из менеджера
         try:
             await self.symbol_manager.update_available_symbols()
         except Exception as e:
             self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Failed to update symbols: {e}")
-        
+
         available_symbols = list(self.symbol_manager.active_symbols)
-        
+
         # 🚀 ДЕБАГ: Добавляем отладочную информацию
-        self.logger.log_event("SYMBOL_SELECTOR", "DEBUG", f"Available symbols from manager: {len(available_symbols)}")
+        self.logger.log_event(
+            "SYMBOL_SELECTOR", "DEBUG", f"Available symbols from manager: {len(available_symbols)}"
+        )
         if available_symbols:
-            self.logger.log_event("SYMBOL_SELECTOR", "DEBUG", f"First 5 symbols: {available_symbols[:5]}")
-            
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "DEBUG", f"First 5 symbols: {available_symbols[:5]}"
+            )
+
         # 🚀 ДЕБАГ: Проверяем фильтры
-        self.logger.log_event("SYMBOL_SELECTOR", "DEBUG", f"Config filters: min_volume={self.config.min_volume_24h_usdc}, min_atr={self.config.min_atr_percent}")
+        self.logger.log_event(
+            "SYMBOL_SELECTOR",
+            "DEBUG",
+            f"Config filters: min_volume={self.config.min_volume_24h_usdc}, min_atr={self.config.min_atr_percent}",
+        )
 
         # 🚀 АДАПТАЦИЯ: Добавляем fallback логику из старого бота
         if not available_symbols:
-            self.logger.log_event("SYMBOL_SELECTOR", "WARNING", "No available symbols, using fallback")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "WARNING", "No available symbols, using fallback"
+            )
             # Fallback к базовым символам
             self.selected_symbols = ["BTC/USDC:USDC", "ETH/USDC:USDC", "BNB/USDC:USDC"]
             return
@@ -102,14 +112,18 @@ class SymbolSelector:
 
             analysis = symbol_analyses[i]
             if isinstance(analysis, Exception):
-                self.logger.log_event("SYMBOL_SELECTOR", "WARNING", f"Failed to analyze {symbol}: {analysis}")
+                self.logger.log_event(
+                    "SYMBOL_SELECTOR", "WARNING", f"Failed to analyze {symbol}: {analysis}"
+                )
                 continue
 
             # 🚀 АДАПТАЦИЯ: Более мягкие фильтры
             if analysis:
                 score = analysis.get("score", 0)
                 # Принимаем символы даже с низким скором, но с базовыми требованиями
-                if score > 0 or (analysis.get("volume", 0) > 100000 and analysis.get("atr_percent", 0) > 0.1):
+                if score > 0 or (
+                    analysis.get("volume", 0) > 100000 and analysis.get("atr_percent", 0) > 0.1
+                ):
                     ranked_symbols.append((symbol, score, analysis))
 
         # 🚀 ОПТИМИЗАЦИЯ: Сортировка с учетом рыночного режима
@@ -117,10 +131,12 @@ class SymbolSelector:
 
         # Адаптивный выбор количества символов
         optimal_count = self.calculate_optimal_symbol_count()
-        
+
         # 🚀 АДАПТАЦИЯ: Fallback если нет подходящих символов
         if not ranked_symbols:
-            self.logger.log_event("SYMBOL_SELECTOR", "WARNING", "No symbols passed filters, using fallback")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "WARNING", "No symbols passed filters, using fallback"
+            )
             self.selected_symbols = ["BTC/USDC:USDC", "ETH/USDC:USDC", "BNB/USDC:USDC"]
         else:
             self.selected_symbols = [s[0] for s in ranked_symbols[:optimal_count]]
@@ -136,8 +152,10 @@ class SymbolSelector:
         try:
             # 🚀 ОПТИМИЗАЦИЯ: Кэширование анализа
             current_time = time.time()
-            if (symbol in self._stats_cache and
-                current_time - self._cache_time.get(symbol, 0) < self._cache_duration):
+            if (
+                symbol in self._stats_cache
+                and current_time - self._cache_time.get(symbol, 0) < self._cache_duration
+            ):
                 return self._stats_cache[symbol]
 
             # Получаем базовую статистику
@@ -161,7 +179,7 @@ class SymbolSelector:
                 "trend_direction": trend_analysis.get("direction", 0),
                 "volatility_regime": volatility_analysis.get("regime", "normal"),
                 "ml_score": ml_score,
-                "market_fit": self.calculate_market_fit(stats, trend_analysis, volatility_analysis)
+                "market_fit": self.calculate_market_fit(stats, trend_analysis, volatility_analysis),
             }
 
             # Вычисляем финальный скор
@@ -183,7 +201,9 @@ class SymbolSelector:
             # Используем оптимизированный метод из ExchangeClient
             ticker = await self.exchange.get_ticker(symbol)
             if not ticker:
-                self.logger.log_event("SYMBOL_SELECTOR", "DEBUG", f"Symbol {symbol}: No ticker data")
+                self.logger.log_event(
+                    "SYMBOL_SELECTOR", "DEBUG", f"Symbol {symbol}: No ticker data"
+                )
                 return None
 
             # Получаем исторические данные для анализа
@@ -194,7 +214,11 @@ class SymbolSelector:
             price_volatility = self.calculate_price_volatility(ohlcv) if ohlcv else 0
 
             # Получаем производительность из логгера
-            performance = self.logger.get_symbol_performance(symbol, days=7) if hasattr(self.logger, 'get_symbol_performance') else None
+            performance = (
+                self.logger.get_symbol_performance(symbol, days=7)
+                if hasattr(self.logger, "get_symbol_performance")
+                else None
+            )
 
             return {
                 "volume": ticker.get("volume", 0),
@@ -207,11 +231,13 @@ class SymbolSelector:
                 "win_rate": performance.get("win_rate", 0.5) if performance else 0.5,
                 "avg_pnl": performance.get("avg_pnl", 0.0) if performance else 0.0,
                 "atr_percent": await self.symbol_manager.get_atr_percent(symbol),
-                "ohlcv_data": ohlcv
+                "ohlcv_data": ohlcv,
             }
 
         except Exception as e:
-            self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Failed to fetch stats for {symbol}: {e}")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "ERROR", f"Failed to fetch stats for {symbol}: {e}"
+            )
             return None
 
     async def analyze_trend(self, symbol: str) -> dict[str, Any]:
@@ -247,11 +273,13 @@ class SymbolSelector:
                 "strength": min(trend_strength * 100, 100),
                 "direction": trend_direction,
                 "rsi": rsi,
-                "macd": macd
+                "macd": macd,
             }
 
         except Exception as e:
-            self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Trend analysis failed for {symbol}: {e}")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "ERROR", f"Trend analysis failed for {symbol}: {e}"
+            )
             return {"strength": 0, "direction": 0}
 
     async def analyze_volatility(self, symbol: str) -> dict[str, Any]:
@@ -266,7 +294,7 @@ class SymbolSelector:
             for i in range(1, len(ohlcv)):
                 high = ohlcv[i]["high"]
                 low = ohlcv[i]["low"]
-                prev_close = ohlcv[i-1]["close"]
+                prev_close = ohlcv[i - 1]["close"]
 
                 tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
                 atr_values.append(tr)
@@ -282,14 +310,12 @@ class SymbolSelector:
             else:
                 regime = "normal"
 
-            return {
-                "regime": regime,
-                "value": atr_percent,
-                "atr": atr
-            }
+            return {"regime": regime, "value": atr_percent, "atr": atr}
 
         except Exception as e:
-            self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Volatility analysis failed for {symbol}: {e}")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "ERROR", f"Volatility analysis failed for {symbol}: {e}"
+            )
             return {"regime": "normal", "value": 0}
 
     async def predict_performance(self, symbol: str, stats: dict[str, Any]) -> float:
@@ -312,7 +338,9 @@ class SymbolSelector:
             return max(0.0, min(1.0, predicted_score))
 
         except Exception as e:
-            self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Performance prediction failed for {symbol}: {e}")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR", "ERROR", f"Performance prediction failed for {symbol}: {e}"
+            )
             return 0.5
 
     def calculate_advanced_symbol_score(self, analysis: dict[str, Any]) -> float:
@@ -321,20 +349,24 @@ class SymbolSelector:
             # 🚀 АДАПТАЦИЯ: Более мягкие фильтры из старого бота
             volume = analysis.get("volume", 0)
             atr_percent = analysis.get("atr_percent", 0)
-            
+
             # Базовые требования (адаптированы из старого бота)
             min_volume = 10000  # $10k - очень мягкий фильтр
             min_atr = 0.05  # 0.05% - очень мягкий фильтр
-            
+
             # 🚀 ДЕБАГ: Проверяем фильтры
             if volume < min_volume:
-                self.logger.log_event("SYMBOL_SELECTOR", "DEBUG", f"Symbol filtered: volume {volume} < {min_volume}")
+                self.logger.log_event(
+                    "SYMBOL_SELECTOR", "DEBUG", f"Symbol filtered: volume {volume} < {min_volume}"
+                )
                 return 0.0
-                
+
             if atr_percent < min_atr:
-                self.logger.log_event("SYMBOL_SELECTOR", "DEBUG", f"Symbol filtered: atr {atr_percent} < {min_atr}")
+                self.logger.log_event(
+                    "SYMBOL_SELECTOR", "DEBUG", f"Symbol filtered: atr {atr_percent} < {min_atr}"
+                )
                 return 0.0
-            
+
             # Базовые метрики с более мягкими требованиями
             volume_score = min(volume / min_volume, 2.0) * self.adaptive_weights["volume"]
             volatility_score = min(atr_percent / min_atr, 2.0) * self.adaptive_weights["volatility"]
@@ -357,13 +389,13 @@ class SymbolSelector:
             regime_multiplier = self.get_regime_multiplier()
 
             total_score = (
-                volume_score +
-                volatility_score +
-                trend_score * trend_direction +
-                win_rate_score +
-                pnl_score +
-                ml_score +
-                market_fit
+                volume_score
+                + volatility_score
+                + trend_score * trend_direction
+                + win_rate_score
+                + pnl_score
+                + ml_score
+                + market_fit
             ) * regime_multiplier
 
             return max(0.0, total_score)
@@ -372,7 +404,9 @@ class SymbolSelector:
             self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Score calculation failed: {e}")
             return 0.0
 
-    def calculate_market_fit(self, stats: dict[str, Any], trend: dict[str, Any], volatility: dict[str, Any]) -> float:
+    def calculate_market_fit(
+        self, stats: dict[str, Any], trend: dict[str, Any], volatility: dict[str, Any]
+    ) -> float:
         """Вычисляет соответствие символа текущему рыночному режиму"""
         try:
             fit_score = 0.5  # Базовый скор
@@ -416,7 +450,11 @@ class SymbolSelector:
             else:
                 self.market_regime = "normal"
 
-            self.logger.log_event("SYMBOL_SELECTOR", "INFO", f"Market regime updated: {self.market_regime} (avg volatility: {avg_volatility:.2f}%)")
+            self.logger.log_event(
+                "SYMBOL_SELECTOR",
+                "INFO",
+                f"Market regime updated: {self.market_regime} (avg volatility: {avg_volatility:.2f}%)",
+            )
 
         except Exception as e:
             self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Market regime update failed: {e}")
@@ -427,7 +465,11 @@ class SymbolSelector:
             # Анализируем производительность последних символов
             recent_performance = []
             for symbol in self.selected_symbols[-5:]:
-                performance = self.logger.get_symbol_performance(symbol, days=1) if hasattr(self.logger, 'get_symbol_performance') else None
+                performance = (
+                    self.logger.get_symbol_performance(symbol, days=1)
+                    if hasattr(self.logger, "get_symbol_performance")
+                    else None
+                )
                 if performance:
                     recent_performance.append(performance.get("avg_pnl", 0))
 
@@ -436,13 +478,21 @@ class SymbolSelector:
 
                 # Корректируем веса на основе производительности
                 if avg_performance > 0.5:  # Хорошая производительность
-                    self.adaptive_weights["win_rate"] = min(25, self.adaptive_weights["win_rate"] + 2)
+                    self.adaptive_weights["win_rate"] = min(
+                        25, self.adaptive_weights["win_rate"] + 2
+                    )
                     self.adaptive_weights["avg_pnl"] = min(15, self.adaptive_weights["avg_pnl"] + 1)
                 elif avg_performance < -0.5:  # Плохая производительность
                     self.adaptive_weights["volume"] = min(35, self.adaptive_weights["volume"] + 2)
-                    self.adaptive_weights["volatility"] = min(30, self.adaptive_weights["volatility"] + 2)
+                    self.adaptive_weights["volatility"] = min(
+                        30, self.adaptive_weights["volatility"] + 2
+                    )
 
-                self.logger.log_event("SYMBOL_SELECTOR", "INFO", f"Weights optimized. Performance: {avg_performance:.2f}")
+                self.logger.log_event(
+                    "SYMBOL_SELECTOR",
+                    "INFO",
+                    f"Weights optimized. Performance: {avg_performance:.2f}",
+                )
 
         except Exception as e:
             self.logger.log_event("SYMBOL_SELECTOR", "ERROR", f"Weight optimization failed: {e}")
@@ -462,10 +512,10 @@ class SymbolSelector:
     def get_regime_multiplier(self) -> float:
         """Возвращает множитель скора на основе рыночного режима"""
         multipliers = {
-            "volatile": 0.8,      # Снижаем риск в волатильном рынке
-            "low_volatility": 1.2, # Увеличиваем активность в спокойном рынке
+            "volatile": 0.8,  # Снижаем риск в волатильном рынке
+            "low_volatility": 1.2,  # Увеличиваем активность в спокойном рынке
             "normal": 1.0,
-            "trending": 1.1
+            "trending": 1.1,
         }
         return multipliers.get(self.market_regime, 1.0)
 
@@ -525,7 +575,7 @@ class SymbolSelector:
 
             returns = []
             for i in range(1, len(ohlcv)):
-                prev_close = ohlcv[i-1]["close"]
+                prev_close = ohlcv[i - 1]["close"]
                 curr_close = ohlcv[i]["close"]
                 returns.append((curr_close - prev_close) / prev_close)
 

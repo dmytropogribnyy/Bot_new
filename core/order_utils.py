@@ -5,12 +5,15 @@ from utils_core import extract_symbol
 from utils_logging import log
 
 
-def calculate_order_quantity(entry_price: float, stop_price: float, balance: float, risk_percent: float, symbol: str) -> float:
+def calculate_order_quantity(
+    entry_price: float, stop_price: float, balance: float, risk_percent: float, symbol: str
+) -> float:
     """
     Вычисляет количество контрактов с учётом риска, капитализации, min notional и min trade qty.
     """
     from common.config_loader import MIN_NOTIONAL_OPEN, get_runtime_config
     from common.leverage_config import get_leverage_for_symbol
+
     from utils_core import round_step_size
     from utils_logging import log
 
@@ -64,7 +67,9 @@ def create_post_only_limit_order(symbol, side, amount, price):
     symbol = extract_symbol(symbol)
     api_symbol = convert_symbol(symbol)
     try:
-        return safe_call_retry(exchange.create_order, api_symbol, "limit", side, amount, price, {"postOnly": True, "reduceOnly": True})
+        return safe_call_retry(
+            exchange.create_order, api_symbol, "limit", side, amount, price, {"postOnly": True, "reduceOnly": True}
+        )
     except Exception as e:
         log(f"[Order] Failed to place post-only order for {symbol}: {e}", level="ERROR")
         return None

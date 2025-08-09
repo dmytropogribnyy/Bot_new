@@ -62,7 +62,9 @@ class RateLimiter:
             self.request_window.append(now)
             self.request_count += 1
 
-    def update_limits(self, weight_limit_per_minute: int = None, request_limit_per_second: int = None):
+    def update_limits(
+        self, weight_limit_per_minute: int = None, request_limit_per_second: int = None
+    ):
         """Обновляет лимиты rate limiter"""
         if weight_limit_per_minute is not None:
             self.weight_limit_per_minute = weight_limit_per_minute

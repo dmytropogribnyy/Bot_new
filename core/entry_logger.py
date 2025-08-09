@@ -1,8 +1,9 @@
 import csv
-import os
 from datetime import datetime
+import os
 
 from common.config_loader import TAKER_FEE_RATE
+
 from constants import ENTRY_LOG_PATH
 from utils_core import extract_symbol, get_cached_balance
 from utils_logging import log
@@ -41,7 +42,10 @@ def log_entry(trade: dict, status="SUCCESS"):
     try:
         # Проверяем валидность данных
         if not trade.get("entry") or not trade.get("qty"):
-            log(f"[entry_logger] Skipping invalid log: entry={trade.get('entry')}, qty={trade.get('qty')}, symbol={trade.get('symbol')}", level="WARNING")
+            log(
+                f"[entry_logger] Skipping invalid log: entry={trade.get('entry')}, qty={trade.get('qty')}, symbol={trade.get('symbol')}",
+                level="WARNING",
+            )
             return
 
         balance = get_cached_balance()
@@ -70,7 +74,11 @@ def log_entry(trade: dict, status="SUCCESS"):
 
         expected_profit = 0.0
         if tp1_price and entry_price and qty:
-            gross = qty * tp1_share * (tp1_price - entry_price) if direction == "buy" else qty * tp1_share * (entry_price - tp1_price)
+            gross = (
+                qty * tp1_share * (tp1_price - entry_price)
+                if direction == "buy"
+                else qty * tp1_share * (entry_price - tp1_price)
+            )
             expected_profit = gross - commission
 
         if expected_profit == 0.0:

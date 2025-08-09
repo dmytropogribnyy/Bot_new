@@ -1,6 +1,4 @@
 # Import Windows compatibility error handling
-import core.windows_compatibility
-
 import asyncio
 
 from aiogram import Bot, Dispatcher
@@ -10,7 +8,7 @@ from aiogram.utils.markdown import hbold
 
 
 class TelegramBot:
-    def __init__(self, token: str, chat_id: str = None, logger = None):
+    def __init__(self, token: str, chat_id: str = None, logger=None):
         self.bot = Bot(token=token)
         self.dp = Dispatcher()
         self.callbacks = {}
@@ -67,7 +65,9 @@ class TelegramBot:
         self.dp.message(Command("external_monitoring"))(self._cmd_external_monitoring)
         self.dp.message(Command("external_monitoring_status"))(self._cmd_external_monitoring_status)
         self.dp.message(Command("external_monitoring_enable"))(self._cmd_external_monitoring_enable)
-        self.dp.message(Command("external_monitoring_disable"))(self._cmd_external_monitoring_disable)
+        self.dp.message(Command("external_monitoring_disable"))(
+            self._cmd_external_monitoring_disable
+        )
         self.dp.message(Command("export_metrics"))(self._cmd_export_metrics)
 
     def set_chat_id(self, chat_id: str):
@@ -87,7 +87,9 @@ class TelegramBot:
                     self.logger.log_event("TELEGRAM", "INFO", "🔧 Webhook deleted successfully")
             except Exception as webhook_error:
                 if self.logger:
-                    self.logger.log_event("TELEGRAM", "WARNING", f"⚠️ Webhook deletion warning: {webhook_error}")
+                    self.logger.log_event(
+                        "TELEGRAM", "WARNING", f"⚠️ Webhook deletion warning: {webhook_error}"
+                    )
 
             # Запускаем polling без блокировки
             await self.dp.start_polling(self.bot, skip_updates=True)
@@ -274,7 +276,9 @@ class TelegramBot:
                         await message.answer("❌ Hours must be between 1 and 168 (7 days)")
                         return
                 except ValueError:
-                    await message.answer("❌ Invalid hours parameter. Use: /position_history [hours]")
+                    await message.answer(
+                        "❌ Invalid hours parameter. Use: /position_history [hours]"
+                    )
                     return
 
             if "get_position_history" in self.callbacks:
@@ -409,13 +413,13 @@ class TelegramBot:
                 return
 
             action = parts[1].lower()
-            if action in ['enable', 'on', 'true']:
+            if action in ["enable", "on", "true"]:
                 if "enable_auto_switch" in self.callbacks:
                     result = await self.callbacks["enable_auto_switch"](True)
                     await message.answer(result)
                 else:
                     await message.answer("❌ Auto-switch management not available")
-            elif action in ['disable', 'off', 'false']:
+            elif action in ["disable", "off", "false"]:
                 if "enable_auto_switch" in self.callbacks:
                     result = await self.callbacks["enable_auto_switch"](False)
                     await message.answer(result)

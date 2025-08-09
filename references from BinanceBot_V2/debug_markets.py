@@ -3,23 +3,27 @@
 Отладка доступных рынков на Binance
 """
 
-import ccxt
 import os
+
+import ccxt
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def debug_markets():
     """Отлаживаем доступные рынки на Binance"""
 
-    exchange = ccxt.binance({
-        'apiKey': os.getenv('BINANCE_API_KEY'),
-        'secret': os.getenv('BINANCE_API_SECRET'),
-        'sandbox': False,
-        'options': {
-            'defaultType': 'future',
+    exchange = ccxt.binance(
+        {
+            "apiKey": os.getenv("BINANCE_API_KEY"),
+            "secret": os.getenv("BINANCE_API_SECRET"),
+            "sandbox": False,
+            "options": {
+                "defaultType": "future",
+            },
         }
-    })
+    )
 
     print("🔍 Отладка доступных рынков на Binance...")
     print("=" * 60)
@@ -28,29 +32,35 @@ def debug_markets():
         markets = exchange.load_markets()
 
         # Группируем по типам
-        futures = {symbol: market for symbol, market in markets.items() if market['future']}
-        usdt_futures = {symbol: market for symbol, market in futures.items() if market['quote'] == 'USDT'}
-        usdc_futures = {symbol: market for symbol, market in futures.items() if market['quote'] == 'USDC'}
-        btc_futures = {symbol: market for symbol, market in futures.items() if market['quote'] == 'BTC'}
+        futures = {symbol: market for symbol, market in markets.items() if market["future"]}
+        usdt_futures = {
+            symbol: market for symbol, market in futures.items() if market["quote"] == "USDT"
+        }
+        usdc_futures = {
+            symbol: market for symbol, market in futures.items() if market["quote"] == "USDC"
+        }
+        btc_futures = {
+            symbol: market for symbol, market in futures.items() if market["quote"] == "BTC"
+        }
 
         print(f"📊 Всего фьючерсов: {len(futures)}")
         print(f"📊 USDT фьючерсов: {len(usdt_futures)}")
         print(f"📊 USDC фьючерсов: {len(usdc_futures)}")
         print(f"📊 BTC фьючерсов: {len(btc_futures)}")
 
-        print(f"\n📋 USDC фьючерсы:")
+        print("\n📋 USDC фьючерсы:")
         for symbol in list(usdc_futures.keys())[:20]:
             print(f"   • {symbol}")
         if len(usdc_futures) > 20:
             print(f"   ... и еще {len(usdc_futures) - 20} символов")
 
-        print(f"\n📋 USDT фьючерсы (первые 10):")
+        print("\n📋 USDT фьючерсы (первые 10):")
         for symbol in list(usdt_futures.keys())[:10]:
             print(f"   • {symbol}")
 
         # Проверяем наши символы
-        print(f"\n🔍 Проверяем наши символы:")
-        with open('data/valid_usdc_symbols.json', 'r') as f:
+        print("\n🔍 Проверяем наши символы:")
+        with open("data/valid_usdc_symbols.json") as f:
             our_symbols = json.load(f)
 
         found_symbols = []
@@ -66,14 +76,14 @@ def debug_markets():
         print(f"❌ Не найдено: {len(not_found_symbols)}")
 
         if found_symbols:
-            print(f"\n✅ Найденные символы:")
+            print("\n✅ Найденные символы:")
             for symbol in found_symbols[:10]:
                 print(f"   • {symbol}")
             if len(found_symbols) > 10:
                 print(f"   ... и еще {len(found_symbols) - 10} символов")
 
         if not_found_symbols:
-            print(f"\n❌ Ненайденные символы:")
+            print("\n❌ Ненайденные символы:")
             for symbol in not_found_symbols[:10]:
                 print(f"   • {symbol}")
             if len(not_found_symbols) > 10:
@@ -82,6 +92,8 @@ def debug_markets():
     except Exception as e:
         print(f"❌ Ошибка при отладке: {e}")
 
+
 if __name__ == "__main__":
     import json
+
     debug_markets()

@@ -10,8 +10,8 @@ def log_component_data(symbol, breakdown, is_successful=True):
         breakdown (dict): Signal components breakdown
         is_successful (bool): Whether the trade was successful
     """
-    import json
     from datetime import datetime
+    import json
 
     from constants import COMPONENT_TRACKER_LOG_FILE
     from utils_logging import log
@@ -24,7 +24,7 @@ def log_component_data(symbol, breakdown, is_successful=True):
 
         # Load existing data or create new
         if os.path.exists(filepath):
-            with open(filepath, "r") as f:
+            with open(filepath) as f:
                 try:
                     data = json.load(f)
                 except json.JSONDecodeError:

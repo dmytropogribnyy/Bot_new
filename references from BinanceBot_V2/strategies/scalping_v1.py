@@ -3,9 +3,10 @@ from datetime import datetime
 
 import pandas as pd
 
+from core.aggression_manager import AggressionManager
+
 # logger будет передаваться через конструктор
 from strategies.base_strategy import BaseStrategy
-from core.aggression_manager import AggressionManager
 
 
 class ScalpingV1(BaseStrategy):
@@ -24,9 +25,9 @@ class ScalpingV1(BaseStrategy):
         self._update_settings_from_aggression()
 
         # Улучшенные параметры для прибыльной торговли
-        self.profit_target_hourly = getattr(config, 'profit_target_hourly', 0.7)
-        self.min_win_rate = getattr(config, 'min_win_rate', 0.65)
-        self.volatility_multiplier_max = getattr(config, 'volatility_multiplier_max', 2.5)
+        self.profit_target_hourly = getattr(config, "profit_target_hourly", 0.7)
+        self.min_win_rate = getattr(config, "min_win_rate", 0.65)
+        self.volatility_multiplier_max = getattr(config, "volatility_multiplier_max", 2.5)
 
         # Новые параметры для улучшенного анализа
         self.ema_fast = 9
@@ -56,16 +57,22 @@ class ScalpingV1(BaseStrategy):
             self.max_loss_percent = settings.get("max_loss_percent", 0.4)
 
             # Логируем обновление настроек
-            self.logger.log_strategy_event("scalping", "SETTINGS_UPDATED", {
-                "aggression_level": self.aggression_manager.get_aggression_level(),
-                "rsi_oversold": self.rsi_oversold,
-                "rsi_overbought": self.rsi_overbought,
-                "volume_threshold": self.volume_threshold,
-                "min_signal_strength": self.min_signal_strength
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "SETTINGS_UPDATED",
+                {
+                    "aggression_level": self.aggression_manager.get_aggression_level(),
+                    "rsi_oversold": self.rsi_oversold,
+                    "rsi_overbought": self.rsi_overbought,
+                    "volume_threshold": self.volume_threshold,
+                    "min_signal_strength": self.min_signal_strength,
+                },
+            )
 
         except Exception as e:
-            self.logger.log_event("STRATEGY", "ERROR", f"Failed to update settings from AggressionManager: {e}")
+            self.logger.log_event(
+                "STRATEGY", "ERROR", f"Failed to update settings from AggressionManager: {e}"
+            )
             # Fallback к базовым настройкам
             self.rsi_oversold = 28
             self.rsi_overbought = 72
@@ -85,11 +92,11 @@ class ScalpingV1(BaseStrategy):
 
         # Конвертируем в pandas DataFrame
         df = pd.DataFrame(ohlcv_data)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
 
         # Убеждаемся, что колонки имеют правильные имена
-        if 'close' not in df.columns:
+        if "close" not in df.columns:
             self.logger.log_event("STRATEGY", "ERROR", f"Column 'close' not found for {symbol}")
             return None
 
@@ -113,27 +120,35 @@ class ScalpingV1(BaseStrategy):
 
         signal = None
         current_price = current["close"]  # Используем текущую цену закрытия
-        
+
         if buy_score >= self.min_signal_strength:
             signal = self.format_signal("buy", buy_score, "bullish breakout", breakdown)
             signal["entry_price"] = current_price  # Добавляем цену входа
-            self.logger.log_strategy_event("scalping", "BUY_SIGNAL", {
-                "symbol": symbol,
-                "score": buy_score,
-                "reason": "bullish breakout",
-                "rsi": breakdown.get("rsi", 0),
-                "volume_ratio": breakdown.get("volume_ratio", 0)
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "BUY_SIGNAL",
+                {
+                    "symbol": symbol,
+                    "score": buy_score,
+                    "reason": "bullish breakout",
+                    "rsi": breakdown.get("rsi", 0),
+                    "volume_ratio": breakdown.get("volume_ratio", 0),
+                },
+            )
         elif sell_score >= self.min_signal_strength:
             signal = self.format_signal("sell", sell_score, "bearish breakdown", breakdown)
             signal["entry_price"] = current_price  # Добавляем цену входа
-            self.logger.log_strategy_event("scalping", "SELL_SIGNAL", {
-                "symbol": symbol,
-                "score": sell_score,
-                "reason": "bearish breakdown",
-                "rsi": breakdown.get("rsi", 0),
-                "volume_ratio": breakdown.get("volume_ratio", 0)
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "SELL_SIGNAL",
+                {
+                    "symbol": symbol,
+                    "score": sell_score,
+                    "reason": "bearish breakdown",
+                    "rsi": breakdown.get("rsi", 0),
+                    "volume_ratio": breakdown.get("volume_ratio", 0),
+                },
+            )
 
         self.log_signal_analysis(symbol, signal, df)
         return signal
@@ -146,24 +161,32 @@ class ScalpingV1(BaseStrategy):
 
         # Стабильный выход при +0.4% для качественной торговли
         if direction == "buy" and current_price >= entry_price * 1.004:
-            self.logger.log_strategy_event("scalping", "PROFIT_EXIT", {
-                "symbol": symbol,
-                "direction": direction,
-                "entry_price": entry_price,
-                "exit_price": current_price,
-                "profit_percent": ((current_price - entry_price) / entry_price) * 100,
-                "reason": "target_profit"
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "PROFIT_EXIT",
+                {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price": current_price,
+                    "profit_percent": ((current_price - entry_price) / entry_price) * 100,
+                    "reason": "target_profit",
+                },
+            )
             return True
         elif direction == "sell" and current_price <= entry_price * 0.996:
-            self.logger.log_strategy_event("scalping", "PROFIT_EXIT", {
-                "symbol": symbol,
-                "direction": direction,
-                "entry_price": entry_price,
-                "exit_price": current_price,
-                "profit_percent": ((entry_price - current_price) / entry_price) * 100,
-                "reason": "target_profit"
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "PROFIT_EXIT",
+                {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price": current_price,
+                    "profit_percent": ((entry_price - current_price) / entry_price) * 100,
+                    "reason": "target_profit",
+                },
+            )
             return True
 
         # Проверка времени удержания позиции
@@ -171,35 +194,47 @@ class ScalpingV1(BaseStrategy):
         max_hold_seconds = self.max_hold_minutes * 60
 
         if position_duration > max_hold_seconds:
-            self.logger.log_strategy_event("scalping", "TIME_EXIT", {
-                "symbol": symbol,
-                "direction": direction,
-                "duration_minutes": position_duration / 60,
-                "max_hold_minutes": self.max_hold_minutes,
-                "reason": "time_limit"
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "TIME_EXIT",
+                {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "duration_minutes": position_duration / 60,
+                    "max_hold_minutes": self.max_hold_minutes,
+                    "reason": "time_limit",
+                },
+            )
             return True
 
         # Защитный стоп-лосс при убытке
         if direction == "buy" and current_price <= entry_price * 0.995:  # -0.5% стоп-лосс
-            self.logger.log_strategy_event("scalping", "STOP_LOSS", {
-                "symbol": symbol,
-                "direction": direction,
-                "entry_price": entry_price,
-                "exit_price": current_price,
-                "loss_percent": ((entry_price - current_price) / entry_price) * 100,
-                "reason": "stop_loss"
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "STOP_LOSS",
+                {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price": current_price,
+                    "loss_percent": ((entry_price - current_price) / entry_price) * 100,
+                    "reason": "stop_loss",
+                },
+            )
             return True
         elif direction == "sell" and current_price >= entry_price * 1.005:  # -0.5% стоп-лосс
-            self.logger.log_strategy_event("scalping", "STOP_LOSS", {
-                "symbol": symbol,
-                "direction": direction,
-                "entry_price": entry_price,
-                "exit_price": current_price,
-                "loss_percent": ((current_price - entry_price) / entry_price) * 100,
-                "reason": "stop_loss"
-            })
+            self.logger.log_strategy_event(
+                "scalping",
+                "STOP_LOSS",
+                {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price": current_price,
+                    "loss_percent": ((current_price - entry_price) / entry_price) * 100,
+                    "reason": "stop_loss",
+                },
+            )
             return True
 
         return False
@@ -211,7 +246,9 @@ class ScalpingV1(BaseStrategy):
         df["rsi"] = self.calculate_rsi(df["close"], self.rsi_period)
 
         # Улучшенный MACD
-        macd, macd_signal = self.calculate_macd(df["close"], self.macd_fast, self.macd_slow, self.macd_signal)
+        macd, macd_signal = self.calculate_macd(
+            df["close"], self.macd_fast, self.macd_slow, self.macd_signal
+        )
         df["macd"] = macd
         df["macd_signal"] = macd_signal
         df["macd_histogram"] = macd - macd_signal
@@ -233,7 +270,9 @@ class ScalpingV1(BaseStrategy):
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 
-    def calculate_macd(self, series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[pd.Series, pd.Series]:
+    def calculate_macd(
+        self, series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+    ) -> tuple[pd.Series, pd.Series]:
         ema_fast = series.ewm(span=fast, adjust=False).mean()
         ema_slow = series.ewm(span=slow, adjust=False).mean()
         macd = ema_fast - ema_slow
@@ -252,7 +291,7 @@ class ScalpingV1(BaseStrategy):
         # Смягчаем требования для тестирования
         min_atr = self.min_atr_percent * 0.1  # Смягчаем в 10 раз
         min_volume = self.volume_threshold * 0.1  # Смягчаем в 10 раз
-        
+
         if current["atr_percent"] < min_atr:
             return False, "Low volatility"
         if current["volume_ratio"] < min_volume:
@@ -262,23 +301,33 @@ class ScalpingV1(BaseStrategy):
     def get_signal_breakdown(self, current: pd.Series, prev: pd.Series) -> dict:
         breakdown = {
             # MACD анализ
-            "macd_bullish": 1 if current["macd"] > current["macd_signal"] and current["macd_histogram"] > prev["macd_histogram"] else 0,
-            "macd_bearish": 1 if current["macd"] < current["macd_signal"] and current["macd_histogram"] < prev["macd_histogram"] else 0,
-
+            "macd_bullish": 1
+            if current["macd"] > current["macd_signal"]
+            and current["macd_histogram"] > prev["macd_histogram"]
+            else 0,
+            "macd_bearish": 1
+            if current["macd"] < current["macd_signal"]
+            and current["macd_histogram"] < prev["macd_histogram"]
+            else 0,
             # RSI анализ
             "rsi_oversold": 1 if current["rsi"] < self.rsi_oversold else 0,
             "rsi_overbought": 1 if current["rsi"] > self.rsi_overbought else 0,
-            "rsi_bullish_divergence": 1 if current["rsi"] > prev["rsi"] and current["close"] < prev["close"] else 0,
-            "rsi_bearish_divergence": 1 if current["rsi"] < prev["rsi"] and current["close"] > prev["close"] else 0,
-
+            "rsi_bullish_divergence": 1
+            if current["rsi"] > prev["rsi"] and current["close"] < prev["close"]
+            else 0,
+            "rsi_bearish_divergence": 1
+            if current["rsi"] < prev["rsi"] and current["close"] > prev["close"]
+            else 0,
             # EMA анализ
-            "ema_bullish": 1 if current["ema_fast"] > current["ema_slow"] and current["close"] > current["ema_fast"] else 0,
-            "ema_bearish": 1 if current["ema_fast"] < current["ema_slow"] and current["close"] < current["ema_fast"] else 0,
-
+            "ema_bullish": 1
+            if current["ema_fast"] > current["ema_slow"] and current["close"] > current["ema_fast"]
+            else 0,
+            "ema_bearish": 1
+            if current["ema_fast"] < current["ema_slow"] and current["close"] < current["ema_fast"]
+            else 0,
             # Объем и волатильность
             "volume_spike": 1 if current["volume_ratio"] > self.volume_threshold else 0,
             "high_volatility": 1 if current["volatility"] > 1.0 else 0,
-
             # Ценовое действие
             "price_momentum": 1 if current["price_change"] > 0.001 else 0,  # 0.1% рост
             "price_reversal": 1 if current["price_change"] < -0.001 else 0,  # 0.1% падение
@@ -287,32 +336,36 @@ class ScalpingV1(BaseStrategy):
 
     def calculate_buy_score(self, breakdown: dict) -> float:
         score = (
-            breakdown["macd_bullish"] * 1.5 +  # Увеличенный вес для MACD
-            breakdown["rsi_oversold"] * 1.0 +
-            breakdown["rsi_bullish_divergence"] * 1.2 +  # Дивергенция RSI
-            breakdown["ema_bullish"] * 1.0 +
-            breakdown["volume_spike"] * 0.8 +
-            breakdown["high_volatility"] * 0.5 +
-            breakdown["price_momentum"] * 0.3
+            breakdown["macd_bullish"] * 1.5  # Увеличенный вес для MACD
+            + breakdown["rsi_oversold"] * 1.0
+            + breakdown["rsi_bullish_divergence"] * 1.2  # Дивергенция RSI
+            + breakdown["ema_bullish"] * 1.0
+            + breakdown["volume_spike"] * 0.8
+            + breakdown["high_volatility"] * 0.5
+            + breakdown["price_momentum"] * 0.3
         )
         return score
 
     def calculate_sell_score(self, breakdown: dict) -> float:
         score = (
-            breakdown["macd_bearish"] * 1.5 +  # Увеличенный вес для MACD
-            breakdown["rsi_overbought"] * 1.0 +
-            breakdown["rsi_bearish_divergence"] * 1.2 +  # Дивергенция RSI
-            breakdown["ema_bearish"] * 1.0 +
-            breakdown["volume_spike"] * 0.8 +
-            breakdown["high_volatility"] * 0.5 +
-            breakdown["price_reversal"] * 0.3
+            breakdown["macd_bearish"] * 1.5  # Увеличенный вес для MACD
+            + breakdown["rsi_overbought"] * 1.0
+            + breakdown["rsi_bearish_divergence"] * 1.2  # Дивергенция RSI
+            + breakdown["ema_bearish"] * 1.0
+            + breakdown["volume_spike"] * 0.8
+            + breakdown["high_volatility"] * 0.5
+            + breakdown["price_reversal"] * 0.3
         )
         return score
 
     def format_signal(self, direction: str, strength: float, reason: str, breakdown: dict) -> dict:
         # Получаем текущую цену из последних данных
-        current_price = self.symbol_manager.get_latest_price() if hasattr(self.symbol_manager, 'get_latest_price') else 0.0
-        
+        current_price = (
+            self.symbol_manager.get_latest_price()
+            if hasattr(self.symbol_manager, "get_latest_price")
+            else 0.0
+        )
+
         return {
             "direction": direction,
             "strength": strength,

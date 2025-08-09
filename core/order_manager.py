@@ -5,9 +5,8 @@ Simplified version based on v2 structure
 """
 
 import asyncio
-import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
@@ -17,17 +16,16 @@ from core.unified_logger import UnifiedLogger
 class OrderManager:
     """Comprehensive order and position management system"""
 
-    def __init__(self, config: TradingConfig, exchange: OptimizedExchangeClient,
-                 logger: UnifiedLogger):
+    def __init__(self, config: TradingConfig, exchange: OptimizedExchangeClient, logger: UnifiedLogger):
         self.config = config
         self.exchange = exchange
         self.logger = logger
 
         # Position and order tracking
-        self.active_positions: Dict[str, Dict] = {}  # symbol -> position_data
-        self.pending_orders: Dict[str, List[Dict]] = {}  # symbol -> [orders]
-        self.tp_orders: Dict[str, List[Dict]] = {}  # symbol -> [tp_orders]
-        self.sl_orders: Dict[str, Dict] = {}  # symbol -> sl_order
+        self.active_positions: dict[str, dict] = {}  # symbol -> position_data
+        self.pending_orders: dict[str, list[dict]] = {}  # symbol -> [orders]
+        self.tp_orders: dict[str, list[dict]] = {}  # symbol -> [tp_orders]
+        self.sl_orders: dict[str, dict] = {}  # symbol -> sl_order
 
         # Monitoring and synchronization
         self.last_sync_time = 0
@@ -54,13 +52,15 @@ class OrderManager:
         """Load emergency shutdown flag from file"""
         try:
             import os
+
             if os.path.exists(self.emergency_flag_file):
                 with open(self.emergency_flag_file) as f:
                     flag_data = f.read().strip()
-                    if flag_data == 'EMERGENCY_SHUTDOWN':
+                    if flag_data == "EMERGENCY_SHUTDOWN":
                         self.emergency_shutdown_flag = True
-                        self.logger.log_event("ORDER_MANAGER", "WARNING",
-                            "Emergency shutdown flag detected from previous run")
+                        self.logger.log_event(
+                            "ORDER_MANAGER", "WARNING", "Emergency shutdown flag detected from previous run"
+                        )
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to load emergency flag: {e}")
 
@@ -68,9 +68,10 @@ class OrderManager:
         """Save emergency shutdown flag to file"""
         try:
             import os
+
             os.makedirs(os.path.dirname(self.emergency_flag_file), exist_ok=True)
-            with open(self.emergency_flag_file, 'w') as f:
-                f.write('EMERGENCY_SHUTDOWN')
+            with open(self.emergency_flag_file, "w") as f:
+                f.write("EMERGENCY_SHUTDOWN")
             self.logger.log_event("ORDER_MANAGER", "INFO", "Emergency shutdown flag saved")
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to save emergency flag: {e}")
@@ -79,6 +80,7 @@ class OrderManager:
         """Clear emergency shutdown flag"""
         try:
             import os
+
             if os.path.exists(self.emergency_flag_file):
                 os.remove(self.emergency_flag_file)
                 self.logger.log_event("ORDER_MANAGER", "INFO", "Emergency shutdown flag cleared")
@@ -110,54 +112,59 @@ class OrderManager:
                 self.active_positions.clear()
 
                 for position in positions:
-                    symbol = position['symbol']
-                    size = float(position['size'])
+                    symbol = position["symbol"]
+                    # Be tolerant to ccxt schema variations: size vs contracts
+                    try:
+                        size = float(position.get("size", position.get("contracts", 0)))
+                    except Exception:
+                        size = 0.0
 
                     if size != 0:
                         self.active_positions[symbol] = {
-                            'symbol': symbol,
-                            'size': size,
-                            'side': 'long' if size > 0 else 'short',
-                            'entry_price': float(position['entryPrice']),
-                            'mark_price': float(position['markPrice']),
-                            'unrealized_pnl': float(position['unrealizedPnl']),
-                            'leverage': int(position['leverage']),
-                            'timestamp': time.time()
+                            "symbol": symbol,
+                            "size": size,
+                            "side": "long" if size > 0 else "short",
+                            "entry_price": float(position["entryPrice"]),
+                            "mark_price": float(position["markPrice"]),
+                            "unrealized_pnl": float(position["unrealizedPnl"]),
+                            "leverage": int(position["leverage"]),
+                            "timestamp": time.time(),
                         }
 
-            self.logger.log_event("ORDER_MANAGER", "DEBUG",
-                                f"Synced {len(self.active_positions)} positions from exchange")
+            self.logger.log_event(
+                "ORDER_MANAGER", "DEBUG", f"Synced {len(self.active_positions)} positions from exchange"
+            )
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to sync positions: {e}")
 
-    async def place_position_with_tp_sl(self, symbol: str, side: str, quantity: float,
-                                       entry_price: float, leverage: int = 5) -> Dict[str, Any]:
+    async def place_position_with_tp_sl(
+        self, symbol: str, side: str, quantity: float, entry_price: float, leverage: int = 5
+    ) -> dict[str, Any]:
         """Place position with TP/SL orders"""
         try:
             # Check if we already have a position
             if symbol in self.active_positions:
-                self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                    f"Position already exists for {symbol}")
+                self.logger.log_event("ORDER_MANAGER", "WARNING", f"Position already exists for {symbol}")
                 return {"success": False, "reason": "Position already exists"}
 
             # Check position limit
             if len(self.active_positions) >= self.config.max_positions:
-                self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                    f"Maximum positions reached ({self.config.max_positions})")
+                self.logger.log_event(
+                    "ORDER_MANAGER", "WARNING", f"Maximum positions reached ({self.config.max_positions})"
+                )
                 return {"success": False, "reason": "Maximum positions reached"}
 
             # Set leverage
             try:
                 await self.exchange.exchange.set_leverage(leverage, symbol)
             except Exception as e:
-                self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                    f"Failed to set leverage for {symbol}: {e}")
+                self.logger.log_event("ORDER_MANAGER", "WARNING", f"Failed to set leverage for {symbol}: {e}")
 
             # Place market order
             order = await self.exchange.create_market_order(symbol, side, quantity)
 
-            if not order or 'id' not in order:
+            if not order or "id" not in order:
                 return {"success": False, "reason": "Failed to place order"}
 
             # Calculate TP/SL levels
@@ -170,53 +177,55 @@ class OrderManager:
             # Update active positions
             async with self.position_lock:
                 self.active_positions[symbol] = {
-                    'symbol': symbol,
-                    'size': quantity,
-                    'side': side,
-                    'entry_price': entry_price,
-                    'mark_price': entry_price,
-                    'unrealized_pnl': 0,
-                    'leverage': leverage,
-                    'order_id': order['id'],
-                    'timestamp': time.time()
+                    "symbol": symbol,
+                    "size": quantity,
+                    "side": side,
+                    "entry_price": entry_price,
+                    "mark_price": entry_price,
+                    "unrealized_pnl": 0,
+                    "leverage": leverage,
+                    "order_id": order["id"],
+                    "timestamp": time.time(),
                 }
 
-            self.logger.log_event("ORDER_MANAGER", "INFO",
-                                f"Position opened: {symbol} {side} {quantity} @ {entry_price}")
+            self.logger.log_event(
+                "ORDER_MANAGER", "INFO", f"Position opened: {symbol} {side} {quantity} @ {entry_price}"
+            )
 
             return {
                 "success": True,
-                "order_id": order['id'],
+                "order_id": order["id"],
                 "entry_price": entry_price,
                 "sl_price": sl_price,
                 "tp_levels": tp_levels,
-                "tp_sl_orders": tp_sl_result
+                "tp_sl_orders": tp_sl_result,
             }
 
         except Exception as e:
-            self.logger.log_event("ORDER_MANAGER", "ERROR",
-                                f"Failed to place position for {symbol}: {e}")
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to place position for {symbol}: {e}")
             return {"success": False, "reason": str(e)}
 
-    async def place_tp_sl_orders(self, symbol: str, side: str, quantity: float,
-                                entry_price: float) -> Dict[str, Any]:
+    async def place_tp_sl_orders(self, symbol: str, side: str, quantity: float, entry_price: float) -> dict[str, Any]:
         """Place take profit and stop loss orders"""
         try:
             # Calculate prices
             sl_price = self.calculate_stop_loss(entry_price, side)
             tp_levels = self.calculate_take_profit_levels(entry_price, side)
 
-            # Place stop loss order
-            sl_order = await self.exchange.create_stop_loss_order(
-                symbol, side, quantity, sl_price
-            )
+            # Determine closing side for protective orders (opposite to entry)
+            close_side = "sell" if side == "buy" else "buy"
+
+            # Place stop loss order on the closing side
+            sl_order = await self.exchange.create_stop_loss_order(symbol, close_side, quantity, sl_price)
 
             # Place take profit orders
             tp_orders = []
-            for tp_price, tp_quantity in tp_levels:
-                tp_order = await self.exchange.create_take_profit_order(
-                    symbol, side, tp_quantity, tp_price
-                )
+            for tp_price, tp_fraction in tp_levels:
+                # Convert fraction to absolute amount
+                tp_amount = round(float(quantity) * float(tp_fraction), 6)
+                if tp_amount <= 0:
+                    continue
+                tp_order = await self.exchange.create_take_profit_order(symbol, close_side, tp_amount, tp_price)
                 tp_orders.append(tp_order)
 
             # Store orders
@@ -224,31 +233,33 @@ class OrderManager:
                 self.sl_orders[symbol] = sl_order
                 self.tp_orders[symbol] = tp_orders
 
-            self.logger.log_event("ORDER_MANAGER", "INFO",
-                                f"Placed TP/SL orders for {symbol}: SL@{sl_price}, TP@{[tp[1] for tp in tp_levels]}")
+            self.logger.log_event(
+                "ORDER_MANAGER",
+                "INFO",
+                f"Placed TP/SL orders for {symbol}: SL@{sl_price}, TP@{[tp[0] for tp in tp_levels]}",
+            )
 
             return {
                 "sl_order": sl_order,
                 "tp_orders": tp_orders,
                 "sl_price": sl_price,
-                "tp_prices": [tp[1] for tp in tp_levels]
+                "tp_prices": [tp[0] for tp in tp_levels],
             }
 
         except Exception as e:
-            self.logger.log_event("ORDER_MANAGER", "ERROR",
-                                f"Failed to place TP/SL orders for {symbol}: {e}")
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to place TP/SL orders for {symbol}: {e}")
             return {"success": False, "reason": str(e)}
 
     def calculate_stop_loss(self, entry_price: float, side: str) -> float:
         """Calculate stop loss price"""
-        if side == 'buy':
+        if side == "buy":
             return entry_price * (1 - self.config.stop_loss_percent / 100)
         else:
             return entry_price * (1 + self.config.stop_loss_percent / 100)
 
-    def calculate_take_profit_levels(self, entry_price: float, side: str) -> List[tuple[float, float]]:
+    def calculate_take_profit_levels(self, entry_price: float, side: str) -> list[tuple[float, float]]:
         """Calculate take profit levels"""
-        if side == 'buy':
+        if side == "buy":
             tp1_price = entry_price * (1 + self.config.take_profit_percent / 100)
             tp2_price = entry_price * (1 + (self.config.take_profit_percent * 1.5) / 100)
         else:
@@ -258,7 +269,7 @@ class OrderManager:
         # Split quantity: 70% at TP1, 30% at TP2
         return [(tp1_price, 0.7), (tp2_price, 0.3)]
 
-    async def close_position_emergency(self, symbol: str) -> Dict[str, Any]:
+    async def close_position_emergency(self, symbol: str) -> dict[str, Any]:
         """Emergency close position"""
         try:
             position = self.active_positions.get(symbol)
@@ -269,23 +280,19 @@ class OrderManager:
             await self.cancel_all_orders(symbol)
 
             # Close position with market order
-            side = 'sell' if position['side'] == 'long' else 'buy'
-            order = await self.exchange.create_market_order(
-                symbol, side, abs(position['size'])
-            )
+            side = "sell" if position["side"] == "long" else "buy"
+            order = await self.exchange.create_market_order(symbol, side, abs(position["size"]))
 
             # Remove from tracking
             async with self.position_lock:
                 self.active_positions.pop(symbol, None)
 
-            self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                f"Emergency closed position: {symbol}")
+            self.logger.log_event("ORDER_MANAGER", "WARNING", f"Emergency closed position: {symbol}")
 
             return {"success": True, "order": order}
 
         except Exception as e:
-            self.logger.log_event("ORDER_MANAGER", "ERROR",
-                                f"Failed to emergency close {symbol}: {e}")
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to emergency close {symbol}: {e}")
             return {"success": False, "reason": str(e)}
 
     async def cancel_all_orders(self, symbol: str):
@@ -298,12 +305,10 @@ class OrderManager:
                 self.sl_orders.pop(symbol, None)
                 self.tp_orders.pop(symbol, None)
 
-            self.logger.log_event("ORDER_MANAGER", "INFO",
-                                f"Cancelled all orders for {symbol}")
+            self.logger.log_event("ORDER_MANAGER", "INFO", f"Cancelled all orders for {symbol}")
 
         except Exception as e:
-            self.logger.log_event("ORDER_MANAGER", "ERROR",
-                                f"Failed to cancel orders for {symbol}: {e}")
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to cancel orders for {symbol}: {e}")
 
     async def cleanup_hanging_orders(self):
         """Clean up hanging orders"""
@@ -311,16 +316,16 @@ class OrderManager:
             open_orders = await self.exchange.get_open_orders()
 
             for order in open_orders:
-                order_age = time.time() - (order.get('timestamp', 0) / 1000)
+                order_age = time.time() - (order.get("timestamp", 0) / 1000)
 
                 if order_age > self.order_timeout:
                     try:
-                        await self.exchange.cancel_order(order['id'], order['symbol'])
-                        self.logger.log_event("ORDER_MANAGER", "INFO",
-                                            f"Cleaned up hanging order: {order['id']}")
+                        await self.exchange.cancel_order(order["id"], order["symbol"])
+                        self.logger.log_event("ORDER_MANAGER", "INFO", f"Cleaned up hanging order: {order['id']}")
                     except Exception as e:
-                        self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                            f"Failed to cancel hanging order {order['id']}: {e}")
+                        self.logger.log_event(
+                            "ORDER_MANAGER", "WARNING", f"Failed to cancel hanging order {order['id']}: {e}"
+                        )
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to cleanup hanging orders: {e}")
@@ -328,7 +333,7 @@ class OrderManager:
     async def monitor_positions(self):
         """Monitor active positions"""
         try:
-            for symbol, position in list(self.active_positions.items()):
+            for symbol, _position in list(self.active_positions.items()):
                 # Check if position still exists on exchange
                 current_position = await self.exchange.get_position(symbol)
 
@@ -340,16 +345,17 @@ class OrderManager:
                     # Clean up orders
                     await self.cancel_all_orders(symbol)
 
-                    self.logger.log_event("ORDER_MANAGER", "INFO",
-                                        f"Position closed on exchange: {symbol}")
+                    self.logger.log_event("ORDER_MANAGER", "INFO", f"Position closed on exchange: {symbol}")
 
                 else:
                     # Update position data
                     async with self.position_lock:
-                        self.active_positions[symbol].update({
-                            'mark_price': float(current_position['markPrice']),
-                            'unrealized_pnl': float(current_position['unrealizedPnl'])
-                        })
+                        self.active_positions[symbol].update(
+                            {
+                                "mark_price": float(current_position["markPrice"]),
+                                "unrealized_pnl": float(current_position["unrealizedPnl"]),
+                            }
+                        )
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to monitor positions: {e}")
@@ -361,18 +367,20 @@ class OrderManager:
                 # Check TP orders
                 if symbol in self.tp_orders:
                     for tp_order in self.tp_orders[symbol]:
-                        order_status = await self.exchange.get_order(tp_order['id'], symbol)
-                        if order_status and order_status['status'] == 'closed':
-                            self.logger.log_event("ORDER_MANAGER", "INFO",
-                                                f"Take profit executed: {symbol} @ {order_status['price']}")
+                        order_status = await self.exchange.get_order(tp_order["id"], symbol)
+                        if order_status and order_status["status"] == "closed":
+                            self.logger.log_event(
+                                "ORDER_MANAGER", "INFO", f"Take profit executed: {symbol} @ {order_status['price']}"
+                            )
 
                 # Check SL order
                 if symbol in self.sl_orders:
                     sl_order = self.sl_orders[symbol]
-                    order_status = await self.exchange.get_order(sl_order['id'], symbol)
-                    if order_status and order_status['status'] == 'closed':
-                        self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                            f"Stop loss executed: {symbol} @ {order_status['price']}")
+                    order_status = await self.exchange.get_order(sl_order["id"], symbol)
+                    if order_status and order_status["status"] == "closed":
+                        self.logger.log_event(
+                            "ORDER_MANAGER", "WARNING", f"Stop loss executed: {symbol} @ {order_status['price']}"
+                        )
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to check order executions: {e}")
@@ -384,28 +392,29 @@ class OrderManager:
 
             for symbol in list(self.active_positions.keys()):
                 position = self.active_positions[symbol]
-                position_age = current_time - position.get('timestamp', 0)
+                position_age = current_time - position.get("timestamp", 0)
 
                 # Check for emergency stop loss
-                if (self.config.emergency_stop_enabled and
-                    position_age > 3600):  # 1 hour
-
-                    unrealized_pnl = position.get('unrealized_pnl', 0)
-                    entry_price = position.get('entry_price', 0)
-                    mark_price = position.get('mark_price', 0)
+                if self.config.emergency_stop_enabled and position_age > 3600:  # 1 hour
+                    position.get("unrealized_pnl", 0)
+                    entry_price = position.get("entry_price", 0)
+                    mark_price = position.get("mark_price", 0)
 
                     if entry_price > 0:
                         loss_percent = abs(mark_price - entry_price) / entry_price * 100
 
                         if loss_percent > self.config.emergency_stop_loss:
-                            self.logger.log_event("ORDER_MANAGER", "WARNING",
-                                                f"Emergency stop loss triggered for {symbol}: {loss_percent:.2f}%")
+                            self.logger.log_event(
+                                "ORDER_MANAGER",
+                                "WARNING",
+                                f"Emergency stop loss triggered for {symbol}: {loss_percent:.2f}%",
+                            )
                             await self.close_position_emergency(symbol)
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to check timeouts: {e}")
 
-    def get_active_positions(self) -> List[Dict]:
+    def get_active_positions(self) -> list[dict]:
         """Get list of active positions"""
         return list(self.active_positions.values())
 
@@ -444,8 +453,7 @@ class OrderManager:
             for symbol in list(self.active_positions.keys()):
                 await self.cancel_all_orders(symbol)
 
-            self.logger.log_event("ORDER_MANAGER", "INFO",
-                                f"OrderManager shutdown complete (emergency: {emergency})")
+            self.logger.log_event("ORDER_MANAGER", "INFO", f"OrderManager shutdown complete (emergency: {emergency})")
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to shutdown OrderManager: {e}")

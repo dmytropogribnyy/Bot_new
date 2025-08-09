@@ -1,7 +1,7 @@
 # core/failure_logger.py
+from datetime import datetime
 import json
 import os
-from datetime import datetime
 from threading import Lock
 
 from constants import FAILURE_LOG_FILE
@@ -32,7 +32,7 @@ def log_failure(symbol, reasons):
 
             # Load existing data
             try:
-                with open(FAILURE_LOG_FILE, "r") as f:
+                with open(FAILURE_LOG_FILE) as f:
                     data = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 data = []

@@ -1,8 +1,8 @@
 import os
 
+from common.config_loader import CONFIG_FILE, EXPORT_PATH
 import pandas as pd
 
-from common.config_loader import CONFIG_FILE, EXPORT_PATH
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance, get_runtime_config
 from utils_logging import backup_config, log
@@ -16,6 +16,7 @@ def evaluate_best_config(days=7):
     обновляет step_tp_levels в runtime_config.json.
     """
     from common.config_loader import RUNTIME_CONFIG_PATH
+
     from tp_optimizer import _update_config_tp
     from utils_core import load_json_file
 
@@ -43,12 +44,20 @@ def evaluate_best_config(days=7):
         balance = get_cached_balance()
         config = get_runtime_config()  # Загружаем runtime config
         # ✅ Теперь конфигурируемо: дефолты как в твоём коде, но из JSON
-        tp_min_trades = config.get("tp_min_trades_initial", 10) if balance < 300 else config.get("tp_min_trades_full", 20)
-        update_threshold = config.get("tp_update_threshold_initial", 0.1) if balance < 300 else config.get("tp_update_threshold_full", 0.2)
+        tp_min_trades = (
+            config.get("tp_min_trades_initial", 10) if balance < 300 else config.get("tp_min_trades_full", 20)
+        )
+        update_threshold = (
+            config.get("tp_update_threshold_initial", 0.1)
+            if balance < 300
+            else config.get("tp_update_threshold_full", 0.2)
+        )
 
         total = len(df)
         if total < tp_min_trades:
-            send_telegram_message(f"ℹ️ Not enough trades for TP optimization (need {tp_min_trades}, have {total})", force=True)
+            send_telegram_message(
+                f"ℹ️ Not enough trades for TP optimization (need {tp_min_trades}, have {total})", force=True
+            )
             return
 
         # ✅ Boolean hits
@@ -112,6 +121,7 @@ def evaluate_best_config(days=7):
 
 def _update_config_tp(tp1, tp2):
     from common.config_loader import RUNTIME_CONFIG_PATH
+
     from utils_core import load_json_file, save_json_file
 
     config = load_json_file(RUNTIME_CONFIG_PATH)

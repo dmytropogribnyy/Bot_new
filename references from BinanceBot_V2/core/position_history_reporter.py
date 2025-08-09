@@ -21,6 +21,7 @@ from core.unified_logger import UnifiedLogger
 @dataclass
 class TradePosition:
     """Данные о торговой позиции"""
+
     symbol: str
     side: str  # 'buy' или 'sell'
     entry_price: float
@@ -39,6 +40,7 @@ class TradePosition:
 @dataclass
 class PositionSummary:
     """Сводка по позициям"""
+
     total_trades: int
     winning_trades: int
     losing_trades: int
@@ -69,39 +71,44 @@ class PositionHistoryReporter:
         """Инициализация репортера"""
         try:
             await self.exchange_client.initialize()
-            self.logger.log_event("POSITION_REPORTER", "INFO", "✅ Position History Reporter initialized")
+            self.logger.log_event(
+                "POSITION_REPORTER", "INFO", "✅ Position History Reporter initialized"
+            )
             return True
         except Exception as e:
             self.logger.log_event("POSITION_REPORTER", "ERROR", f"❌ Failed to initialize: {e}")
             return False
 
-    async def get_user_trades(self, symbol: str | None = None,
-                            start_time: datetime | None = None,
-                            end_time: datetime | None = None,
-                            limit: int = 1000) -> list[dict[str, Any]]:
+    async def get_user_trades(
+        self,
+        symbol: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
         """Получает историю сделок пользователя"""
         try:
             async with self.exchange_client._async_semaphore:
                 await self.exchange_client.rate_limiter.acquire(10)
 
-                params = {
-                    'limit': limit
-                }
+                params = {"limit": limit}
 
                 if symbol:
-                    params['symbol'] = symbol
+                    params["symbol"] = symbol
 
                 if start_time:
-                    params['startTime'] = int(start_time.timestamp() * 1000)
+                    params["startTime"] = int(start_time.timestamp() * 1000)
 
                 if end_time:
-                    params['endTime'] = int(end_time.timestamp() * 1000)
+                    params["endTime"] = int(end_time.timestamp() * 1000)
 
                 trades = self.exchange_client.exchange.fapiPrivateGetUserTrades(params)
                 return trades
 
         except Exception as e:
-            self.logger.log_event("POSITION_REPORTER", "ERROR", f"❌ Failed to get user trades: {e}")
+            self.logger.log_event(
+                "POSITION_REPORTER", "ERROR", f"❌ Failed to get user trades: {e}"
+            )
             return []
 
     async def get_position_risk(self) -> list[dict[str, Any]]:
@@ -112,39 +119,44 @@ class PositionHistoryReporter:
 
                 # Используем fetch_positions вместо fapiPrivateGetPositionRisk
                 positions = self.exchange_client.exchange.fetch_positions()
-                return [pos for pos in positions if float(pos.get('contracts', 0)) != 0]
+                return [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
 
         except Exception as e:
-            self.logger.log_event("POSITION_REPORTER", "ERROR", f"❌ Failed to get position risk: {e}")
+            self.logger.log_event(
+                "POSITION_REPORTER", "ERROR", f"❌ Failed to get position risk: {e}"
+            )
             return []
 
-    async def get_income_history(self, symbol: str | None = None,
-                               start_time: datetime | None = None,
-                               end_time: datetime | None = None,
-                               limit: int = 1000) -> list[dict[str, Any]]:
+    async def get_income_history(
+        self,
+        symbol: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
         """Получает историю доходов (funding fees, etc.)"""
         try:
             async with self.exchange_client._async_semaphore:
                 await self.exchange_client.rate_limiter.acquire(5)
 
-                params = {
-                    'limit': limit
-                }
+                params = {"limit": limit}
 
                 if symbol:
-                    params['symbol'] = symbol
+                    params["symbol"] = symbol
 
                 if start_time:
-                    params['startTime'] = int(start_time.timestamp() * 1000)
+                    params["startTime"] = int(start_time.timestamp() * 1000)
 
                 if end_time:
-                    params['endTime'] = int(end_time.timestamp() * 1000)
+                    params["endTime"] = int(end_time.timestamp() * 1000)
 
                 income = self.exchange_client.exchange.fapiPrivateGetIncome(params)
                 return income
 
         except Exception as e:
-            self.logger.log_event("POSITION_REPORTER", "ERROR", f"❌ Failed to get income history: {e}")
+            self.logger.log_event(
+                "POSITION_REPORTER", "ERROR", f"❌ Failed to get income history: {e}"
+            )
             return []
 
     async def get_account_info(self) -> dict[str, Any] | None:
@@ -156,13 +168,15 @@ class PositionHistoryReporter:
                 # Используем fetch_balance вместо fapiPrivateGetAccount
                 balance = self.exchange_client.exchange.fetch_balance()
                 return {
-                    'totalWalletBalance': balance.get('total', {}).get('USDT', 0),
-                    'totalUnrealizedProfit': 0,  # Будет рассчитано из позиций
-                    'availableBalance': balance.get('free', {}).get('USDT', 0)
+                    "totalWalletBalance": balance.get("total", {}).get("USDT", 0),
+                    "totalUnrealizedProfit": 0,  # Будет рассчитано из позиций
+                    "availableBalance": balance.get("free", {}).get("USDT", 0),
                 }
 
         except Exception as e:
-            self.logger.log_event("POSITION_REPORTER", "ERROR", f"❌ Failed to get account info: {e}")
+            self.logger.log_event(
+                "POSITION_REPORTER", "ERROR", f"❌ Failed to get account info: {e}"
+            )
             return None
 
     def _group_trades_into_positions(self, trades: list[dict[str, Any]]) -> list[TradePosition]:
@@ -172,8 +186,8 @@ class PositionHistoryReporter:
 
         # Группируем сделки по symbol и orderId
         for trade in trades:
-            symbol = trade['symbol']
-            order_id = trade['orderId']
+            symbol = trade["symbol"]
+            order_id = trade["orderId"]
             key = f"{symbol}_{order_id}"
             trade_groups[key].append(trade)
 
@@ -183,28 +197,28 @@ class PositionHistoryReporter:
                 continue
 
             # Сортируем по времени
-            trade_group.sort(key=lambda x: x['time'])
+            trade_group.sort(key=lambda x: x["time"])
 
             # Первая сделка - вход, последняя - выход
             entry_trade = trade_group[0]
             exit_trade = trade_group[-1]
 
             # Определяем сторону позиции
-            side = 'buy' if entry_trade['side'] == 'BUY' else 'sell'
+            side = "buy" if entry_trade["side"] == "BUY" else "sell"
 
             # Рассчитываем данные позиции
-            entry_price = float(entry_trade['price'])
-            exit_price = float(exit_trade['price'])
-            quantity = float(entry_trade['qty'])
+            entry_price = float(entry_trade["price"])
+            exit_price = float(exit_trade["price"])
+            quantity = float(entry_trade["qty"])
 
-            entry_time = datetime.fromtimestamp(entry_trade['time'] / 1000)
-            exit_time = datetime.fromtimestamp(exit_trade['time'] / 1000)
+            entry_time = datetime.fromtimestamp(entry_trade["time"] / 1000)
+            exit_time = datetime.fromtimestamp(exit_trade["time"] / 1000)
 
-            entry_fee = float(entry_trade['commission'])
-            exit_fee = float(exit_trade['commission'])
+            entry_fee = float(entry_trade["commission"])
+            exit_fee = float(exit_trade["commission"])
 
             # Рассчитываем PnL
-            if side == 'buy':
+            if side == "buy":
                 realized_pnl = (exit_price - entry_price) * quantity - entry_fee - exit_fee
             else:
                 realized_pnl = (entry_price - exit_price) * quantity - entry_fee - exit_fee
@@ -219,29 +233,40 @@ class PositionHistoryReporter:
                 quantity=quantity,
                 entry_time=entry_time,
                 exit_time=exit_time,
-                entry_order_id=entry_trade['orderId'],
-                exit_order_id=exit_trade['orderId'],
+                entry_order_id=entry_trade["orderId"],
+                exit_order_id=exit_trade["orderId"],
                 entry_fee=entry_fee,
                 exit_fee=exit_fee,
                 realized_pnl=realized_pnl,
-                hold_duration_minutes=hold_duration
+                hold_duration_minutes=hold_duration,
             )
 
             positions.append(position)
 
         return positions
 
-    def _calculate_position_summary(self, positions: list[TradePosition],
-                                  funding_fees: float = 0) -> PositionSummary:
+    def _calculate_position_summary(
+        self, positions: list[TradePosition], funding_fees: float = 0
+    ) -> PositionSummary:
         """Рассчитывает сводку по позициям"""
         if not positions:
             return PositionSummary(
-                total_trades=0, winning_trades=0, losing_trades=0,
-                total_pnl=0, total_fees=0, win_rate=0,
-                avg_profit_per_trade=0, avg_loss_per_trade=0,
-                max_profit=0, max_loss=0, avg_hold_duration_minutes=0,
-                best_symbol=None, worst_symbol=None,
-                symbol_performance={}, funding_fees=funding_fees, net_pnl=0
+                total_trades=0,
+                winning_trades=0,
+                losing_trades=0,
+                total_pnl=0,
+                total_fees=0,
+                win_rate=0,
+                avg_profit_per_trade=0,
+                avg_loss_per_trade=0,
+                max_profit=0,
+                max_loss=0,
+                avg_hold_duration_minutes=0,
+                best_symbol=None,
+                worst_symbol=None,
+                symbol_performance={},
+                funding_fees=funding_fees,
+                net_pnl=0,
             )
 
         # Базовые метрики
@@ -267,25 +292,31 @@ class PositionHistoryReporter:
         avg_hold_duration = statistics.mean(p.hold_duration_minutes for p in positions)
 
         # Анализ по символам
-        symbol_performance = defaultdict(lambda: {
-            'trades': 0, 'pnl': 0, 'fees': 0, 'win_rate': 0
-        })
+        symbol_performance = defaultdict(lambda: {"trades": 0, "pnl": 0, "fees": 0, "win_rate": 0})
 
         for position in positions:
             symbol = position.symbol
-            symbol_performance[symbol]['trades'] += 1
-            symbol_performance[symbol]['pnl'] += position.realized_pnl
-            symbol_performance[symbol]['fees'] += position.entry_fee + position.exit_fee
+            symbol_performance[symbol]["trades"] += 1
+            symbol_performance[symbol]["pnl"] += position.realized_pnl
+            symbol_performance[symbol]["fees"] += position.entry_fee + position.exit_fee
 
         # Рассчитываем win rate для каждого символа
         for symbol in symbol_performance:
             symbol_positions = [p for p in positions if p.symbol == symbol]
             symbol_wins = len([p for p in symbol_positions if p.realized_pnl > 0])
-            symbol_performance[symbol]['win_rate'] = symbol_wins / len(symbol_positions)
+            symbol_performance[symbol]["win_rate"] = symbol_wins / len(symbol_positions)
 
         # Находим лучший и худший символы
-        best_symbol = max(symbol_performance.items(), key=lambda x: x[1]['pnl'])[0] if symbol_performance else None
-        worst_symbol = min(symbol_performance.items(), key=lambda x: x[1]['pnl'])[0] if symbol_performance else None
+        best_symbol = (
+            max(symbol_performance.items(), key=lambda x: x[1]["pnl"])[0]
+            if symbol_performance
+            else None
+        )
+        worst_symbol = (
+            min(symbol_performance.items(), key=lambda x: x[1]["pnl"])[0]
+            if symbol_performance
+            else None
+        )
 
         net_pnl = total_pnl + funding_fees
 
@@ -305,13 +336,19 @@ class PositionHistoryReporter:
             worst_symbol=worst_symbol,
             symbol_performance=dict(symbol_performance),
             funding_fees=funding_fees,
-            net_pnl=net_pnl
+            net_pnl=net_pnl,
         )
 
-    async def generate_position_report(self, hours: int = 24) -> tuple[PositionSummary, list[TradePosition]]:
+    async def generate_position_report(
+        self, hours: int = 24
+    ) -> tuple[PositionSummary, list[TradePosition]]:
         """Генерирует полный отчет о позициях"""
         try:
-            self.logger.log_event("POSITION_REPORTER", "INFO", f"📊 Generating position report for last {hours} hours...")
+            self.logger.log_event(
+                "POSITION_REPORTER",
+                "INFO",
+                f"📊 Generating position report for last {hours} hours...",
+            )
 
             # Определяем временной диапазон
             end_time = datetime.now()
@@ -323,9 +360,9 @@ class PositionHistoryReporter:
 
             # Рассчитываем funding fees
             funding_fees = sum(
-                float(income['income'])
+                float(income["income"])
                 for income in income_history
-                if income['incomeType'] == 'FUNDING_FEE'
+                if income["incomeType"] == "FUNDING_FEE"
             )
 
             # Группируем сделки в позиции
@@ -334,22 +371,29 @@ class PositionHistoryReporter:
             # Рассчитываем сводку
             summary = self._calculate_position_summary(positions, funding_fees)
 
-            self.logger.log_event("POSITION_REPORTER", "INFO",
-                                f"✅ Position report generated: {summary.total_trades} trades, "
-                                f"PnL: ${summary.total_pnl:.2f}, Win Rate: {summary.win_rate:.1%}")
+            self.logger.log_event(
+                "POSITION_REPORTER",
+                "INFO",
+                f"✅ Position report generated: {summary.total_trades} trades, "
+                f"PnL: ${summary.total_pnl:.2f}, Win Rate: {summary.win_rate:.1%}",
+            )
 
             return summary, positions
 
         except Exception as e:
-            self.logger.log_event("POSITION_REPORTER", "ERROR", f"❌ Failed to generate position report: {e}")
+            self.logger.log_event(
+                "POSITION_REPORTER", "ERROR", f"❌ Failed to generate position report: {e}"
+            )
             return self._calculate_position_summary([]), []
 
-    def format_position_report(self, summary: PositionSummary, positions: list[TradePosition]) -> str:
+    def format_position_report(
+        self, summary: PositionSummary, positions: list[TradePosition]
+    ) -> str:
         """Форматирует отчет о позициях в читаемый вид"""
         report = f"""
-{'='*80}
+{"=" * 80}
 📊 ПОЗИЦИОННАЯ СВОДКА (ДЕТАЛЬНЫЙ АНАЛИЗ)
-{'='*80}
+{"=" * 80}
 
 📈 ОСНОВНЫЕ МЕТРИКИ:
 • Общее количество сделок: {summary.total_trades}
@@ -371,8 +415,8 @@ class PositionHistoryReporter:
 • Среднее время удержания: {summary.avg_hold_duration_minutes:.1f} мин
 
 🏆 АНАЛИЗ ПО СИМВОЛАМ:
-• Лучший символ: {summary.best_symbol or 'N/A'}
-• Худший символ: {summary.worst_symbol or 'N/A'}
+• Лучший символ: {summary.best_symbol or "N/A"}
+• Худший символ: {summary.worst_symbol or "N/A"}
 
 📋 ДЕТАЛЬНАЯ СВОДКА ПО СИМВОЛАМ:
 """
@@ -383,19 +427,23 @@ class PositionHistoryReporter:
         if positions:
             report += "\n📝 ПОСЛЕДНИЕ 10 СДЕЛОК:\n"
             for i, pos in enumerate(positions[-10:], 1):
-                report += (f"{i}. {pos.symbol} {pos.side.upper()} | "
-                          f"Вход: ${pos.entry_price:.4f} | Выход: ${pos.exit_price:.4f} | "
-                          f"PnL: ${pos.realized_pnl:.2f} | "
-                          f"Время: {pos.hold_duration_minutes:.1f}мин\n")
+                report += (
+                    f"{i}. {pos.symbol} {pos.side.upper()} | "
+                    f"Вход: ${pos.entry_price:.4f} | Выход: ${pos.exit_price:.4f} | "
+                    f"PnL: ${pos.realized_pnl:.2f} | "
+                    f"Время: {pos.hold_duration_minutes:.1f}мин\n"
+                )
 
-        report += f"\n{'='*80}"
+        report += f"\n{'=' * 80}"
 
         return report
 
     async def cleanup(self):
         """Очистка ресурсов"""
         await self.exchange_client.cleanup()
-        self.logger.log_event("POSITION_REPORTER", "INFO", "🧹 Position History Reporter cleanup completed")
+        self.logger.log_event(
+            "POSITION_REPORTER", "INFO", "🧹 Position History Reporter cleanup completed"
+        )
 
     async def _cleanup_old_position_reports(self, days_to_keep: int = 30):
         """Очищает старые position reports, оставляя только последние N дней"""
@@ -414,7 +462,7 @@ class PositionHistoryReporter:
             for file_path in report_files:
                 try:
                     # Пытаемся извлечь дату из имени файла
-                    file_date_str = file_path.stem.split('_')[-1]  # Последняя часть имени
+                    file_date_str = file_path.stem.split("_")[-1]  # Последняя часть имени
                     if len(file_date_str) >= 8:  # YYYYMMDD
                         file_date = datetime.strptime(file_date_str[:8], "%Y%m%d")
                         if file_date < cutoff_date:
@@ -431,16 +479,23 @@ class PositionHistoryReporter:
                     file_path.unlink()
                     deleted_count += 1
                 except Exception as e:
-                    self.logger.log_event("POSITION_REPORTER", "WARNING",
-                        f"Failed to delete old position report {file_path}: {e}")
+                    self.logger.log_event(
+                        "POSITION_REPORTER",
+                        "WARNING",
+                        f"Failed to delete old position report {file_path}: {e}",
+                    )
 
             if deleted_count > 0:
-                self.logger.log_event("POSITION_REPORTER", "INFO",
-                    f"Cleaned up {deleted_count} old position report files (older than {days_to_keep} days)")
+                self.logger.log_event(
+                    "POSITION_REPORTER",
+                    "INFO",
+                    f"Cleaned up {deleted_count} old position report files (older than {days_to_keep} days)",
+                )
 
         except Exception as e:
-            self.logger.log_event("POSITION_REPORTER", "ERROR",
-                f"Failed to cleanup old position reports: {e}")
+            self.logger.log_event(
+                "POSITION_REPORTER", "ERROR", f"Failed to cleanup old position reports: {e}"
+            )
 
     def save_position_report(self, report_content: str, filename: str = None) -> str:
         """Сохраняет position report в файл"""
@@ -451,7 +506,7 @@ class PositionHistoryReporter:
         report_path = Path("data/position_reports") / filename
         report_path.parent.mkdir(exist_ok=True)
 
-        with open(report_path, 'w', encoding='utf-8') as f:
+        with open(report_path, "w", encoding="utf-8") as f:
             f.write(report_content)
 
         # Очищаем старые отчеты (синхронно)

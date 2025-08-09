@@ -3,8 +3,8 @@
 from datetime import datetime, timedelta
 from typing import Any
 
-from strategies.base_strategy import BaseStrategy
 from core.aggression_manager import AggressionManager
+from strategies.base_strategy import BaseStrategy
 
 
 class GridStrategy(BaseStrategy):
@@ -42,16 +42,22 @@ class GridStrategy(BaseStrategy):
             self.max_position_size_usdc = settings.get("max_position_size_usdc", 50)
 
             # Логируем обновление настроек
-            self.logger.log_strategy_event("grid", "SETTINGS_UPDATED", {
-                "aggression_level": self.aggression_manager.get_aggression_level(),
-                "grid_levels": self.grid_levels,
-                "grid_spacing": self.grid_spacing,
-                "grid_range": self.grid_range,
-                "min_order_size": self.min_order_size
-            })
+            self.logger.log_strategy_event(
+                "grid",
+                "SETTINGS_UPDATED",
+                {
+                    "aggression_level": self.aggression_manager.get_aggression_level(),
+                    "grid_levels": self.grid_levels,
+                    "grid_spacing": self.grid_spacing,
+                    "grid_range": self.grid_range,
+                    "min_order_size": self.min_order_size,
+                },
+            )
 
         except Exception as e:
-            self.logger.log_event("STRATEGY", "ERROR", f"Failed to update settings from AggressionManager: {e}")
+            self.logger.log_event(
+                "STRATEGY", "ERROR", f"Failed to update settings from AggressionManager: {e}"
+            )
             # Fallback к базовым настройкам
             self.grid_levels = 5
             self.grid_spacing = 0.004
@@ -77,7 +83,9 @@ class GridStrategy(BaseStrategy):
             elif "last" in ticker:
                 current_price = float(ticker["last"])
             else:
-                self.logger.log_event("GRID_STRATEGY", "ERROR", f"No price found in ticker for {symbol}")
+                self.logger.log_event(
+                    "GRID_STRATEGY", "ERROR", f"No price found in ticker for {symbol}"
+                )
                 return None
 
             # Проверяем, нужна ли новая сетка
@@ -156,8 +164,9 @@ class GridStrategy(BaseStrategy):
             market_conditions = await self._validate_grid_conditions(symbol, current_price)
             if not market_conditions["suitable"]:
                 self.logger.log_event(
-                    "GRID_STRATEGY", "DEBUG",
-                    f"Grid not suitable for {symbol}: {market_conditions['reason']}"
+                    "GRID_STRATEGY",
+                    "DEBUG",
+                    f"Grid not suitable for {symbol}: {market_conditions['reason']}",
                 )
                 return None
 
@@ -174,7 +183,7 @@ class GridStrategy(BaseStrategy):
                 "executed_orders": 0,
                 "market_conditions": market_conditions,
                 "total_investment": 0.0,
-                "current_pnl": 0.0
+                "current_pnl": 0.0,
             }
 
             # Инициализируем статистику
@@ -184,12 +193,13 @@ class GridStrategy(BaseStrategy):
                 "win_rate": 0.0,
                 "avg_trade_pnl": 0.0,
                 "grid_efficiency": 0.0,
-                "max_drawdown": 0.0
+                "max_drawdown": 0.0,
             }
 
             self.logger.log_event(
-                "GRID_STRATEGY", "INFO",
-                f"Created adaptive grid for {symbol} at {current_price} with {len(grid_levels)} levels"
+                "GRID_STRATEGY",
+                "INFO",
+                f"Created adaptive grid for {symbol} at {current_price} with {len(grid_levels)} levels",
             )
 
             return {
@@ -198,7 +208,7 @@ class GridStrategy(BaseStrategy):
                 "confidence": market_conditions["confidence"],
                 "grid_levels": grid_levels,
                 "strategy": "grid",
-                "market_conditions": market_conditions
+                "market_conditions": market_conditions,
             }
 
         except Exception as e:
@@ -217,9 +227,10 @@ class GridStrategy(BaseStrategy):
 
             # Конвертируем в DataFrame
             import pandas as pd
+
             df = pd.DataFrame(ohlcv_data)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df.set_index("timestamp", inplace=True)
 
             # Анализируем волатильность
             volatility = df["close"].pct_change().rolling(20).std().iloc[-1] * 100
@@ -263,7 +274,7 @@ class GridStrategy(BaseStrategy):
                 "confidence": confidence,
                 "volatility": volatility,
                 "trend_strength": trend_strength,
-                "volume_ratio": volume_ratio
+                "volume_ratio": volume_ratio,
             }
 
         except Exception as e:
@@ -272,7 +283,9 @@ class GridStrategy(BaseStrategy):
             )
             return {"suitable": False, "reason": "Validation error", "confidence": 0.0}
 
-    def _calculate_adaptive_grid_levels(self, center_price: float, market_conditions: dict[str, Any]) -> list[dict[str, Any]]:
+    def _calculate_adaptive_grid_levels(
+        self, center_price: float, market_conditions: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Рассчитывает адаптивные уровни сетки на основе рыночных условий"""
         levels = []
 
@@ -299,15 +312,17 @@ class GridStrategy(BaseStrategy):
             distance_factor = abs(i) / adaptive_levels
             order_size = self.min_order_size * (1 + distance_factor * 0.5)
 
-            levels.append({
-                "level": i,
-                "price": level_price,
-                "side": side,
-                "status": "PENDING",
-                "order_id": None,
-                "size": order_size,
-                "distance_factor": distance_factor
-            })
+            levels.append(
+                {
+                    "level": i,
+                    "price": level_price,
+                    "side": side,
+                    "status": "PENDING",
+                    "order_id": None,
+                    "size": order_size,
+                    "distance_factor": distance_factor,
+                }
+            )
 
         return levels
 
@@ -327,8 +342,7 @@ class GridStrategy(BaseStrategy):
                 grid["center_price"] = current_price
 
                 self.logger.log_event(
-                    "GRID_STRATEGY", "INFO",
-                    f"Updated grid for {symbol} at {current_price}"
+                    "GRID_STRATEGY", "INFO", f"Updated grid for {symbol} at {current_price}"
                 )
 
         except Exception as e:
@@ -344,9 +358,7 @@ class GridStrategy(BaseStrategy):
             for level in grid["levels"]:
                 if level["status"] == "PENDING" and level["order_id"]:
                     # Проверяем статус ордера
-                    order_status = await self.exchange.get_order_status(
-                        symbol, level["order_id"]
-                    )
+                    order_status = await self.exchange.get_order_status(symbol, level["order_id"])
 
                     if order_status and order_status.get("status") == "FILLED":
                         level["status"] = "FILLED"
@@ -354,8 +366,9 @@ class GridStrategy(BaseStrategy):
 
                         # Логируем исполнение
                         self.logger.log_event(
-                            "GRID_STRATEGY", "INFO",
-                            f"Grid order filled: {symbol} {level['side']} at {level['price']}"
+                            "GRID_STRATEGY",
+                            "INFO",
+                            f"Grid order filled: {symbol} {level['side']} at {level['price']}",
                         )
 
                         # Обновляем статистику
@@ -384,10 +397,7 @@ class GridStrategy(BaseStrategy):
             # Простая оценка PnL (в реальности нужно учитывать комиссии)
             # Здесь можно добавить более сложную логику расчета PnL
 
-            self.logger.log_event(
-                "GRID_STRATEGY", "DEBUG",
-                f"Updated stats for {symbol}: {stats}"
-            )
+            self.logger.log_event("GRID_STRATEGY", "DEBUG", f"Updated stats for {symbol}: {stats}")
 
         except Exception as e:
             self.logger.log_event(
@@ -420,12 +430,9 @@ class GridStrategy(BaseStrategy):
             "completion_rate": grid["executed_orders"] / grid["total_orders"],
             "created_at": grid["created_at"],
             "last_update": grid["last_update"],
-            "stats": stats
+            "stats": stats,
         }
 
     async def get_all_grids_status(self) -> dict[str, Any]:
         """Возвращает статус всех активных сеток"""
-        return {
-            symbol: await self.get_grid_status(symbol)
-            for symbol in self.active_grids.keys()
-        }
+        return {symbol: await self.get_grid_status(symbol) for symbol in self.active_grids.keys()}

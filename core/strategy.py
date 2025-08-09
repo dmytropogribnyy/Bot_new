@@ -1,8 +1,8 @@
 # strategy.py
 
 import json
-import threading
 from pathlib import Path
+import threading
 
 import pandas as pd
 import ta
@@ -34,7 +34,7 @@ def load_symbol_type_map():
     возвращаем словарь вида {"BTC/USDC:USDC": "fixed", ...}
     """
     try:
-        with open(SYMBOLS_FILE, "r", encoding="utf-8") as f:
+        with open(SYMBOLS_FILE, encoding="utf-8") as f:
             data = json.load(f)
         info_dict = {}
         for item in data:
@@ -88,7 +88,9 @@ def fetch_data_multiframe(symbol):
         # Индикаторы на 15m
         df_15m = frames["15m"].copy()
         df_15m["rsi_15m"] = ta.momentum.RSIIndicator(df_15m["close"], 14).rsi()
-        df_15m["atr_15m"] = ta.volatility.AverageTrueRange(df_15m["high"], df_15m["low"], df_15m["close"], 14).average_true_range()
+        df_15m["atr_15m"] = ta.volatility.AverageTrueRange(
+            df_15m["high"], df_15m["low"], df_15m["close"], 14
+        ).average_true_range()
         df_15m["volume_ma_15m"] = df_15m["volume"].rolling(20).mean()
         df_15m["rel_volume_15m"] = df_15m["volume"] / df_15m["volume_ma_15m"]
         df_15m["volume_usdt_15m"] = df_15m["volume"] * df_15m["close"]
@@ -183,12 +185,12 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     """
     from datetime import datetime, timedelta
 
+    from common.config_loader import DRY_RUN, MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
+    from common.leverage_config import get_leverage_for_symbol
     import numpy as np
     import pandas as pd
     import ta
 
-    from common.config_loader import DRY_RUN, MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
-    from common.leverage_config import get_leverage_for_symbol
     from core.component_tracker import log_component_data
     from core.engine_controller import sync_open_positions  # Добавлено для desync fix перед qty calc
     from core.entry_logger import log_entry
@@ -253,7 +255,11 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     rsi_strength = breakdown.get("rsi_strength", 0.0)
     ema_score = float(breakdown.get("EMA_CROSS", 0))
 
-    score = macd_strength * weights.get("MACD", 0.4) + rsi_strength * weights.get("RSI", 0.3) + ema_score * weights.get("EMA", 0.3)
+    score = (
+        macd_strength * weights.get("MACD", 0.4)
+        + rsi_strength * weights.get("RSI", 0.3)
+        + ema_score * weights.get("EMA", 0.3)
+    )
     signal_score = round(score, 4)
     breakdown["signal_score"] = signal_score
     log(f"[Score] {symbol} → signal_score={signal_score:.4f}", level="DEBUG")
@@ -303,7 +309,9 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         log_missed_signal(symbol, breakdown, reason="entry_error")
         return None, failure_reasons
 
-    atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
+    atr_series = ta.volatility.AverageTrueRange(
+        high=df["high"], low=df["low"], close=df["close"], window=14
+    ).average_true_range()
     atr = atr_series.iloc[-1] if len(atr_series) else 0.0
     atr_pct = atr / entry_price if entry_price > 0 else 0
 
@@ -332,7 +340,10 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     notional = qty * entry_price
     if notional < MIN_NOTIONAL_OPEN:
-        log(f"[NotionalCheck] {symbol}: notional={notional:.4f} < MIN_NOTIONAL_OPEN={MIN_NOTIONAL_OPEN}", level="WARNING")
+        log(
+            f"[NotionalCheck] {symbol}: notional={notional:.4f} < MIN_NOTIONAL_OPEN={MIN_NOTIONAL_OPEN}",
+            level="WARNING",
+        )
         failure_reasons.append("notional_too_small")
         log_missed_signal(symbol, breakdown, reason="notional_too_small")
         return None, failure_reasons
@@ -354,9 +365,14 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
         breakdown["tp_total_qty"] = round(share1 + share2 + tp3_share, 3)
 
         min_profit_required = cfg.get("min_profit_threshold", 0.06)
-        enough_profit, net_profit = check_min_profit(entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required)
+        enough_profit, net_profit = check_min_profit(
+            entry_price, tp1, qty, share1, direction, TAKER_FEE_RATE, min_profit_required
+        )
 
-        log(f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}", level="DEBUG")
+        log(
+            f"[TP_LEVELS] {symbol} → TP1={tp1:.5f}, TP2={tp2:.5f}, SL={sl_price:.5f}, share1={share1}, share2={share2}",
+            level="DEBUG",
+        )
         log(f"[ProfitCalc] {symbol} → NetProfit=${net_profit:.2f} (required=${min_profit_required:.2f})", level="DEBUG")
 
         if not enough_profit:
@@ -410,7 +426,7 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
 
     try:
         assert direction in ("buy", "sell")
-        assert isinstance(qty, (float, int)) and qty > 0
+        assert isinstance(qty, float | int) and qty > 0
         assert isinstance(breakdown, dict)
     except Exception:
         failure_reasons.append("invalid_return_structure")
@@ -464,7 +480,10 @@ def calculate_tp_targets():
             }
             results.append(result)
 
-            log(f"[TP-Target] {symbol} → TP1={tp1:.4f}, TP2={tp2:.4f}, TP3={tp3:.4f}, SL={sl_price:.4f}, fallback={fallback_used}", level="DEBUG")
+            log(
+                f"[TP-Target] {symbol} → TP1={tp1:.4f}, TP2={tp2:.4f}, TP3={tp3:.4f}, SL={sl_price:.4f}, fallback={fallback_used}",
+                level="DEBUG",
+            )
 
         return results
 

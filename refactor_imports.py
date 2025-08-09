@@ -34,7 +34,7 @@ for foldername, _, filenames in os.walk(root_dir):
             shutil.copy2(full_path, backup_path)
 
             # Читаем исходник
-            with open(full_path, "r", encoding="utf-8") as f:
+            with open(full_path, encoding="utf-8") as f:
                 content = f.read()
 
             original_content = content

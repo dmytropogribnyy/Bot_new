@@ -30,7 +30,7 @@ class SignalHandler:
         signal.signal(signal.SIGTERM, self._handle_sigterm)
 
         # Для Windows
-        if hasattr(signal, 'SIGBREAK'):
+        if hasattr(signal, "SIGBREAK"):
             signal.signal(signal.SIGBREAK, self._handle_sigbreak)
 
     def set_callbacks(self, shutdown_callback: Callable, emergency_callback: Callable):
@@ -42,14 +42,18 @@ class SignalHandler:
         """Обработка Ctrl-C (SIGINT)"""
         if self.shutdown_requested:
             # Второй Ctrl-C - экстренная остановка
-            self.logger.log_event("SIGNAL_HANDLER", "CRITICAL", "Second Ctrl-C detected - Emergency shutdown!")
+            self.logger.log_event(
+                "SIGNAL_HANDLER", "CRITICAL", "Second Ctrl-C detected - Emergency shutdown!"
+            )
             self.emergency_requested = True
             if self.emergency_callback:
                 asyncio.create_task(self.emergency_callback())
             sys.exit(1)
         else:
             # Первый Ctrl-C - graceful shutdown
-            self.logger.log_event("SIGNAL_HANDLER", "WARNING", "Ctrl-C detected - Graceful shutdown requested")
+            self.logger.log_event(
+                "SIGNAL_HANDLER", "WARNING", "Ctrl-C detected - Graceful shutdown requested"
+            )
             self.shutdown_requested = True
             if self.shutdown_callback:
                 asyncio.create_task(self.shutdown_callback())
@@ -131,15 +135,21 @@ class GracefulShutdown:
                 active_positions = self.order_manager.get_active_positions()
 
                 if active_positions:
-                    self.logger.log_event("SHUTDOWN", "INFO",
-                        f"Waiting for {len(active_positions)} positions to close...")
+                    self.logger.log_event(
+                        "SHUTDOWN",
+                        "INFO",
+                        f"Waiting for {len(active_positions)} positions to close...",
+                    )
 
             # 5. Проверяем результат
             remaining_positions = self.order_manager.get_active_positions()
 
             if remaining_positions:
-                self.logger.log_event("SHUTDOWN", "WARNING",
-                    f"Timeout reached, {len(remaining_positions)} positions still active")
+                self.logger.log_event(
+                    "SHUTDOWN",
+                    "WARNING",
+                    f"Timeout reached, {len(remaining_positions)} positions still active",
+                )
 
                 if self.telegram_bot:
                     await self.telegram_bot.send_message(
@@ -183,22 +193,30 @@ class GracefulShutdown:
 
             for position in active_positions:
                 try:
-                    result = await self.order_manager.close_position_emergency(position['symbol'])
-                    if result['success']:
+                    result = await self.order_manager.close_position_emergency(position["symbol"])
+                    if result["success"]:
                         closed_count += 1
-                        self.logger.log_event("SHUTDOWN", "INFO",
-                            f"Emergency closed position: {position['symbol']}")
+                        self.logger.log_event(
+                            "SHUTDOWN", "INFO", f"Emergency closed position: {position['symbol']}"
+                        )
                     else:
-                        self.logger.log_event("SHUTDOWN", "ERROR",
-                            f"Failed to close position {position['symbol']}: {result.get('error')}")
+                        self.logger.log_event(
+                            "SHUTDOWN",
+                            "ERROR",
+                            f"Failed to close position {position['symbol']}: {result.get('error')}",
+                        )
                 except Exception as e:
-                    self.logger.log_event("SHUTDOWN", "ERROR",
-                        f"Error closing position {position['symbol']}: {e}")
+                    self.logger.log_event(
+                        "SHUTDOWN", "ERROR", f"Error closing position {position['symbol']}: {e}"
+                    )
 
             # 4. Отчет о результатах
             total_positions = len(active_positions)
-            self.logger.log_event("SHUTDOWN", "INFO",
-                f"Emergency shutdown completed: {closed_count}/{total_positions} positions closed")
+            self.logger.log_event(
+                "SHUTDOWN",
+                "INFO",
+                f"Emergency shutdown completed: {closed_count}/{total_positions} positions closed",
+            )
 
             if self.telegram_bot:
                 await self.telegram_bot.send_message(
@@ -215,7 +233,9 @@ class GracefulShutdown:
         """Финальные действия при shutdown"""
         try:
             # 1. Останавливаем OrderManager
-            await self.order_manager.shutdown(emergency=self.signal_handler.is_emergency_requested())
+            await self.order_manager.shutdown(
+                emergency=self.signal_handler.is_emergency_requested()
+            )
 
             # 2. Останавливаем TradingEngine
             self.trading_engine.stop_trading()
@@ -240,5 +260,5 @@ class GracefulShutdown:
             "shutdown_in_progress": self.shutdown_in_progress,
             "shutdown_requested": self.signal_handler.is_shutdown_requested(),
             "emergency_requested": self.signal_handler.is_emergency_requested(),
-            "active_positions": len(self.order_manager.get_active_positions())
+            "active_positions": len(self.order_manager.get_active_positions()),
         }

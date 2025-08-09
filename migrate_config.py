@@ -5,9 +5,7 @@ Migrate old configuration files to new unified system
 """
 
 import json
-import os
 from pathlib import Path
-from typing import Dict, Any
 
 from core.config import TradingConfig
 
@@ -20,7 +18,7 @@ def migrate_runtime_config():
             print("⚠️ No runtime_config.json found to migrate")
             return
 
-        with open(old_config_path, 'r', encoding='utf-8') as f:
+        with open(old_config_path, encoding="utf-8") as f:
             old_config = json.load(f)
 
         print(f"📋 Found {len(old_config)} settings in runtime_config.json")
@@ -30,42 +28,42 @@ def migrate_runtime_config():
 
         # Map old keys to new config
         key_mapping = {
-            'max_concurrent_positions': 'max_concurrent_positions',
-            'risk_multiplier': 'risk_multiplier',
-            'base_risk_pct': 'base_risk_pct',
-            'min_risk_factor': 'min_risk_factor',
-            'atr_threshold_percent': 'atr_threshold_percent',
-            'volume_threshold_usdc': 'volume_threshold_usdc',
-            'rel_volume_threshold': 'rel_volume_threshold',
-            'rsi_threshold': 'rsi_threshold',
-            'min_macd_strength': 'min_macd_strength',
-            'min_rsi_strength': 'min_rsi_strength',
-            'macd_strength_override': 'macd_strength_override',
-            'rsi_strength_override': 'rsi_strength_override',
-            'step_tp_levels': 'step_tp_levels',
-            'step_tp_sizes': 'step_tp_sizes',
-            'min_sl_gap_percent': 'min_sl_gap_percent',
-            'SL_PERCENT': 'sl_percent',
-            'FORCE_SL_ALWAYS': 'force_sl_always',
-            'sl_retry_limit': 'sl_retry_limit',
-            'auto_profit_enabled': 'auto_profit_enabled',
-            'auto_profit_threshold': 'auto_profit_threshold',
-            'bonus_profit_threshold': 'bonus_profit_threshold',
-            'max_hold_minutes': 'max_hold_minutes',
-            'min_profit_threshold': 'min_profit_threshold',
-            'MIN_NOTIONAL_OPEN': 'min_notional_open',
-            'MIN_NOTIONAL_ORDER': 'min_notional_order',
-            'min_trade_qty': 'min_trade_qty',
-            'min_total_qty_for_tp_full': 'min_total_qty_for_tp_full',
-            'max_hourly_trade_limit': 'max_hourly_trade_limit',
-            'max_capital_utilization_pct': 'max_capital_utilization_pct',
-            'max_margin_percent': 'max_margin_percent',
-            'max_slippage_pct': 'max_slippage_pct',
-            'min_primary_score': 'min_primary_score',
-            'min_secondary_score': 'min_secondary_score',
-            'enable_strong_signal_override': 'enable_strong_signal_override',
-            'require_closed_candle_for_entry': 'require_closed_candle_for_entry',
-            'monitoring_hours_utc': 'monitoring_hours_utc'
+            "max_concurrent_positions": "max_concurrent_positions",
+            "risk_multiplier": "risk_multiplier",
+            "base_risk_pct": "base_risk_pct",
+            "min_risk_factor": "min_risk_factor",
+            "atr_threshold_percent": "atr_threshold_percent",
+            "volume_threshold_usdc": "volume_threshold_usdc",
+            "rel_volume_threshold": "rel_volume_threshold",
+            "rsi_threshold": "rsi_threshold",
+            "min_macd_strength": "min_macd_strength",
+            "min_rsi_strength": "min_rsi_strength",
+            "macd_strength_override": "macd_strength_override",
+            "rsi_strength_override": "rsi_strength_override",
+            "step_tp_levels": "step_tp_levels",
+            "step_tp_sizes": "step_tp_sizes",
+            "min_sl_gap_percent": "min_sl_gap_percent",
+            "SL_PERCENT": "sl_percent",
+            "FORCE_SL_ALWAYS": "force_sl_always",
+            "sl_retry_limit": "sl_retry_limit",
+            "auto_profit_enabled": "auto_profit_enabled",
+            "auto_profit_threshold": "auto_profit_threshold",
+            "bonus_profit_threshold": "bonus_profit_threshold",
+            "max_hold_minutes": "max_hold_minutes",
+            "min_profit_threshold": "min_profit_threshold",
+            "MIN_NOTIONAL_OPEN": "min_notional_open",
+            "MIN_NOTIONAL_ORDER": "min_notional_order",
+            "min_trade_qty": "min_trade_qty",
+            "min_total_qty_for_tp_full": "min_total_qty_for_tp_full",
+            "max_hourly_trade_limit": "max_hourly_trade_limit",
+            "max_capital_utilization_pct": "max_capital_utilization_pct",
+            "max_margin_percent": "max_margin_percent",
+            "max_slippage_pct": "max_slippage_pct",
+            "min_primary_score": "min_primary_score",
+            "min_secondary_score": "min_secondary_score",
+            "enable_strong_signal_override": "enable_strong_signal_override",
+            "require_closed_candle_for_entry": "require_closed_candle_for_entry",
+            "monitoring_hours_utc": "monitoring_hours_utc",
         }
 
         migrated_count = 0
@@ -95,7 +93,7 @@ def migrate_config_json():
             print("⚠️ No config.json found to migrate")
             return
 
-        with open(old_config_path, 'r', encoding='utf-8') as f:
+        with open(old_config_path, encoding="utf-8") as f:
             old_config = json.load(f)
 
         print(f"📋 Found {len(old_config)} settings in config.json")
@@ -105,24 +103,24 @@ def migrate_config_json():
 
         # Map old keys to new config
         key_mapping = {
-            'api_key': 'api_key',
-            'api_secret': 'api_secret',
-            'testnet': 'testnet',
-            'dry_run': 'dry_run',
-            'telegram_enabled': 'telegram_enabled',
-            'telegram_token': 'telegram_token',
-            'telegram_chat_id': 'telegram_chat_id',
-            'max_positions': 'max_positions',
-            'position_size_usdc': 'min_position_size_usdt',
-            'target_profit_percent': 'take_profit_percent',
-            'stop_loss_percent': 'stop_loss_percent',
-            'max_hold_minutes': 'max_hold_minutes',
-            'log_level': 'log_level',
-            'db_path': 'db_path',
-            'volume_threshold': 'volume_threshold',
-            'min_signal_strength': 'signal_threshold',
-            'macd_strength_override': 'macd_strength_override',
-            'rsi_strength_override': 'rsi_strength_override'
+            "api_key": "api_key",
+            "api_secret": "api_secret",
+            "testnet": "testnet",
+            "dry_run": "dry_run",
+            "telegram_enabled": "telegram_enabled",
+            "telegram_token": "telegram_token",
+            "telegram_chat_id": "telegram_chat_id",
+            "max_positions": "max_positions",
+            "position_size_usdc": "min_position_size_usdt",
+            "target_profit_percent": "take_profit_percent",
+            "stop_loss_percent": "stop_loss_percent",
+            "max_hold_minutes": "max_hold_minutes",
+            "log_level": "log_level",
+            "db_path": "db_path",
+            "volume_threshold": "volume_threshold",
+            "min_signal_strength": "signal_threshold",
+            "macd_strength_override": "macd_strength_override",
+            "rsi_strength_override": "rsi_strength_override",
         }
 
         migrated_count = 0
@@ -150,6 +148,7 @@ def migrate_leverage_config():
         # Import old leverage config
         try:
             from common.leverage_config import LEVERAGE_MAP
+
             print(f"📋 Found {len(LEVERAGE_MAP)} leverage settings")
 
             # Create new config
@@ -219,14 +218,14 @@ def backup_old_configs():
             "data/runtime_config.json",
             "data/config.json",
             "common/config_loader.py",
-            "common/leverage_config.py"
+            "common/leverage_config.py",
         ]
 
         for file_path in files_to_backup:
             if Path(file_path).exists():
                 backup_path = backup_dir / Path(file_path).name
-                with open(file_path, 'r', encoding='utf-8') as src:
-                    with open(backup_path, 'w', encoding='utf-8') as dst:
+                with open(file_path, encoding="utf-8") as src:
+                    with open(backup_path, "w", encoding="utf-8") as dst:
                         dst.write(src.read())
                 print(f"✅ Backed up: {file_path}")
 

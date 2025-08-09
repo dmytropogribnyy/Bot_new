@@ -1,12 +1,12 @@
 import csv
+from datetime import datetime
 import decimal
+from decimal import Decimal, InvalidOperation
 import json
 import os
-import time
-from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import Lock
+import time
 
 from constants import ENTRY_LOG_FILE, STATE_FILE
 from telegram.telegram_utils import send_telegram_message
@@ -131,7 +131,7 @@ def load_state():
                 log(f"State file {STATE_FILE} not found, using default state.", level="INFO")
                 return DEFAULT_STATE.copy()
 
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+            with open(STATE_FILE, encoding="utf-8") as f:
                 state = json.load(f)
             # Заполним недостающие ключи значениями по умолчанию
             for k, v in DEFAULT_STATE.items():
@@ -141,11 +141,19 @@ def load_state():
 
         except json.JSONDecodeError as e:
             log(f"Error decoding state file {STATE_FILE}: {e}. Using default state.", level="ERROR", important=True)
-            send_telegram_message(f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.", force=True)
+            send_telegram_message(
+                f"❌ Error decoding state file {STATE_FILE}: {str(e)}. Reset to default state.", force=True
+            )
             return DEFAULT_STATE.copy()
         except Exception as e:
-            log(f"Unexpected error loading state file {STATE_FILE}: {e}. Using default state.", level="ERROR", important=True)
-            send_telegram_message(f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.", force=True)
+            log(
+                f"Unexpected error loading state file {STATE_FILE}: {e}. Using default state.",
+                level="ERROR",
+                important=True,
+            )
+            send_telegram_message(
+                f"❌ Unexpected error loading state file {STATE_FILE}: {str(e)}. Reset to default state.", force=True
+            )
             return DEFAULT_STATE.copy()
 
 
@@ -162,7 +170,7 @@ def save_state(state, retries=3, delay=1):
                 os.replace(temp_file, STATE_FILE)
 
                 # Проверка, что сохранили корректно
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                with open(STATE_FILE, encoding="utf-8") as f:
                     saved_state = json.load(f)
                 if saved_state != state:
                     log(f"State mismatch after save: expected {state}, got {saved_state}", level="ERROR")
@@ -170,9 +178,15 @@ def save_state(state, retries=3, delay=1):
                 return
             except Exception as e:
                 attempt += 1
-                log(f"Attempt {attempt}/{retries} - Error saving state to {STATE_FILE}: {e}", level="ERROR", important=True)
+                log(
+                    f"Attempt {attempt}/{retries} - Error saving state to {STATE_FILE}: {e}",
+                    level="ERROR",
+                    important=True,
+                )
                 if attempt == retries:
-                    send_telegram_message(f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}", force=True)
+                    send_telegram_message(
+                        f"❌ Failed to save state to {STATE_FILE} after {retries} attempts: {str(e)}", force=True
+                    )
                 else:
                     time.sleep(delay)
 
@@ -226,7 +240,7 @@ def get_runtime_config() -> dict:
 
     if RUNTIME_CONFIG_FILE.exists():
         try:
-            with open(RUNTIME_CONFIG_FILE, "r") as f:
+            with open(RUNTIME_CONFIG_FILE) as f:
                 config = json.load(f)
 
             if not isinstance(config, dict):
@@ -254,7 +268,7 @@ def update_runtime_config(new_values: dict):
     history_path = Path("data/parameter_history.json")
     try:
         if history_path.exists():
-            with open(history_path, "r") as f:
+            with open(history_path) as f:
                 history = json.load(f)
         else:
             history = []
@@ -340,9 +354,9 @@ def get_min_net_profit(balance=None):
     """
     import os
 
+    from common.config_loader import TP_LOG_FILE
     import pandas as pd
 
-    from common.config_loader import TP_LOG_FILE
     from tp_logger import get_last_trade
     from utils_logging import log
 
@@ -410,7 +424,7 @@ def load_json_file(path, default=None):
 
     try:
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         else:
             log(f"File not found: {path}", level="WARNING")
@@ -495,7 +509,9 @@ def calculate_atr_volatility(df, period: int = 14) -> float:
     try:
         import ta
 
-        atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=period).average_true_range()
+        atr_series = ta.volatility.AverageTrueRange(
+            high=df["high"], low=df["low"], close=df["close"], window=period
+        ).average_true_range()
         return float(atr_series.iloc[-1]) if len(atr_series) else 0.0
     except Exception as e:
         log(f"[calculate_atr_volatility] Error: {e}", level="ERROR")
@@ -520,7 +536,9 @@ def get_market_volatility_index() -> float:
             return 1.0
 
         df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
-        atr_series = ta.volatility.AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
+        atr_series = ta.volatility.AverageTrueRange(
+            high=df["high"], low=df["low"], close=df["close"], window=14
+        ).average_true_range()
         atr = atr_series.iloc[-1]
         close_price = float(df["close"].iloc[-1])
 

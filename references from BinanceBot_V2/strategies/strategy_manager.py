@@ -171,7 +171,9 @@ class StrategyManager:
                 perf["worst_trade"] = 0.0
 
             perf["total_pnl"] += pnl
-            perf["avg_trade_duration"] = (perf["avg_trade_duration"] * perf["trades_count"] + trade_duration) / trades_count
+            perf["avg_trade_duration"] = (
+                perf["avg_trade_duration"] * perf["trades_count"] + trade_duration
+            ) / trades_count
 
             # Обновляем лучшую/худшую сделку
             if pnl > perf["best_trade"]:
@@ -204,7 +206,7 @@ class StrategyManager:
             "performance": self.strategy_performance,
             "total_strategies": len(self.strategies),
             "regime_distribution": {},
-            "recommendations": []
+            "recommendations": [],
         }
 
         # Анализируем распределение режимов рынка
@@ -218,11 +220,17 @@ class StrategyManager:
         for strategy_name, perf in self.strategy_performance.items():
             if perf["trades_count"] >= 10:  # Минимум сделок для анализа
                 if perf["win_rate"] < 0.4:
-                    status["recommendations"].append(f"⚠️ {strategy_name}: Низкий win rate ({perf['win_rate']:.1%})")
+                    status["recommendations"].append(
+                        f"⚠️ {strategy_name}: Низкий win rate ({perf['win_rate']:.1%})"
+                    )
                 elif perf["avg_pnl"] < -0.001:
-                    status["recommendations"].append(f"📉 {strategy_name}: Отрицательный PnL ({perf['avg_pnl']:.4f})")
+                    status["recommendations"].append(
+                        f"📉 {strategy_name}: Отрицательный PnL ({perf['avg_pnl']:.4f})"
+                    )
                 elif perf["win_rate"] > 0.7 and perf["avg_pnl"] > 0.002:
-                    status["recommendations"].append(f"✅ {strategy_name}: Отличная производительность (WR: {perf['win_rate']:.1%}, PnL: {perf['avg_pnl']:.4f})")
+                    status["recommendations"].append(
+                        f"✅ {strategy_name}: Отличная производительность (WR: {perf['win_rate']:.1%}, PnL: {perf['avg_pnl']:.4f})"
+                    )
 
         return status
 
@@ -265,7 +273,9 @@ class StrategyManager:
 
             # Вычисляем взвешенный сигнал
             weighted_signal = {
-                "side": signals[0].get("direction", "buy").upper(),  # Берем direction и конвертируем в side
+                "side": signals[0]
+                .get("direction", "buy")
+                .upper(),  # Берем direction и конвертируем в side
                 "entry_price": sum(
                     s.get("entry_price", 0) * w for s, w in zip(signals, weights, strict=False)
                 ),

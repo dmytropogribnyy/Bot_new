@@ -5,11 +5,10 @@ Simplified version for notifications and commands
 """
 
 import asyncio
-import json
-import os
-import requests
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+import requests
 
 from core.unified_logger import UnifiedLogger
 
@@ -22,18 +21,17 @@ COMMAND_REGISTRY = {}
 
 def register_command(command_text: str, category: str = "General", description: str = ""):
     """Decorator to register Telegram commands"""
+
     def decorator(func):
-        COMMAND_REGISTRY[command_text] = {
-            'function': func,
-            'category': category,
-            'description': description
-        }
+        COMMAND_REGISTRY[command_text] = {"function": func, "category": category, "description": description}
         return func
+
     return decorator
 
 
 def handle_errors(func):
     """Decorator to handle errors in command functions"""
+
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -41,6 +39,7 @@ def handle_errors(func):
             # Log error and send error message
             print(f"Error in command {func.__name__}: {e}")
             return f"❌ Error: {str(e)}"
+
     return wrapper
 
 
@@ -106,37 +105,34 @@ class TelegramBot:
         """Process incoming updates"""
         try:
             url = f"{self.base_url}/getUpdates"
-            params = {
-                'offset': self.last_update_id + 1,
-                'timeout': 30
-            }
+            params = {"offset": self.last_update_id + 1, "timeout": 30}
 
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=30)
             if response.status_code == 200:
                 data = response.json()
 
-                if data.get('ok'):
-                    updates = data.get('result', [])
+                if data.get("ok"):
+                    updates = data.get("result", [])
 
                     for update in updates:
                         await self._handle_update(update)
-                        self.last_update_id = update['update_id']
+                        self.last_update_id = update["update_id"]
 
         except Exception as e:
             self.logger.log_event("TELEGRAM", "ERROR", f"Failed to process updates: {e}")
 
-    async def _handle_update(self, update: Dict[str, Any]):
+    async def _handle_update(self, update: dict[str, Any]):
         """Handle a single update"""
         try:
-            message = update.get('message', {})
-            text = message.get('text', '')
-            chat_id = message.get('chat', {}).get('id')
+            message = update.get("message", {})
+            text = message.get("text", "")
+            chat_id = message.get("chat", {}).get("id")
 
             if not text or str(chat_id) != self.chat_id:
                 return
 
             # Handle commands
-            if text.startswith('/'):
+            if text.startswith("/"):
                 await self._handle_command(text, message)
             else:
                 await self._send_message_sync(f"Received: {text}")
@@ -144,7 +140,7 @@ class TelegramBot:
         except Exception as e:
             self.logger.log_event("TELEGRAM", "ERROR", f"Failed to handle update: {e}")
 
-    async def _handle_command(self, command: str, message: Dict[str, Any]):
+    async def _handle_command(self, command: str, message: dict[str, Any]):
         """Handle bot commands"""
         try:
             parts = command.split()
@@ -152,24 +148,24 @@ class TelegramBot:
 
             # Check registered commands first
             if command in COMMAND_REGISTRY:
-                handler = COMMAND_REGISTRY[command]['function']
+                handler = COMMAND_REGISTRY[command]["function"]
                 result = handler(message)
                 if result:
                     await self._send_message_sync(str(result))
                 return
 
             # Handle built-in commands
-            if cmd == '/status':
+            if cmd == "/status":
                 await self._handle_status(message)
-            elif cmd == '/balance':
+            elif cmd == "/balance":
                 await self._handle_balance(message)
-            elif cmd == '/positions':
+            elif cmd == "/positions":
                 await self._handle_positions(message)
-            elif cmd == '/stop':
+            elif cmd == "/stop":
                 await self._handle_stop(message)
-            elif cmd == '/start':
+            elif cmd == "/start":
                 await self._handle_start(message)
-            elif cmd == '/help':
+            elif cmd == "/help":
                 await self._handle_help(message)
             else:
                 await self._send_message_sync(f"Unknown command: {cmd}")
@@ -177,7 +173,7 @@ class TelegramBot:
         except Exception as e:
             self.logger.log_event("TELEGRAM", "ERROR", f"Failed to handle command: {e}")
 
-    async def _handle_status(self, message: Dict[str, Any]):
+    async def _handle_status(self, message: dict[str, Any]):
         """Handle /status command"""
         try:
             status_msg = "📊 Bot Status:\n"
@@ -190,7 +186,7 @@ class TelegramBot:
         except Exception as e:
             await self._send_message_sync(f"Error getting status: {e}")
 
-    async def _handle_balance(self, message: Dict[str, Any]):
+    async def _handle_balance(self, message: dict[str, Any]):
         """Handle /balance command"""
         try:
             balance_msg = "💰 Balance:\n"
@@ -202,7 +198,7 @@ class TelegramBot:
         except Exception as e:
             await self._send_message_sync(f"Error getting balance: {e}")
 
-    async def _handle_positions(self, message: Dict[str, Any]):
+    async def _handle_positions(self, message: dict[str, Any]):
         """Handle /positions command"""
         try:
             positions_msg = "📈 Positions:\n"
@@ -214,7 +210,7 @@ class TelegramBot:
         except Exception as e:
             await self._send_message_sync(f"Error getting positions: {e}")
 
-    async def _handle_stop(self, message: Dict[str, Any]):
+    async def _handle_stop(self, message: dict[str, Any]):
         """Handle /stop command"""
         try:
             await self._send_message_sync("🛑 Stop command received")
@@ -223,7 +219,7 @@ class TelegramBot:
         except Exception as e:
             await self._send_message_sync(f"Error stopping bot: {e}")
 
-    async def _handle_start(self, message: Dict[str, Any]):
+    async def _handle_start(self, message: dict[str, Any]):
         """Handle /start command"""
         try:
             start_msg = "🚀 BinanceBot v2.1\n\n"
@@ -239,7 +235,7 @@ class TelegramBot:
         except Exception as e:
             await self._send_message_sync(f"Error starting bot: {e}")
 
-    async def _handle_help(self, message: Dict[str, Any]):
+    async def _handle_help(self, message: dict[str, Any]):
         """Handle /help command"""
         await self._handle_start(message)
 
@@ -254,16 +250,11 @@ class TelegramBot:
         """Internal method to send message using requests"""
         try:
             url = f"{self.base_url}/sendMessage"
-            data = {
-                'chat_id': self.chat_id,
-                'text': text,
-                'parse_mode': 'HTML'
-            }
+            data = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
 
-            response = requests.post(url, json=data, timeout=10)
+            response = requests.post(url, json=data, timeout=30)
             if response.status_code != 200:
-                self.logger.log_event("TELEGRAM", "ERROR",
-                                    f"Failed to send message: {response.status_code}")
+                self.logger.log_event("TELEGRAM", "ERROR", f"Failed to send message: {response.status_code}")
                 return False
 
             return True
@@ -275,12 +266,7 @@ class TelegramBot:
     async def send_alert(self, title: str, message: str, level: str = "INFO"):
         """Send alert message"""
         try:
-            emoji_map = {
-                "INFO": "ℹ️",
-                "WARNING": "⚠️",
-                "ERROR": "❌",
-                "CRITICAL": "🚨"
-            }
+            emoji_map = {"INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}
 
             emoji = emoji_map.get(level, "ℹ️")
             alert_text = f"{emoji} {title}\n\n{message}"
@@ -298,30 +284,31 @@ class TelegramBot:
 # Register some basic commands
 @register_command("/test", category="Testing", description="Test command")
 @handle_errors
-def cmd_test(message: Dict[str, Any]):
+def cmd_test(message: dict[str, Any]):
     """Test command"""
     return "✅ Test command executed successfully!"
 
 
 @register_command("/version", category="Info", description="Show bot version")
 @handle_errors
-def cmd_version(message: Dict[str, Any]):
+def cmd_version(message: dict[str, Any]):
     """Show bot version"""
     return "🤖 BinanceBot v2.1\n📅 6 August 2025\n✅ Stage 2 Complete"
 
 
 @register_command("/uptime", category="Info", description="Show bot uptime")
 @handle_errors
-def cmd_uptime(message: Dict[str, Any]):
+def cmd_uptime(message: dict[str, Any]):
     """Show bot uptime"""
     import time
+
     uptime = time.time() - time.time()  # Placeholder
     return f"⏱️ Bot uptime: {uptime:.0f} seconds"
 
 
 @register_command("/summary", category="Statistics", description="Show trading summary")
 @handle_errors
-def cmd_summary(message: Dict[str, Any]):
+def cmd_summary(message: dict[str, Any]):
     """Show trading summary"""
     summary = "📊 Trading Summary:\n"
     summary += "📈 Total Trades: 0\n"
@@ -334,7 +321,7 @@ def cmd_summary(message: Dict[str, Any]):
 
 @register_command("/config", category="Configuration", description="Show current configuration")
 @handle_errors
-def cmd_config(message: Dict[str, Any]):
+def cmd_config(message: dict[str, Any]):
     """Show current configuration"""
     config = "⚙️ Current Configuration:\n"
     config += "🧪 Dry Run: Enabled\n"
@@ -348,7 +335,7 @@ def cmd_config(message: Dict[str, Any]):
 
 @register_command("/debug", category="Debug", description="Show debug information")
 @handle_errors
-def cmd_debug(message: Dict[str, Any]):
+def cmd_debug(message: dict[str, Any]):
     """Show debug information"""
     debug = "🔍 Debug Information:\n"
     debug += f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -362,7 +349,7 @@ def cmd_debug(message: Dict[str, Any]):
 
 @register_command("/risk", category="Risk", description="Show risk management status")
 @handle_errors
-def cmd_risk(message: Dict[str, Any]):
+def cmd_risk(message: dict[str, Any]):
     """Show risk management status"""
     risk = "🛡️ Risk Management:\n"
     risk += "✅ Daily Loss Limit: $50\n"
@@ -375,7 +362,7 @@ def cmd_risk(message: Dict[str, Any]):
 
 @register_command("/signals", category="Trading", description="Show signal statistics")
 @handle_errors
-def cmd_signals(message: Dict[str, Any]):
+def cmd_signals(message: dict[str, Any]):
     """Show signal statistics"""
     signals = "📡 Signal Statistics:\n"
     signals += "📊 Total Signals: 0\n"
@@ -388,7 +375,7 @@ def cmd_signals(message: Dict[str, Any]):
 
 @register_command("/performance", category="Statistics", description="Show performance metrics")
 @handle_errors
-def cmd_performance(message: Dict[str, Any]):
+def cmd_performance(message: dict[str, Any]):
     """Show performance metrics"""
     perf = "📈 Performance Metrics:\n"
     perf += "💰 Total PnL: $0.00\n"
@@ -402,28 +389,28 @@ def cmd_performance(message: Dict[str, Any]):
 
 @register_command("/pause", category="Control", description="Pause trading")
 @handle_errors
-def cmd_pause(message: Dict[str, Any]):
+def cmd_pause(message: dict[str, Any]):
     """Pause trading"""
     return "⏸️ Trading paused\n💡 This is a placeholder command"
 
 
 @register_command("/resume", category="Control", description="Resume trading")
 @handle_errors
-def cmd_resume(message: Dict[str, Any]):
+def cmd_resume(message: dict[str, Any]):
     """Resume trading"""
     return "▶️ Trading resumed\n💡 This is a placeholder command"
 
 
 @register_command("/panic", category="Emergency", description="Emergency stop")
 @handle_errors
-def cmd_panic(message: Dict[str, Any]):
+def cmd_panic(message: dict[str, Any]):
     """Emergency stop"""
     return "🚨 EMERGENCY STOP ACTIVATED\n⚠️ All trading stopped\n🛑 Positions will be closed"
 
 
 @register_command("/logs", category="Debug", description="Show recent logs")
 @handle_errors
-def cmd_logs(message: Dict[str, Any]):
+def cmd_logs(message: dict[str, Any]):
     """Show recent logs"""
     logs = "📋 Recent Logs:\n"
     logs += "✅ Bot started successfully\n"
@@ -437,7 +424,7 @@ def cmd_logs(message: Dict[str, Any]):
 
 @register_command("/health", category="System", description="Show system health")
 @handle_errors
-def cmd_health(message: Dict[str, Any]):
+def cmd_health(message: dict[str, Any]):
     """Show system health"""
     health = "🏥 System Health:\n"
     health += "✅ Bot: Healthy\n"
@@ -452,7 +439,7 @@ def cmd_health(message: Dict[str, Any]):
 
 @register_command("/info", category="Info", description="Show bot information")
 @handle_errors
-def cmd_info(message: Dict[str, Any]):
+def cmd_info(message: dict[str, Any]):
     """Show bot information"""
     info = "ℹ️ Bot Information:\n"
     info += "🤖 Name: BinanceBot v2.1\n"

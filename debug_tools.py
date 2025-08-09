@@ -1,7 +1,7 @@
-import json
-import os
 from collections import Counter
 from datetime import datetime
+import json
+import os
 
 from utils_core import extract_symbol
 from utils_logging import log
@@ -12,9 +12,9 @@ TUNING_LOG_FILE = "data/filter_tuning_log.json"
 
 
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
+    from common.leverage_config import get_leverage_for_symbol
     import pandas as pd
 
-    from common.leverage_config import get_leverage_for_symbol
     from core.binance_api import fetch_ohlcv
     from core.fail_stats_tracker import get_symbol_risk_factor
     from core.signal_utils import add_indicators, get_signal_breakdown, passes_1plus1
@@ -31,7 +31,9 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         df = add_indicators(df)
 
         if df is None or not isinstance(df, pd.DataFrame) or df.empty or "close" not in df.columns:
-            raise ValueError(f"[scan_symbol] Invalid df after add_indicators → type={type(df)}, columns={getattr(df, 'columns', [])}")
+            raise ValueError(
+                f"[scan_symbol] Invalid df after add_indicators → type={type(df)}, columns={getattr(df, 'columns', [])}"
+            )
 
         latest = df.iloc[-1]
 
@@ -61,11 +63,13 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
         balance = get_cached_balance()
         leverage = get_leverage_for_symbol(symbol)
 
-        risk_amount, effective_sl = calculate_risk_amount(balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume)
+        risk_amount, effective_sl = calculate_risk_amount(
+            balance, symbol=symbol, atr_percent=atr_percent, volume_usdc=volume
+        )
 
         qty, _ = calculate_position_size(symbol, entry_price, balance, leverage)
 
-        if not isinstance(qty, (float, int)) or qty <= 0:
+        if not isinstance(qty, float | int) or qty <= 0:
             log(f"[SKIPPED] {symbol}: position blocked or too small (qty={qty})", level="WARNING")
             return {
                 "symbol": symbol,
@@ -106,7 +110,7 @@ def scan_symbol(symbol: str, timeframe="5m", limit=100):
 def run_monitor():
     log("[debug_monitor] STARTED", level="WARNING")
     try:
-        with open(SYMBOLS_FILE, "r", encoding="utf-8") as f:
+        with open(SYMBOLS_FILE, encoding="utf-8") as f:
             symbols = json.load(f)
     except Exception as e:
         log(f"[debug_monitor] Failed to load symbols file: {e}", level="ERROR")
@@ -165,7 +169,7 @@ def run_monitor():
     }
     try:
         if os.path.exists(TUNING_LOG_FILE):
-            with open(TUNING_LOG_FILE, "r", encoding="utf-8") as f:
+            with open(TUNING_LOG_FILE, encoding="utf-8") as f:
                 log_data = json.load(f)
                 if not isinstance(log_data, list):
                     log_data = []

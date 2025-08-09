@@ -16,11 +16,12 @@ def log_missed_signal(symbol, breakdown, reason=""):
         breakdown (dict): Components breakdown
         reason (str): Reason for signal rejection
     """
+    from datetime import datetime
     import json
     import os
-    from datetime import datetime
 
     from common.config_loader import TAKER_FEE_RATE
+
     from telegram.telegram_utils import send_telegram_message
     from utils_core import extract_symbol
     from utils_logging import log
@@ -101,7 +102,7 @@ def log_missed_signal(symbol, breakdown, reason=""):
         filepath = MISSED_SIGNALS_LOG_FILE
 
         if os.path.exists(filepath):
-            with open(filepath, "r") as f:
+            with open(filepath) as f:
                 try:
                     data = json.load(f)
                 except json.JSONDecodeError:
@@ -137,7 +138,7 @@ def get_recent_missed_signals(limit=10):
         return []
 
     try:
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             data = json.load(f)
 
         sorted_data = sorted(data, key=lambda x: x.get("timestamp", ""), reverse=True)

@@ -12,8 +12,8 @@ from typing import Any
 
 import pandas as pd
 
-from strategies.base_strategy import BaseStrategy
 from core.aggression_manager import AggressionManager
+from strategies.base_strategy import BaseStrategy
 
 
 class TPOptimizer(BaseStrategy):
@@ -48,15 +48,22 @@ class TPOptimizer(BaseStrategy):
             self.max_position_size_usdc = settings.get("max_position_size_usdc", 80)
 
             # Логируем обновление настроек
-            self.logger.log_strategy_event("tp_optimizer", "SETTINGS_UPDATED", {
-                "aggression_level": self.aggression_manager.get_aggression_level(),
-                "optimization_interval_hours": self.optimization_interval.total_seconds() / 3600,
-                "min_trades_for_optimization": self.min_trades_for_optimization,
-                "update_threshold": self.update_threshold
-            })
+            self.logger.log_strategy_event(
+                "tp_optimizer",
+                "SETTINGS_UPDATED",
+                {
+                    "aggression_level": self.aggression_manager.get_aggression_level(),
+                    "optimization_interval_hours": self.optimization_interval.total_seconds()
+                    / 3600,
+                    "min_trades_for_optimization": self.min_trades_for_optimization,
+                    "update_threshold": self.update_threshold,
+                },
+            )
 
         except Exception as e:
-            self.logger.log_event("STRATEGY", "ERROR", f"Failed to update settings from AggressionManager: {e}")
+            self.logger.log_event(
+                "STRATEGY", "ERROR", f"Failed to update settings from AggressionManager: {e}"
+            )
             # Fallback к базовым настройкам
             self.optimization_interval = timedelta(hours=6)
             self.min_trades_for_optimization = 10
@@ -76,11 +83,11 @@ class TPOptimizer(BaseStrategy):
 
             # Конвертируем в pandas DataFrame
             df = pd.DataFrame(ohlcv_data)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df.set_index("timestamp", inplace=True)
 
             # Убеждаемся, что колонки имеют правильные имена
-            if 'close' not in df.columns:
+            if "close" not in df.columns:
                 print(f"❌ Колонка 'close' не найдена в данных для {symbol}")
                 return None
 
@@ -103,7 +110,7 @@ class TPOptimizer(BaseStrategy):
                     "entry_price": current_price,
                     "confidence": min(atr_percent / 4.0, 0.9),  # Оптимизировано для $400
                     "trend_strength": trend_strength,
-                    "volatility": atr_percent
+                    "volatility": atr_percent,
                 }
 
             return None
@@ -207,7 +214,7 @@ class TPOptimizer(BaseStrategy):
         for i, level in enumerate(current_tp_levels):
             # Симулируем, что 60% сделок достигают TP1, 30% - TP2, и т.д.
             hit_rate = 0.6 - (i * 0.2)
-            results["tp_hits"][f"tp{i+1}"] = {
+            results["tp_hits"][f"tp{i + 1}"] = {
                 "level": level,
                 "hit_rate": max(0.1, hit_rate),
                 "hits": int(len(df) * hit_rate),

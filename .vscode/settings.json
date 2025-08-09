@@ -1,31 +1,33 @@
 {
-    "editor.formatOnSave": true,
-    "editor.tabSize": 4,
-    "editor.insertSpaces": true,
-    "editor.detectIndentation": false,
-    "editor.rulers": [100],
+    // Python интерпретатор
+    "python.defaultInterpreterPath": "./venv/Scripts/python.exe",
+
+    // Ruff как основной линтер и форматтер
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
+    },
+
+    // Автоматическая очистка пробелов
     "files.trimTrailingWhitespace": true,
     "files.insertFinalNewline": true,
-    "files.autoSave": "onFocusChange",
+    "files.trimFinalNewlines": true,
 
-    "[python]": {
-        "editor.formatOnType": true,
-        "editor.formatOnSave": true,
-        "editor.defaultFormatter": "charliermarsh.ruff"
-    },
+    // Ruff аргументы
+    "ruff.args": ["--config=pyproject.toml"],
 
-    "cSpell.enabled": false,
+    // Отключаем другие линтеры
+    "python.linting.enabled": false,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": false,
+    "python.linting.mypyEnabled": false,
+    "python.linting.banditEnabled": false,
 
-    "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
-
-    "editor.codeActionsOnSave": {
-        "source.fixAll": "explicit",
-        "source.fixAll.ruff": "explicit",
-        "source.organizeImports": "explicit"
-    },
-
-    "terminal.integrated.env.windows": {
-        "VIRTUAL_ENV": "${workspaceFolder}\\venv",
-        "PATH": "${workspaceFolder}\\venv\\Scripts;${env:PATH}"
-    }
+    // Отключаем PowerShell расширение если не нужно
+    "powershell.integratedConsole.showOnStartup": false,
+    "terminal.integrated.defaultProfile.windows": "Command Prompt"
 }

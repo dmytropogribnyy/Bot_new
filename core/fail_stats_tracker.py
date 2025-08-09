@@ -1,7 +1,7 @@
 # core/fail_stats_tracker.py
+from datetime import datetime
 import json
 import os
-from datetime import datetime
 from threading import Lock
 
 from constants import FAIL_STATS_FILE
@@ -35,7 +35,7 @@ def record_failure_reason(symbol, reasons):
     with fail_stats_lock:
         try:
             if os.path.exists(FAIL_STATS_FILE):
-                with open(FAIL_STATS_FILE, "r") as f:
+                with open(FAIL_STATS_FILE) as f:
                     data = json.load(f)
             else:
                 data = {}
@@ -59,7 +59,9 @@ def record_failure_reason(symbol, reasons):
 
                     risk_factor, _ = get_symbol_risk_factor(symbol)
                     send_telegram_message(
-                        f"⚠️ {symbol} marked high risk (risk_factor={risk_factor:.2f}, failures: {total_failures})\n" f"Position size will be reduced accordingly.", force=True
+                        f"⚠️ {symbol} marked high risk (risk_factor={risk_factor:.2f}, failures: {total_failures})\n"
+                        f"Position size will be reduced accordingly.",
+                        force=True,
                     )
 
             with open(FAIL_STATS_FILE, "w") as f:
@@ -104,13 +106,13 @@ def apply_failure_decay(accelerated=False):
             if not os.path.exists(FAIL_STATS_FILE):
                 return
 
-            with open(FAIL_STATS_FILE, "r") as f:
+            with open(FAIL_STATS_FILE) as f:
                 data = json.load(f)
 
             # Load decay timestamps
             decay_timestamps_file = "data/failure_decay_timestamps.json"
             if os.path.exists(decay_timestamps_file):
-                with open(decay_timestamps_file, "r") as f:
+                with open(decay_timestamps_file) as f:
                     timestamps = json.load(f)
             else:
                 timestamps = {}
@@ -159,7 +161,10 @@ def apply_failure_decay(accelerated=False):
                 reduced_symbols = sum(1 for s in data if any(data[s].values()))
                 zero_symbols = sum(1 for s in data if not any(data[s].values()))
 
-                log(f"Applied failure decay to {reduced_symbols} symbols, {zero_symbols} reset to zero", level="INFO" if accelerated else "DEBUG")
+                log(
+                    f"Applied failure decay to {reduced_symbols} symbols, {zero_symbols} reset to zero",
+                    level="INFO" if accelerated else "DEBUG",
+                )
 
         except Exception as e:
             log(f"Error applying failure decay: {e}", level="ERROR")
@@ -216,7 +221,7 @@ def reset_failure_count(symbol):
     with fail_stats_lock:
         try:
             if os.path.exists(FAIL_STATS_FILE):
-                with open(FAIL_STATS_FILE, "r") as f:
+                with open(FAIL_STATS_FILE) as f:
                     data = json.load(f)
 
                 if symbol in data:
@@ -231,7 +236,10 @@ def reset_failure_count(symbol):
                     if old_failures > 20:
                         from telegram.telegram_utils import send_telegram_message
 
-                        send_telegram_message(f"✅ {symbol} risk reset after successful trading (cleared {old_failures} failures)", force=True)
+                        send_telegram_message(
+                            f"✅ {symbol} risk reset after successful trading (cleared {old_failures} failures)",
+                            force=True,
+                        )
         except Exception as e:
             log(f"[FailStats] Error resetting failures for {symbol}: {e}", level="ERROR")
 
@@ -246,7 +254,7 @@ def get_signal_failure_stats():
     with fail_stats_lock:
         try:
             if os.path.exists(FAIL_STATS_FILE):
-                with open(FAIL_STATS_FILE, "r") as f:
+                with open(FAIL_STATS_FILE) as f:
                     data = json.load(f)
                 return data
             else:
@@ -266,7 +274,7 @@ def get_symbols_failure_count():
     with fail_stats_lock:
         try:
             if os.path.exists(FAIL_STATS_FILE):
-                with open(FAIL_STATS_FILE, "r") as f:
+                with open(FAIL_STATS_FILE) as f:
                     data = json.load(f)
 
                 # Create a dictionary of symbol -> total failures
@@ -367,7 +375,10 @@ def is_symbol_blocked(symbol):
     Returns:
         tuple: (False, None) Always indicates not blocked
     """
-    log(f"[FailStats] Warning: is_symbol_blocked() called for {symbol} but we're using graduated risk now", level="DEBUG")
+    log(
+        f"[FailStats] Warning: is_symbol_blocked() called for {symbol} but we're using graduated risk now",
+        level="DEBUG",
+    )
     return False, None
 
 

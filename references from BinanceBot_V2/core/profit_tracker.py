@@ -21,10 +21,10 @@ class ProfitTracker:
         self.logger = logger
 
         # Цели прибыльности
-        self.profit_target_hourly = getattr(config, 'profit_target_hourly', 0.7)
-        self.profit_target_daily = getattr(config, 'profit_target_daily', 16.8)
-        self.min_win_rate = getattr(config, 'min_win_rate', 0.65)
-        self.max_daily_loss = getattr(config, 'max_daily_loss', 20.0)
+        self.profit_target_hourly = getattr(config, "profit_target_hourly", 0.7)
+        self.profit_target_daily = getattr(config, "profit_target_daily", 16.8)
+        self.min_win_rate = getattr(config, "min_win_rate", 0.65)
+        self.max_daily_loss = getattr(config, "max_daily_loss", 20.0)
 
         # Трекинг сделок
         self.trades_history = deque(maxlen=1000)
@@ -54,7 +54,11 @@ class ProfitTracker:
     async def start_tracking(self):
         """Запуск отслеживания прибыльности"""
         self.is_running = True
-        self.logger.log_event("PROFIT_TRACKER", "INFO", f"🚀 Запуск отслеживания прибыльности. Цель: ${self.profit_target_hourly}/час")
+        self.logger.log_event(
+            "PROFIT_TRACKER",
+            "INFO",
+            f"🚀 Запуск отслеживания прибыльности. Цель: ${self.profit_target_hourly}/час",
+        )
 
         # Запускаем мониторинг
         asyncio.create_task(self._profit_monitoring_loop())
@@ -86,21 +90,28 @@ class ProfitTracker:
                 self.logger.log_event("PROFIT_TRACKER", "ERROR", f"Ошибка мониторинга: {e}")
                 await asyncio.sleep(60)
 
-    async def record_trade(self, symbol: str, side: str, entry_price: float,
-                          exit_price: float, quantity: float, pnl: float,
-                          duration_seconds: float):
+    async def record_trade(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        exit_price: float,
+        quantity: float,
+        pnl: float,
+        duration_seconds: float,
+    ):
         """Запись новой сделки"""
         trade_data = {
-            'timestamp': datetime.now().isoformat(),
-            'symbol': symbol,
-            'side': side,
-            'entry_price': entry_price,
-            'exit_price': exit_price,
-            'quantity': quantity,
-            'pnl': pnl,
-            'duration_seconds': duration_seconds,
-            'hour': datetime.now().hour,
-            'day': datetime.now().date().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "symbol": symbol,
+            "side": side,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "quantity": quantity,
+            "pnl": pnl,
+            "duration_seconds": duration_seconds,
+            "hour": datetime.now().hour,
+            "day": datetime.now().date().isoformat(),
         }
 
         self.trades_history.append(trade_data)
@@ -117,9 +128,12 @@ class ProfitTracker:
 
         # Логируем сделку
         win_rate = self.winning_trades / max(self.total_trades, 1)
-        self.logger.log_event("PROFIT_TRACKER", "INFO",
+        self.logger.log_event(
+            "PROFIT_TRACKER",
+            "INFO",
             f"💰 Сделка {symbol}: {pnl:.2f} USDC | Винрейт: {win_rate:.1%} | "
-            f"Час: ${self.current_hour_profit:.2f} | День: ${self.current_day_profit:.2f}")
+            f"Час: ${self.current_hour_profit:.2f} | День: ${self.current_day_profit:.2f}",
+        )
 
         # Проверяем необходимость корректировки
         await self._check_performance_and_adjust()
@@ -137,8 +151,11 @@ class ProfitTracker:
         elif current_hourly > target_hourly * 1.5:  # Больше 150% от цели
             await self._reduce_risk()
         elif current_hourly >= target_hourly:
-            self.logger.log_event("PROFIT_TRACKER", "SUCCESS",
-                f"🎯 Цель достигнута! ${current_hourly:.2f}/час (цель: ${target_hourly})")
+            self.logger.log_event(
+                "PROFIT_TRACKER",
+                "SUCCESS",
+                f"🎯 Цель достигнута! ${current_hourly:.2f}/час (цель: ${target_hourly})",
+            )
 
         # Сбрасываем счетчик часа
         self.current_hour_profit = 0.0
@@ -153,8 +170,11 @@ class ProfitTracker:
         if current_daily < target_daily * 0.3:  # Меньше 30% от дневной цели
             await self._emergency_adjustment()
         elif current_daily >= target_daily:
-            self.logger.log_event("PROFIT_TRACKER", "SUCCESS",
-                f"🎯 Дневная цель достигнута! ${current_daily:.2f}/день (цель: ${target_daily})")
+            self.logger.log_event(
+                "PROFIT_TRACKER",
+                "SUCCESS",
+                f"🎯 Дневная цель достигнута! ${current_daily:.2f}/день (цель: ${target_daily})",
+            )
 
         # Сбрасываем счетчик дня
         self.current_day_profit = 0.0
@@ -184,17 +204,23 @@ class ProfitTracker:
         self.position_size_multiplier = min(self.position_size_multiplier * 1.1, 1.5)
         self.tp_target_multiplier = max(self.tp_target_multiplier * 0.9, 0.7)
 
-        self.logger.log_event("PROFIT_TRACKER", "WARNING",
-            f"📈 Увеличиваем агрессивность: уровень {self.aggression_level:.2f}")
+        self.logger.log_event(
+            "PROFIT_TRACKER",
+            "WARNING",
+            f"📈 Увеличиваем агрессивность: уровень {self.aggression_level:.2f}",
+        )
 
         # Вызываем callbacks
         for callback in self.adjustment_callbacks:
             try:
-                await callback('increase_aggression', {
-                    'aggression_level': self.aggression_level,
-                    'position_size_multiplier': self.position_size_multiplier,
-                    'tp_target_multiplier': self.tp_target_multiplier
-                })
+                await callback(
+                    "increase_aggression",
+                    {
+                        "aggression_level": self.aggression_level,
+                        "position_size_multiplier": self.position_size_multiplier,
+                        "tp_target_multiplier": self.tp_target_multiplier,
+                    },
+                )
             except Exception as e:
                 self.logger.log_event("PROFIT_TRACKER", "ERROR", f"Callback error: {e}")
 
@@ -204,17 +230,21 @@ class ProfitTracker:
         self.position_size_multiplier = max(self.position_size_multiplier * 0.9, 0.7)
         self.tp_target_multiplier = min(self.tp_target_multiplier * 1.1, 1.3)
 
-        self.logger.log_event("PROFIT_TRACKER", "INFO",
-            f"📉 Снижаем риск: уровень {self.aggression_level:.2f}")
+        self.logger.log_event(
+            "PROFIT_TRACKER", "INFO", f"📉 Снижаем риск: уровень {self.aggression_level:.2f}"
+        )
 
         # Вызываем callbacks
         for callback in self.adjustment_callbacks:
             try:
-                await callback('reduce_risk', {
-                    'aggression_level': self.aggression_level,
-                    'position_size_multiplier': self.position_size_multiplier,
-                    'tp_target_multiplier': self.tp_target_multiplier
-                })
+                await callback(
+                    "reduce_risk",
+                    {
+                        "aggression_level": self.aggression_level,
+                        "position_size_multiplier": self.position_size_multiplier,
+                        "tp_target_multiplier": self.tp_target_multiplier,
+                    },
+                )
             except Exception as e:
                 self.logger.log_event("PROFIT_TRACKER", "ERROR", f"Callback error: {e}")
 
@@ -223,8 +253,11 @@ class ProfitTracker:
         self.aggression_level = max(self.aggression_level * 0.8, 0.5)
         self.tp_target_multiplier = min(self.tp_target_multiplier * 1.2, 1.5)
 
-        self.logger.log_event("PROFIT_TRACKER", "WARNING",
-            f"🎯 Улучшаем винрейт: снижаем агрессивность до {self.aggression_level:.2f}")
+        self.logger.log_event(
+            "PROFIT_TRACKER",
+            "WARNING",
+            f"🎯 Улучшаем винрейт: снижаем агрессивность до {self.aggression_level:.2f}",
+        )
 
     async def _emergency_adjustment(self):
         """Экстренная корректировка при плохой производительности"""
@@ -232,18 +265,22 @@ class ProfitTracker:
         self.position_size_multiplier = 0.5
         self.tp_target_multiplier = 1.5
 
-        self.logger.log_event("PROFIT_TRACKER", "CRITICAL",
-            "🚨 ЭКСТРЕННАЯ КОРРЕКТИРОВКА: Снижаем все параметры")
+        self.logger.log_event(
+            "PROFIT_TRACKER", "CRITICAL", "🚨 ЭКСТРЕННАЯ КОРРЕКТИРОВКА: Снижаем все параметры"
+        )
 
     async def _emergency_stop(self):
         """Экстренная остановка при превышении дневных потерь"""
-        self.logger.log_event("PROFIT_TRACKER", "CRITICAL",
-            f"🚨 ЭКСТРЕННАЯ ОСТАНОВКА: Дневные потери ${self.current_day_profit:.2f} превышают лимит ${self.max_daily_loss}")
+        self.logger.log_event(
+            "PROFIT_TRACKER",
+            "CRITICAL",
+            f"🚨 ЭКСТРЕННАЯ ОСТАНОВКА: Дневные потери ${self.current_day_profit:.2f} превышают лимит ${self.max_daily_loss}",
+        )
 
         # Вызываем callbacks для экстренной остановки
         for callback in self.adjustment_callbacks:
             try:
-                await callback('emergency_stop', {'daily_loss': self.current_day_profit})
+                await callback("emergency_stop", {"daily_loss": self.current_day_profit})
             except Exception as e:
                 self.logger.log_event("PROFIT_TRACKER", "ERROR", f"Emergency callback error: {e}")
 
@@ -258,29 +295,31 @@ class ProfitTracker:
         avg_daily = sum(self.daily_profits) / max(len(self.daily_profits), 1)
 
         return {
-            'current_hour_profit': self.current_hour_profit,
-            'current_day_profit': self.current_day_profit,
-            'total_trades': self.total_trades,
-            'winning_trades': self.winning_trades,
-            'losing_trades': self.losing_trades,
-            'win_rate': win_rate,
-            'avg_hourly_profit': avg_hourly,
-            'avg_daily_profit': avg_daily,
-            'aggression_level': self.aggression_level,
-            'position_size_multiplier': self.position_size_multiplier,
-            'tp_target_multiplier': self.tp_target_multiplier,
-            'profit_target_hourly': self.profit_target_hourly,
-            'profit_target_daily': self.profit_target_daily
+            "current_hour_profit": self.current_hour_profit,
+            "current_day_profit": self.current_day_profit,
+            "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "win_rate": win_rate,
+            "avg_hourly_profit": avg_hourly,
+            "avg_daily_profit": avg_daily,
+            "aggression_level": self.aggression_level,
+            "position_size_multiplier": self.position_size_multiplier,
+            "tp_target_multiplier": self.tp_target_multiplier,
+            "profit_target_hourly": self.profit_target_hourly,
+            "profit_target_daily": self.profit_target_daily,
         }
 
     def get_performance_summary(self) -> str:
         """Получение краткой сводки производительности"""
         stats = self.get_profit_stats()
 
-        return (f"💰 Прибыльность: ${stats['current_hour_profit']:.2f}/час | "
-                f"${stats['current_day_profit']:.2f}/день | "
-                f"Винрейт: {stats['win_rate']:.1%} | "
-                f"Агрессивность: {stats['aggression_level']:.2f}")
+        return (
+            f"💰 Прибыльность: ${stats['current_hour_profit']:.2f}/час | "
+            f"${stats['current_day_profit']:.2f}/день | "
+            f"Винрейт: {stats['win_rate']:.1%} | "
+            f"Агрессивность: {stats['aggression_level']:.2f}"
+        )
 
     async def update_stats(self):
         """Обновление статистики (заглушка для совместимости)"""

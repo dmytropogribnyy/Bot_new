@@ -30,7 +30,7 @@ class RiskManager:
             "max_drawdown": 0.0,
             "current_drawdown": 0.0,
             "sharpe_ratio": 0.0,
-            "volatility": 0.0
+            "volatility": 0.0,
         }
 
         # 🚀 ОПТИМИЗАЦИЯ: Адаптивные параметры риска
@@ -39,7 +39,7 @@ class RiskManager:
             "max_position_size": config.max_position_size_usdc,
             "max_capital_utilization": config.max_capital_utilization_pct,
             "volatility_multiplier": 1.0,
-            "market_regime_multiplier": 1.0
+            "market_regime_multiplier": 1.0,
         }
 
         # 🚀 ОПТИМИЗАЦИЯ: Исторические данные для ML
@@ -51,7 +51,7 @@ class RiskManager:
         self.dynamic_limits = {
             "max_positions": config.max_concurrent_positions,
             "max_daily_loss": config.max_drawdown_daily,
-            "max_position_duration": config.max_position_duration
+            "max_position_duration": config.max_position_duration,
         }
 
         # 🚀 ОПТИМИЗАЦИЯ: Анализ рыночных режимов
@@ -100,8 +100,9 @@ class RiskManager:
 
             # Проверяем лимит дневных потерь
             if daily_pnl < -self.dynamic_limits["max_daily_loss"]:
-                self.logger.log_event("RISK_MANAGER", "WARNING",
-                    f"Daily loss limit reached: ${daily_pnl:.2f}")
+                self.logger.log_event(
+                    "RISK_MANAGER", "WARNING", f"Daily loss limit reached: ${daily_pnl:.2f}"
+                )
                 return False
 
             return True
@@ -132,9 +133,7 @@ class RiskManager:
             self.risk_metrics["total_pnl"] += pnl
 
             # Обновляем текущую просадку
-            self.risk_metrics["current_drawdown"] = min(
-                self.risk_metrics["current_drawdown"], pnl
-            )
+            self.risk_metrics["current_drawdown"] = min(self.risk_metrics["current_drawdown"], pnl)
 
             # Обновляем максимальную просадку
             if self.risk_metrics["current_drawdown"] < self.risk_metrics["max_drawdown"]:
@@ -145,8 +144,11 @@ class RiskManager:
                 pause_duration = self.calculate_adaptive_pause()
                 self.sl_streak_paused_until = time.time() + pause_duration
 
-                self.logger.log_event("RISK_MANAGER", "WARNING",
-                    f"SL Streak reached {self.sl_streak_counter}. Trading paused for {pause_duration//60} minutes.")
+                self.logger.log_event(
+                    "RISK_MANAGER",
+                    "WARNING",
+                    f"SL Streak reached {self.sl_streak_counter}. Trading paused for {pause_duration // 60} minutes.",
+                )
 
                 # 🚀 ОПТИМИЗАЦИЯ: Автоматическая корректировка параметров риска
                 await self.adjust_risk_parameters()
@@ -172,16 +174,25 @@ class RiskManager:
             await self.update_ml_model(symbol, pnl, "win")
 
     def calculate_position_size(
-        self, symbol: str, entry_price: float, balance: float, leverage: int,
-        volatility: float = 1.0, market_regime: str = "normal"
+        self,
+        symbol: str,
+        entry_price: float,
+        balance: float,
+        leverage: int,
+        volatility: float = 1.0,
+        market_regime: str = "normal",
     ) -> float:
         # 🚀 ЗАЩИТА: Проверяем входные параметры
         if balance is None or balance <= 0:
-            self.logger.log_event("RISK_MANAGER", "WARNING", f"Invalid balance for {symbol}: {balance}")
+            self.logger.log_event(
+                "RISK_MANAGER", "WARNING", f"Invalid balance for {symbol}: {balance}"
+            )
             return 0.0
-            
+
         if entry_price is None or entry_price <= 0:
-            self.logger.log_event("RISK_MANAGER", "WARNING", f"Invalid entry_price for {symbol}: {entry_price}")
+            self.logger.log_event(
+                "RISK_MANAGER", "WARNING", f"Invalid entry_price for {symbol}: {entry_price}"
+            )
             return 0.0
         """🚀 Продвинутый расчет размера позиции с ML-компонентами"""
         try:
@@ -198,7 +209,9 @@ class RiskManager:
             ml_prediction = self.predict_optimal_position_size(symbol, entry_price, balance)
 
             # Комбинируем все факторы
-            adjusted_risk = base_risk * volatility_mult * regime_mult * performance_mult * correlation_mult
+            adjusted_risk = (
+                base_risk * volatility_mult * regime_mult * performance_mult * correlation_mult
+            )
 
             # Корректируем на основе ML-предсказания
             if ml_prediction > 0:
@@ -236,17 +249,14 @@ class RiskManager:
                 return 1.0
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Volatility multiplier calculation failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Volatility multiplier calculation failed: {e}"
+            )
             return 1.0
 
     def calculate_regime_multiplier(self, market_regime: str) -> float:
         """Вычисляет множитель на основе рыночного режима"""
-        multipliers = {
-            "normal": 1.0,
-            "volatile": 0.8,
-            "trending": 1.1,
-            "crisis": 0.5
-        }
+        multipliers = {"normal": 1.0, "volatile": 0.8, "trending": 1.1, "crisis": 0.5}
         return multipliers.get(market_regime, 1.0)
 
     def calculate_performance_multiplier(self) -> float:
@@ -267,7 +277,9 @@ class RiskManager:
                 return 1.0
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Performance multiplier calculation failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Performance multiplier calculation failed: {e}"
+            )
             return 1.0
 
     def calculate_correlation_multiplier(self, symbol: str) -> float:
@@ -278,10 +290,14 @@ class RiskManager:
             return 1.0
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Correlation multiplier calculation failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Correlation multiplier calculation failed: {e}"
+            )
             return 1.0
 
-    def predict_optimal_position_size(self, symbol: str, entry_price: float, balance: float) -> float:
+    def predict_optimal_position_size(
+        self, symbol: str, entry_price: float, balance: float
+    ) -> float:
         """ML-предсказание оптимального размера позиции"""
         try:
             # 🚀 ОПТИМИЗАЦИЯ: Простая ML-модель на основе исторических данных
@@ -336,10 +352,14 @@ class RiskManager:
             return qty
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Dynamic limits application failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Dynamic limits application failed: {e}"
+            )
             return qty
 
-    def calculate_basic_position_size(self, symbol: str, entry_price: float, balance: float, leverage: int) -> float:
+    def calculate_basic_position_size(
+        self, symbol: str, entry_price: float, balance: float, leverage: int
+    ) -> float:
         """Базовый расчет размера позиции как fallback"""
         risk_amount = balance * self.config.base_risk_pct
         qty = (risk_amount * leverage) / entry_price
@@ -368,7 +388,9 @@ class RiskManager:
             return int(base_pause)
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Adaptive pause calculation failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Adaptive pause calculation failed: {e}"
+            )
             return self.config.sl_streak_pause_minutes * 60
 
     async def adjust_risk_parameters(self):
@@ -380,18 +402,26 @@ class RiskManager:
 
                 if win_rate < 0.4:  # Низкий винрейт
                     self.adaptive_risk_params["base_risk_pct"] *= 0.8
-                    self.logger.log_event("RISK_MANAGER", "INFO",
-                        f"Reducing base risk to {self.adaptive_risk_params['base_risk_pct']:.3f} due to low win rate")
+                    self.logger.log_event(
+                        "RISK_MANAGER",
+                        "INFO",
+                        f"Reducing base risk to {self.adaptive_risk_params['base_risk_pct']:.3f} due to low win rate",
+                    )
                 elif win_rate > 0.6:  # Высокий винрейт
                     self.adaptive_risk_params["base_risk_pct"] = min(
                         self.config.base_risk_pct * 1.2,
-                        self.adaptive_risk_params["base_risk_pct"] * 1.1
+                        self.adaptive_risk_params["base_risk_pct"] * 1.1,
                     )
-                    self.logger.log_event("RISK_MANAGER", "INFO",
-                        f"Increasing base risk to {self.adaptive_risk_params['base_risk_pct']:.3f} due to high win rate")
+                    self.logger.log_event(
+                        "RISK_MANAGER",
+                        "INFO",
+                        f"Increasing base risk to {self.adaptive_risk_params['base_risk_pct']:.3f} due to high win rate",
+                    )
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Risk parameters adjustment failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Risk parameters adjustment failed: {e}"
+            )
 
     async def update_ml_model(self, symbol: str, pnl: float, result: str):
         """Обновляет ML-модель на основе результатов сделок"""
@@ -403,7 +433,7 @@ class RiskManager:
                 "result": result,
                 "timestamp": datetime.now().isoformat(),
                 "position_size": 0.0,  # Можно добавить размер позиции
-                "market_regime": self.market_regime
+                "market_regime": self.market_regime,
             }
 
             self.trade_history.append(trade_data)
@@ -430,7 +460,9 @@ class RiskManager:
             return 1.0  # Базовое значение
 
         except Exception as e:
-            self.logger.log_event("RISK_MANAGER", "ERROR", f"Historical volatility calculation failed: {e}")
+            self.logger.log_event(
+                "RISK_MANAGER", "ERROR", f"Historical volatility calculation failed: {e}"
+            )
             return 1.0
 
     async def check_entry_allowed(self, symbol: str, side: str, amount: float) -> bool:
@@ -487,5 +519,5 @@ class RiskManager:
             "sl_streak": self.sl_streak_counter,
             "adaptive_params": self.adaptive_risk_params,
             "market_regime": self.market_regime,
-            "prediction_accuracy": self.prediction_accuracy
+            "prediction_accuracy": self.prediction_accuracy,
         }

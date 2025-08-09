@@ -127,7 +127,7 @@ def get_max_risk():
         if not os.path.exists("data/risk_settings.json"):
             return 0.03
 
-        with open("data/risk_settings.json", "r") as f:
+        with open("data/risk_settings.json") as f:
             data = json.load(f)
             return data.get("max_risk", 0.03)
     except Exception as e:
@@ -165,7 +165,10 @@ def check_capital_utilization(symbol, qty, entry_price, threshold=0.8, epsilon=0
 
     utilization = total_commitment / balance
 
-    log(f"[Risk] Capital utilization after adding {symbol}: {utilization:.2%} of balance ({total_commitment:.2f} / {balance:.2f})", level="DEBUG")
+    log(
+        f"[Risk] Capital utilization after adding {symbol}: {utilization:.2%} of balance ({total_commitment:.2f} / {balance:.2f})",
+        level="DEBUG",
+    )
 
     if utilization > threshold + epsilon:
         log(f"[Risk] Capital utilization exceeds threshold: {utilization:.2%} > {threshold:.0%}", level="WARNING")
@@ -179,9 +182,9 @@ def set_max_risk(risk):
     Set the current maximum risk value in [0.01..0.05]
     """
     try:
+        from datetime import datetime
         import json
         import os
-        from datetime import datetime
 
         risk = max(0.01, min(0.05, risk))
         os.makedirs("data", exist_ok=True)
@@ -189,7 +192,7 @@ def set_max_risk(risk):
         with open("data/risk_settings.json", "w") as f:
             json.dump({"max_risk": risk, "updated_at": datetime.now().isoformat()}, f)
 
-        log(f"Maximum risk updated to {risk*100:.1f}%", level="INFO")
+        log(f"Maximum risk updated to {risk * 100:.1f}%", level="INFO")
         return True
     except Exception as e:
         log(f"Error setting max risk: {e}", level="ERROR")
@@ -213,7 +216,7 @@ def get_initial_balance():
                 json.dump({"initial_balance": current_balance, "set_at": datetime.now().isoformat()}, f)
             return current_balance
 
-        with open("data/initial_balance.json", "r") as f:
+        with open("data/initial_balance.json") as f:
             data = json.load(f)
             return data.get("initial_balance", 0)
     except Exception as e:
@@ -249,7 +252,10 @@ def check_drawdown_protection(current_balance):
             reduced_risk = round(current_risk * 0.5, 5)
             cfg["max_risk"] = reduced_risk
             save_json_file(RUNTIME_CONFIG_FILE, cfg)
-            log(f"[Drawdown] Moderate drawdown (≥8%) — reduced risk from {current_risk:.5f} to {reduced_risk:.5f}", level="WARNING")
+            log(
+                f"[Drawdown] Moderate drawdown (≥8%) — reduced risk from {current_risk:.5f} to {reduced_risk:.5f}",
+                level="WARNING",
+            )
             return {"status": "reduced_risk"}
 
         return {"status": "ok"}

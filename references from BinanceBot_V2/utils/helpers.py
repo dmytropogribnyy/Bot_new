@@ -216,7 +216,7 @@ def calculate_dynamic_fee(
     price: float,
     order_type: str = "MARKET",
     has_bnb_discount: bool = False,
-    vip_level: int = 0
+    vip_level: int = 0,
 ) -> float:
     """
     Рассчитывает комиссию с учетом типа ордера и скидок.
@@ -318,8 +318,12 @@ def calculate_net_pnl_with_fees(
     exit_notional = calculate_notional_value(quantity, exit_price)
 
     # Fees
-    entry_fee = calculate_dynamic_fee(quantity, entry_price, entry_order_type, has_bnb_discount, vip_level)
-    exit_fee = calculate_dynamic_fee(quantity, exit_price, exit_order_type, has_bnb_discount, vip_level)
+    entry_fee = calculate_dynamic_fee(
+        quantity, entry_price, entry_order_type, has_bnb_discount, vip_level
+    )
+    exit_fee = calculate_dynamic_fee(
+        quantity, exit_price, exit_order_type, has_bnb_discount, vip_level
+    )
     total_fees = entry_fee + exit_fee
 
     # Net PnL
@@ -557,7 +561,7 @@ def calculate_liquidation_price(
         entry_price,
         "MARKET",  # Закрытие по рынку
         has_bnb_discount,
-        vip_level
+        vip_level,
     )
 
     # Формула ликвидации:

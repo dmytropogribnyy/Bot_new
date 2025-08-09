@@ -1,8 +1,8 @@
 # continuous_scanner.py
 
+from datetime import datetime
 import json
 import os
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -35,7 +35,9 @@ def continuous_scan():
 
     all_symbols = set(normalize_symbol(s) for s in fetch_all_symbols())
     loaded = load_json_file(SYMBOLS_FILE) or []
-    active_symbols = set(normalize_symbol(item["symbol"]) for item in loaded if isinstance(item, dict) and "symbol" in item)
+    active_symbols = set(
+        normalize_symbol(item["symbol"]) for item in loaded if isinstance(item, dict) and "symbol" in item
+    )
 
     candidates = all_symbols - active_symbols
 

@@ -229,12 +229,12 @@ class OrderValidator:
             # Проверка TP уровней
             for i, tp_level in enumerate(tp_levels):
                 if tp_level <= entry_price:
-                    return False, f"TP{i+1} level {tp_level} <= entry price {entry_price}"
+                    return False, f"TP{i + 1} level {tp_level} <= entry price {entry_price}"
 
                 # Проверка минимального расстояния TP
                 tp_distance = abs(tp_level - entry_price) / entry_price
                 if tp_distance < 0.002:  # Минимум 0.2%
-                    return False, f"TP{i+1} too close to entry price: {tp_distance:.4f}"
+                    return False, f"TP{i + 1} too close to entry price: {tp_distance:.4f}"
 
             return True, "OK"
 

@@ -2,7 +2,17 @@
 
 
 class CommandHandlers:
-    def __init__(self, trading_engine, leverage_manager, risk_manager, symbol_selector, post_run_analyzer, logger, telegram_bot, external_monitoring=None):
+    def __init__(
+        self,
+        trading_engine,
+        leverage_manager,
+        risk_manager,
+        symbol_selector,
+        post_run_analyzer,
+        logger,
+        telegram_bot,
+        external_monitoring=None,
+    ):
         self.trading_engine = trading_engine
         self.leverage_manager = leverage_manager
         self.risk_manager = risk_manager
@@ -11,21 +21,23 @@ class CommandHandlers:
         self.logger = logger
         self.telegram_bot = telegram_bot
         self.external_monitoring = external_monitoring
-        self.config = trading_engine.config if hasattr(trading_engine, 'config') else None
+        self.config = trading_engine.config if hasattr(trading_engine, "config") else None
 
     async def get_status(self) -> str:
         status = "\U0001f4ca Bot Status:\n"
         if self.config:
             status += f"• Mode: {self.config.exchange_mode}\n"
             status += f"• Max Positions: {self.config.max_concurrent_positions}\n"
-        if hasattr(self.trading_engine, 'in_position'):
+        if hasattr(self.trading_engine, "in_position"):
             status += f"• Active Positions: {len(self.trading_engine.in_position)}\n"
-        if hasattr(self.trading_engine, 'get_capital_utilization'):
-            status += f"• Capital Utilization: {self.trading_engine.get_capital_utilization():.1%}\n"
+        if hasattr(self.trading_engine, "get_capital_utilization"):
+            status += (
+                f"• Capital Utilization: {self.trading_engine.get_capital_utilization():.1%}\n"
+            )
         return status
 
     async def get_positions(self) -> str:
-        if hasattr(self.trading_engine, 'get_open_positions'):
+        if hasattr(self.trading_engine, "get_open_positions"):
             positions = self.trading_engine.get_open_positions()
             if not positions:
                 return "\U0001f4ed No active positions."
@@ -37,7 +49,7 @@ class CommandHandlers:
             return "\U0001f4ed Position data not available."
 
     async def get_balance(self) -> str:
-        if hasattr(self.trading_engine, 'exchange'):
+        if hasattr(self.trading_engine, "exchange"):
             balance = await self.trading_engine.exchange.get_balance()
             return f"\U0001f4b0 Account Balance: {balance:.2f} USDC"
         else:
@@ -55,16 +67,16 @@ class CommandHandlers:
 📊 Performance Report ({period})
 
 📈 Trading Statistics:
-• Total Trades: {summary['total_trades']}
-• Win Rate: {summary['win_rate']:.1%}
-• Total PnL: ${summary['total_pnl']:.2f}
-• Average PnL: ${summary['avg_pnl']:.2f}
-• Max Profit: ${summary['max_profit']:.2f}
-• Max Loss: ${summary['max_loss']:.2f}
-• Profit Factor: {summary['profit_factor']:.2f}
-• Sharpe Ratio: {summary['sharpe_ratio']:.2f}
-• Max Drawdown: {summary['max_drawdown']:.1f}%
-• Trades/Hour: {summary['trades_per_hour']:.1f}
+• Total Trades: {summary["total_trades"]}
+• Win Rate: {summary["win_rate"]:.1%}
+• Total PnL: ${summary["total_pnl"]:.2f}
+• Average PnL: ${summary["avg_pnl"]:.2f}
+• Max Profit: ${summary["max_profit"]:.2f}
+• Max Loss: ${summary["max_loss"]:.2f}
+• Profit Factor: {summary["profit_factor"]:.2f}
+• Sharpe Ratio: {summary["sharpe_ratio"]:.2f}
+• Max Drawdown: {summary["max_drawdown"]:.1f}%
+• Trades/Hour: {summary["trades_per_hour"]:.1f}
 
 🎯 Target Status:
 """
@@ -98,13 +110,13 @@ class CommandHandlers:
 📊 {symbol} Performance ({period})
 
 📈 Statistics:
-• Total Trades: {perf['total_trades']}
-• Win Rate: {perf['win_rate']:.1%}
-• Total PnL: ${perf['total_pnl']:.2f}
-• Average PnL: ${perf['avg_pnl']:.2f}
-• Max Profit: ${perf['max_profit']:.2f}
-• Max Loss: ${perf['max_loss']:.2f}
-• Profit Factor: {perf['profit_factor']:.2f}
+• Total Trades: {perf["total_trades"]}
+• Win Rate: {perf["win_rate"]:.1%}
+• Total PnL: ${perf["total_pnl"]:.2f}
+• Average PnL: ${perf["avg_pnl"]:.2f}
+• Max Profit: ${perf["max_profit"]:.2f}
+• Max Loss: ${perf["max_loss"]:.2f}
+• Profit Factor: {perf["profit_factor"]:.2f}
 """
             return report
 
@@ -126,13 +138,13 @@ class CommandHandlers:
 📊 {strategy} Strategy Performance ({period})
 
 📈 Statistics:
-• Total Trades: {perf['total_trades']}
-• Win Rate: {perf['win_rate']:.1%}
-• Total PnL: ${perf['total_pnl']:.2f}
-• Average PnL: ${perf['avg_pnl']:.2f}
-• Max Profit: ${perf['max_profit']:.2f}
-• Max Loss: ${perf['max_loss']:.2f}
-• Profit Factor: {perf['profit_factor']:.2f}
+• Total Trades: {perf["total_trades"]}
+• Win Rate: {perf["win_rate"]:.1%}
+• Total PnL: ${perf["total_pnl"]:.2f}
+• Average PnL: ${perf["avg_pnl"]:.2f}
+• Max Profit: ${perf["max_profit"]:.2f}
+• Max Loss: ${perf["max_loss"]:.2f}
+• Profit Factor: {perf["profit_factor"]:.2f}
 """
             return report
 
@@ -258,17 +270,15 @@ class CommandHandlers:
 • Avg Hold Time: {summary.avg_hold_duration_minutes:.1f} min
 
 🏆 Symbol Analysis:
-• Best Symbol: {summary.best_symbol or 'N/A'}
-• Worst Symbol: {summary.worst_symbol or 'N/A'}
+• Best Symbol: {summary.best_symbol or "N/A"}
+• Worst Symbol: {summary.worst_symbol or "N/A"}
 """
 
                 # Добавляем топ-5 символов по производительности
                 if summary.symbol_performance:
                     report += "\n📋 Top Symbols:\n"
                     sorted_symbols = sorted(
-                        summary.symbol_performance.items(),
-                        key=lambda x: x[1]['pnl'],
-                        reverse=True
+                        summary.symbol_performance.items(), key=lambda x: x[1]["pnl"], reverse=True
                     )[:5]
 
                     for symbol, perf in sorted_symbols:
@@ -320,7 +330,7 @@ class CommandHandlers:
             report = "📁 Информация о файлах логов:\n\n"
 
             for log_file, info in log_files_info.items():
-                if info.get('exists', True):
+                if info.get("exists", True):
                     report += f"📄 {log_file}:\n"
                     report += f"   • Размер: {info['size_mb']:.2f} MB\n"
                     report += f"   • Строк: {info['lines']}\n"
@@ -344,12 +354,14 @@ class CommandHandlers:
             report = f"📋 Последние логи ({hours}ч, показано {min(10, len(logs))}):\n\n"
 
             for i, log in enumerate(logs[:10]):
-                timestamp = log['timestamp'][:19] if log['timestamp'] else 'N/A'
-                level = log['level']
-                component = log['component']
-                message = log['message'][:50] + "..." if len(log['message']) > 50 else log['message']
+                timestamp = log["timestamp"][:19] if log["timestamp"] else "N/A"
+                level = log["level"]
+                component = log["component"]
+                message = (
+                    log["message"][:50] + "..." if len(log["message"]) > 50 else log["message"]
+                )
 
-                report += f"{i+1}. [{timestamp}] {level}[{component}] {message}\n"
+                report += f"{i + 1}. [{timestamp}] {level}[{component}] {message}\n"
 
             if len(logs) > 10:
                 report += f"\n... и еще {len(logs) - 10} записей"
@@ -363,7 +375,7 @@ class CommandHandlers:
         """Получает статус grid стратегий"""
         try:
             # Получаем стратегию grid из engine
-            if hasattr(self.bot_engine, 'strategy_manager'):
+            if hasattr(self.bot_engine, "strategy_manager"):
                 grid_strategy = self.bot_engine.strategy_manager.strategies.get("grid")
                 if grid_strategy:
                     grids_status = await grid_strategy.get_all_grids_status()
@@ -379,7 +391,7 @@ class CommandHandlers:
                             report += f"   • Levels: {status['executed_orders']}/{status['total_levels']}\n"
                             report += f"   • Completion: {status['completion_rate']:.1%}\n"
                             report += f"   • Created: {status['created_at'].strftime('%H:%M:%S')}\n"
-                            if status['stats']['total_trades'] > 0:
+                            if status["stats"]["total_trades"] > 0:
                                 report += f"   • Trades: {status['stats']['total_trades']}\n"
                                 report += f"   • Win Rate: {status['stats']['win_rate']:.1%}\n"
                             report += "\n"
@@ -397,7 +409,9 @@ class CommandHandlers:
         """Останавливает торговлю (ждет завершения ордеров)"""
         try:
             # Логируем начало остановки
-            self.bot_engine.logger.log_event("TELEGRAM", "WARNING", "Trading stop requested via Telegram")
+            self.bot_engine.logger.log_event(
+                "TELEGRAM", "WARNING", "Trading stop requested via Telegram"
+            )
 
             # Приостанавливаем торговлю
             self.bot_engine.pause_trading()
@@ -431,7 +445,9 @@ class CommandHandlers:
         """Экстренная остановка бота (закрывает все позиции)"""
         try:
             # Логируем экстренную остановку
-            self.bot_engine.logger.log_event("TELEGRAM", "CRITICAL", "Emergency shutdown requested via Telegram")
+            self.bot_engine.logger.log_event(
+                "TELEGRAM", "CRITICAL", "Emergency shutdown requested via Telegram"
+            )
 
             # Получаем активные позиции
             positions = self.bot_engine.get_open_positions()
@@ -441,11 +457,13 @@ class CommandHandlers:
                 closed_count = 0
                 for pos in positions:
                     try:
-                        result = await self.bot_engine.close_position(pos['symbol'])
+                        result = await self.bot_engine.close_position(pos["symbol"])
                         if result.get("success"):
                             closed_count += 1
                     except Exception as e:
-                        self.bot_engine.logger.log_event("SHUTDOWN", "ERROR", f"Failed to close {pos['symbol']}: {e}")
+                        self.bot_engine.logger.log_event(
+                            "SHUTDOWN", "ERROR", f"Failed to close {pos['symbol']}: {e}"
+                        )
 
                 # Останавливаем торговлю
                 self.bot_engine.pause_trading()
@@ -472,22 +490,24 @@ class CommandHandlers:
 📊 Run Status (Last 24h)
 
 🎯 Trading Performance:
-• Trades: {summary['total_trades']}
-• PnL: ${summary['total_pnl']:.2f}
-• Win Rate: {summary['win_rate']:.1%}
-• Avg PnL: ${summary['avg_pnl']:.2f}
+• Trades: {summary["total_trades"]}
+• PnL: ${summary["total_pnl"]:.2f}
+• Win Rate: {summary["win_rate"]:.1%}
+• Avg PnL: ${summary["avg_pnl"]:.2f}
 
 📈 System Events:
 """
-            for level, count in summary['events'].items():
-                emoji = {"INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}.get(level, "📊")
+            for level, count in summary["events"].items():
+                emoji = {"INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}.get(
+                    level, "📊"
+                )
                 report += f"• {emoji} {level}: {count}\n"
 
             report += f"""
 💾 Log Stats:
-• DB Size: {log_stats['db_size_mb']}MB / {log_stats['max_size_mb']}MB
-• Records: {sum(log_stats['table_counts'].values())}
-• Last Update: {summary['last_updated'][:19]}
+• DB Size: {log_stats["db_size_mb"]}MB / {log_stats["max_size_mb"]}MB
+• Records: {sum(log_stats["table_counts"].values())}
+• Last Update: {summary["last_updated"][:19]}
 """
 
             return report
@@ -498,13 +518,15 @@ class CommandHandlers:
     async def restart_bot(self) -> str:
         """Перезапуск бота"""
         try:
-            self.bot_engine.logger.log_event("TELEGRAM", "WARNING", "Bot restart requested via Telegram")
+            self.bot_engine.logger.log_event(
+                "TELEGRAM", "WARNING", "Bot restart requested via Telegram"
+            )
 
             # Останавливаем торговлю
             self.bot_engine.pause_trading()
 
             # Отправляем сигнал для перезапуска
-            if hasattr(self.bot_engine, 'restart_requested'):
+            if hasattr(self.bot_engine, "restart_requested"):
                 self.bot_engine.restart_requested = True
 
             return "🔄 Bot restart initiated. Please wait..."
@@ -518,7 +540,7 @@ class CommandHandlers:
             from core.aggression_manager import AggressionManager
 
             # Получаем агрессию из trading_engine или создаем новый
-            if hasattr(self.trading_engine, 'aggression_manager'):
+            if hasattr(self.trading_engine, "aggression_manager"):
                 aggression_manager = self.trading_engine.aggression_manager
             else:
                 aggression_manager = AggressionManager(self.config, self.logger)
@@ -531,18 +553,18 @@ class CommandHandlers:
 🎯 **Aggression Status**
 
 📊 Current Level: **{current_level}**
-🔄 Available Levels: {', '.join(available_levels)}
+🔄 Available Levels: {", ".join(available_levels)}
 
 📈 Profile Settings:
 """
 
             if profile_info:
                 for key, value in profile_info.items():
-                    if key != 'description':
+                    if key != "description":
                         status += f"• {key}: {value}\n"
 
             # Добавляем информацию о стратегиях
-            if hasattr(self.trading_engine, 'strategy_manager'):
+            if hasattr(self.trading_engine, "strategy_manager"):
                 strategy_info = await self._get_strategy_aggression_info()
                 status += f"\n📋 Strategy Status:\n{strategy_info}"
 
@@ -557,7 +579,7 @@ class CommandHandlers:
             from core.aggression_manager import AggressionManager
 
             # Получаем агрессию из trading_engine или создаем новый
-            if hasattr(self.trading_engine, 'aggression_manager'):
+            if hasattr(self.trading_engine, "aggression_manager"):
                 aggression_manager = self.trading_engine.aggression_manager
             else:
                 aggression_manager = AggressionManager(self.config, self.logger)
@@ -572,7 +594,7 @@ class CommandHandlers:
 
             if success:
                 # Обновляем стратегии если есть strategy_manager
-                if hasattr(self.trading_engine, 'strategy_manager'):
+                if hasattr(self.trading_engine, "strategy_manager"):
                     await self._update_strategies_aggression()
 
                 return f"✅ Aggression level changed to: **{level.upper()}**\n\n{await self.get_aggression_status()}"
@@ -589,13 +611,13 @@ class CommandHandlers:
             info = []
 
             for strategy_name, strategy in strategy_manager.strategies.items():
-                if hasattr(strategy, 'aggression_manager'):
+                if hasattr(strategy, "aggression_manager"):
                     settings = strategy.aggression_manager.get_strategy_settings(strategy_name)
                     info.append(f"• {strategy_name}: {settings.get('aggression_mode', 'UNKNOWN')}")
                 else:
                     info.append(f"• {strategy_name}: NO_AGGRESSION_MANAGER")
 
-            return '\n'.join(info) if info else "No strategies with aggression manager"
+            return "\n".join(info) if info else "No strategies with aggression manager"
 
         except Exception as e:
             return f"Error getting strategy info: {e}"
@@ -603,17 +625,20 @@ class CommandHandlers:
     async def _update_strategies_aggression(self):
         """Обновляет агрессивность всех стратегий"""
         try:
-            if hasattr(self.trading_engine, 'strategy_manager'):
+            if hasattr(self.trading_engine, "strategy_manager"):
                 strategy_manager = self.trading_engine.strategy_manager
 
                 for strategy_name, strategy in strategy_manager.strategies.items():
-                    if hasattr(strategy, '_update_settings_from_aggression'):
+                    if hasattr(strategy, "_update_settings_from_aggression"):
                         await strategy._update_settings_from_aggression()
-                        self.logger.log_strategy_event(strategy_name, "AGGRESSION_UPDATED",
-                                                     f"Updated via Telegram command")
+                        self.logger.log_strategy_event(
+                            strategy_name, "AGGRESSION_UPDATED", "Updated via Telegram command"
+                        )
 
         except Exception as e:
-            self.logger.log_event("COMMAND_HANDLERS", "ERROR", f"Failed to update strategies aggression: {e}")
+            self.logger.log_event(
+                "COMMAND_HANDLERS", "ERROR", f"Failed to update strategies aggression: {e}"
+            )
 
     async def get_auto_switch_status(self) -> str:
         """Получает статус автоматического переключения агрессивности"""
@@ -621,7 +646,7 @@ class CommandHandlers:
             from core.aggression_manager import AggressionManager
 
             # Получаем агрессию из trading_engine или создаем новый
-            if hasattr(self.trading_engine, 'aggression_manager'):
+            if hasattr(self.trading_engine, "aggression_manager"):
                 aggression_manager = self.trading_engine.aggression_manager
             else:
                 aggression_manager = AggressionManager(self.config, self.logger)
@@ -631,17 +656,17 @@ class CommandHandlers:
             report = f"""
 🤖 **Auto-Switch Status**
 
-📊 Current Level: **{status['current_level']}**
-🔄 Auto-Switch: **{'ENABLED' if status['enabled'] else 'DISABLED'}**
+📊 Current Level: **{status["current_level"]}**
+🔄 Auto-Switch: **{"ENABLED" if status["enabled"] else "DISABLED"}**
 
 ⚙️ Market Conditions:
-• Volatility Threshold: {status['market_conditions']['volatility_threshold']:.3f}
-• Trend Strength Threshold: {status['market_conditions']['trend_strength_threshold']:.2f}
-• Volume Spike Threshold: {status['market_conditions']['volume_spike_threshold']:.1f}x
-• Market Sentiment Threshold: {status['market_conditions']['market_sentiment_threshold']:.2f}
+• Volatility Threshold: {status["market_conditions"]["volatility_threshold"]:.3f}
+• Trend Strength Threshold: {status["market_conditions"]["trend_strength_threshold"]:.2f}
+• Volume Spike Threshold: {status["market_conditions"]["volume_spike_threshold"]:.1f}x
+• Market Sentiment Threshold: {status["market_conditions"]["market_sentiment_threshold"]:.2f}
 
-⏰ Last Switch: {status['last_switch_time']} seconds ago
-🕐 Min Switch Interval: {status['min_switch_interval']} seconds
+⏰ Last Switch: {status["last_switch_time"]} seconds ago
+🕐 Min Switch Interval: {status["min_switch_interval"]} seconds
 """
 
             return report
@@ -655,7 +680,7 @@ class CommandHandlers:
             from core.aggression_manager import AggressionManager
 
             # Получаем агрессию из trading_engine или создаем новый
-            if hasattr(self.trading_engine, 'aggression_manager'):
+            if hasattr(self.trading_engine, "aggression_manager"):
                 aggression_manager = self.trading_engine.aggression_manager
             else:
                 aggression_manager = AggressionManager(self.config, self.logger)
@@ -663,7 +688,9 @@ class CommandHandlers:
             aggression_manager.enable_auto_switch(enabled)
 
             status = "ENABLED" if enabled else "DISABLED"
-            return f"✅ Auto-switch aggression: **{status}**\n\n{await self.get_auto_switch_status()}"
+            return (
+                f"✅ Auto-switch aggression: **{status}**\n\n{await self.get_auto_switch_status()}"
+            )
 
         except Exception as e:
             return f"❌ Error enabling auto-switch: {e}"
@@ -674,7 +701,7 @@ class CommandHandlers:
             from core.aggression_manager import AggressionManager
 
             # Получаем агрессию из trading_engine или создаем новый
-            if hasattr(self.trading_engine, 'aggression_manager'):
+            if hasattr(self.trading_engine, "aggression_manager"):
                 aggression_manager = self.trading_engine.aggression_manager
             else:
                 aggression_manager = AggressionManager(self.config, self.logger)
@@ -683,19 +710,19 @@ class CommandHandlers:
             market_data = {}
 
             # Пытаемся получить данные из trading_engine
-            if hasattr(self.trading_engine, 'get_market_data'):
+            if hasattr(self.trading_engine, "get_market_data"):
                 market_data = await self.trading_engine.get_market_data()
-            elif hasattr(self.trading_engine, 'symbol_selector'):
+            elif hasattr(self.trading_engine, "symbol_selector"):
                 # Получаем данные первого активного символа
                 symbols = await self.trading_engine.symbol_selector.get_symbols_for_trading()
                 if symbols:
                     symbol = symbols[0]
                     # Упрощенный анализ - в реальности нужно получать реальные данные
                     market_data = {
-                        'price': 50000,  # Пример
-                        'atr': 1000,     # Пример
-                        'rsi': 45,       # Пример
-                        'volume_ratio': 1.2  # Пример
+                        "price": 50000,  # Пример
+                        "atr": 1000,  # Пример
+                        "rsi": 45,  # Пример
+                        "volume_ratio": 1.2,  # Пример
                     }
 
             analysis = aggression_manager.analyze_market_conditions(market_data)
@@ -703,16 +730,16 @@ class CommandHandlers:
             report = f"""
 📊 **Market Conditions Analysis**
 
-🎯 Current Level: **{analysis['recommended_level']}**
-🔄 Should Switch: **{'YES' if analysis['should_switch'] else 'NO'}**
+🎯 Current Level: **{analysis["recommended_level"]}**
+🔄 Should Switch: **{"YES" if analysis["should_switch"] else "NO"}**
 
 📈 Market Metrics:
-• Volatility: {analysis['volatility']:.2f}%
-• Trend Strength: {analysis['trend_strength']:.2f}
-• Volume Spike: {analysis['volume_spike']:.2f}x
-• Market Sentiment: {analysis['market_sentiment']:.2f}
+• Volatility: {analysis["volatility"]:.2f}%
+• Trend Strength: {analysis["trend_strength"]:.2f}
+• Volume Spike: {analysis["volume_spike"]:.2f}x
+• Market Sentiment: {analysis["market_sentiment"]:.2f}
 
-💡 Recommendation: {analysis['reason'] if analysis['reason'] else 'No specific recommendation'}
+💡 Recommendation: {analysis["reason"] if analysis["reason"] else "No specific recommendation"}
 """
 
             return report
@@ -726,7 +753,7 @@ class CommandHandlers:
             from core.metrics_aggregator import MetricsAggregator
 
             # Получаем агрегатор метрик
-            if hasattr(self.trading_engine, 'metrics_aggregator'):
+            if hasattr(self.trading_engine, "metrics_aggregator"):
                 metrics_aggregator = self.trading_engine.metrics_aggregator
             else:
                 metrics_aggregator = MetricsAggregator(self.config, self.logger)
@@ -741,55 +768,55 @@ class CommandHandlers:
 📊 **Detailed Analytics Report ({period})**
 
 📈 **Basic Metrics:**
-• Total Trades: {analytics['basic_metrics']['total_trades']}
-• Win Rate: {analytics['basic_metrics']['win_rate']:.1%}
-• Total PnL: ${analytics['basic_metrics']['total_pnl']:.2f}
-• Profit Factor: {analytics['basic_metrics']['profit_factor']:.2f}
-• Sharpe Ratio: {analytics['basic_metrics']['sharpe_ratio']:.2f}
-• Max Drawdown: {analytics['basic_metrics']['max_drawdown']:.1f}%
+• Total Trades: {analytics["basic_metrics"]["total_trades"]}
+• Win Rate: {analytics["basic_metrics"]["win_rate"]:.1%}
+• Total PnL: ${analytics["basic_metrics"]["total_pnl"]:.2f}
+• Profit Factor: {analytics["basic_metrics"]["profit_factor"]:.2f}
+• Sharpe Ratio: {analytics["basic_metrics"]["sharpe_ratio"]:.2f}
+• Max Drawdown: {analytics["basic_metrics"]["max_drawdown"]:.1f}%
 
 ⏰ **Time Analysis:**
 """
 
-            if analytics['time_analysis']:
-                time_analysis = analytics['time_analysis']
-                if time_analysis.get('best_period'):
+            if analytics["time_analysis"]:
+                time_analysis = analytics["time_analysis"]
+                if time_analysis.get("best_period"):
                     report += f"• Best Period: {time_analysis['best_period']['period']} (${time_analysis['best_period']['total_pnl']:.2f})\n"
-                if time_analysis.get('worst_period'):
+                if time_analysis.get("worst_period"):
                     report += f"• Worst Period: {time_analysis['worst_period']['period']} (${time_analysis['worst_period']['total_pnl']:.2f})\n"
 
-            report += f"""
+            report += """
 🎯 **Strategy Analysis:**
 """
 
-            if analytics['strategy_correlation']:
-                strategy_analysis = analytics['strategy_correlation']
-                if strategy_analysis.get('best_strategy'):
-                    best = strategy_analysis['best_strategy']
+            if analytics["strategy_correlation"]:
+                strategy_analysis = analytics["strategy_correlation"]
+                if strategy_analysis.get("best_strategy"):
+                    best = strategy_analysis["best_strategy"]
                     report += f"• Best Strategy: {best['strategy']} (${best['total_pnl']:.2f}, {best['win_rate']:.1%})\n"
-                if strategy_analysis.get('worst_strategy'):
-                    worst = strategy_analysis['worst_strategy']
+                if strategy_analysis.get("worst_strategy"):
+                    worst = strategy_analysis["worst_strategy"]
                     report += f"• Worst Strategy: {worst['strategy']} (${worst['total_pnl']:.2f}, {worst['win_rate']:.1%})\n"
 
-            report += f"""
+            report += """
 💎 **Symbol Analysis:**
 """
 
-            if analytics['symbol_analysis']:
-                symbol_analysis = analytics['symbol_analysis']
-                if symbol_analysis.get('best_symbol'):
-                    best = symbol_analysis['best_symbol']
+            if analytics["symbol_analysis"]:
+                symbol_analysis = analytics["symbol_analysis"]
+                if symbol_analysis.get("best_symbol"):
+                    best = symbol_analysis["best_symbol"]
                     report += f"• Best Symbol: {best['symbol']} (${best['total_pnl']:.2f}, {best['win_rate']:.1%})\n"
-                if symbol_analysis.get('worst_symbol'):
-                    worst = symbol_analysis['worst_symbol']
+                if symbol_analysis.get("worst_symbol"):
+                    worst = symbol_analysis["worst_symbol"]
                     report += f"• Worst Symbol: {worst['symbol']} (${worst['total_pnl']:.2f}, {worst['win_rate']:.1%})\n"
 
-            report += f"""
+            report += """
 ⚠️ **Risk Analysis:**
 """
 
-            if analytics['risk_analysis']:
-                risk = analytics['risk_analysis']
+            if analytics["risk_analysis"]:
+                risk = analytics["risk_analysis"]
                 report += f"• VaR (95%): ${risk['var_95']:.2f}\n"
                 report += f"• Max Consecutive Losses: {risk['max_consecutive_losses']}\n"
                 report += f"• Risk-Adjusted Return: {risk['risk_adjusted_return']:.2f}\n"
@@ -797,12 +824,12 @@ class CommandHandlers:
                 report += f"• Avg Loss: ${risk['avg_loss']:.2f}\n"
                 report += f"• Avg Profit: ${risk['avg_profit']:.2f}\n"
 
-            report += f"""
+            report += """
 📈 **Trend Analysis:**
 """
 
-            if analytics['trend_analysis']:
-                trend = analytics['trend_analysis']
+            if analytics["trend_analysis"]:
+                trend = analytics["trend_analysis"]
                 report += f"• Trend: {trend['trend']}\n"
                 report += f"• Slope: {trend['slope']:.4f}\n"
                 report += f"• Volatility: {trend['volatility']:.2f}\n"
@@ -825,16 +852,16 @@ class CommandHandlers:
 🔗 External Monitoring Status
 
 📊 General:
-• Enabled: {'✅' if status['enabled'] else '❌'}
-• Running: {'✅' if status['running'] else '❌'}
-• Export Interval: {status['export_interval']}s
+• Enabled: {"✅" if status["enabled"] else "❌"}
+• Running: {"✅" if status["running"] else "❌"}
+• Export Interval: {status["export_interval"]}s
 
 📈 Systems:
-• Prometheus: {'✅' if status['prometheus_enabled'] else '❌'}
-• Grafana: {'✅' if status['grafana_enabled'] else '❌'}
-• Webhook: {'✅' if status['webhook_enabled'] else '❌'}
+• Prometheus: {"✅" if status["prometheus_enabled"] else "❌"}
+• Grafana: {"✅" if status["grafana_enabled"] else "❌"}
+• Webhook: {"✅" if status["webhook_enabled"] else "❌"}
 
-🕐 Last Export: {status['last_export'] or 'Never'}
+🕐 Last Export: {status["last_export"] or "Never"}
 """
             return report
 

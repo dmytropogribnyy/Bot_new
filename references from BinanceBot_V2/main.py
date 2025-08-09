@@ -5,23 +5,15 @@
 """
 
 import asyncio
-import json
-import os
-import signal
 import sys
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager
+from core.profit_tracker import ProfitTracker
 from core.strategy_manager import StrategyManager
 from core.symbol_manager import SymbolManager
 from core.unified_logger import UnifiedLogger
-from core.profit_tracker import ProfitTracker
-from telegram.telegram_bot import TelegramBot
 
 
 class SimplifiedTradingBot:
@@ -35,7 +27,7 @@ class SimplifiedTradingBot:
         self.strategy_manager = StrategyManager(self.config, self.logger)
         self.symbol_manager = SymbolManager(self.config, self.logger)
         self.profit_tracker = ProfitTracker(self.config, self.logger)
-        
+
         # Получаем Telegram credentials
         telegram_token, telegram_chat_id = self.config.get_telegram_credentials()
         # Временно отключаем Telegram Bot для избежания конфликтов
@@ -53,11 +45,11 @@ class SimplifiedTradingBot:
             self.logger.log_event("MAIN", "DEBUG", "🔧 Инициализация Exchange...")
             await self.exchange.initialize()
             self.logger.log_event("MAIN", "DEBUG", "✅ Exchange инициализирован")
-            
+
             self.logger.log_event("MAIN", "DEBUG", "🔧 Инициализация OrderManager...")
             await self.order_manager.initialize()
             self.logger.log_event("MAIN", "DEBUG", "✅ OrderManager инициализирован")
-            
+
             self.logger.log_event("MAIN", "DEBUG", "🔧 Инициализация StrategyManager...")
             await self.strategy_manager.initialize()
             self.logger.log_event("MAIN", "DEBUG", "✅ StrategyManager инициализирован")
@@ -72,7 +64,7 @@ class SimplifiedTradingBot:
             self.logger.log_event("MAIN", "DEBUG", "🔧 Запуск ProfitTracker...")
             await self.profit_tracker.start_tracking()
             self.logger.log_event("MAIN", "DEBUG", "✅ ProfitTracker запущен")
-            
+
             # Инициализируем telegram bot
             self.logger.log_event("MAIN", "DEBUG", "🔧 Инициализация TelegramBot...")
             if self.telegram_bot:
@@ -92,6 +84,7 @@ class SimplifiedTradingBot:
         except Exception as e:
             self.logger.log_event("MAIN", "ERROR", f"❌ Ошибка инициализации: {e}")
             import traceback
+
             self.logger.log_event("MAIN", "ERROR", f"Traceback: {traceback.format_exc()}")
             raise
 
@@ -104,7 +97,7 @@ class SimplifiedTradingBot:
         # Закрытие всех компонентов
         await self.exchange.cleanup()
         await self.order_manager.shutdown()
-        
+
         # Останавливаем profit tracker
         await self.profit_tracker.stop_tracking()
 
@@ -113,16 +106,18 @@ class SimplifiedTradingBot:
     async def trading_loop(self):
         """Основной торговый цикл (упрощенный)"""
         self.logger.log_event("MAIN", "INFO", "🔄 Запуск торгового цикла")
-        
+
         while self.running and not self.stop_event.is_set():
             try:
                 self.logger.log_event("MAIN", "DEBUG", "🔄 Начало торгового цикла")
-                
+
                 # 1. Получаем активные символы
                 self.logger.log_event("MAIN", "DEBUG", "📊 Получение активных символов...")
                 symbols = await self.symbol_manager.get_active_symbols()
-                self.logger.log_event("MAIN", "INFO", f"📊 Получено символов: {len(symbols) if symbols else 0}")
-                
+                self.logger.log_event(
+                    "MAIN", "INFO", f"📊 Получено символов: {len(symbols) if symbols else 0}"
+                )
+
                 if not symbols:
                     self.logger.log_event("MAIN", "WARNING", "Нет активных символов")
                     await asyncio.sleep(5)
@@ -132,10 +127,16 @@ class SimplifiedTradingBot:
                 self.logger.log_event("MAIN", "DEBUG", "📈 Проверка лимитов позиций...")
                 current_positions = self.order_manager.get_position_count()  # Убираем await
                 max_positions = self.config.max_concurrent_positions
-                self.logger.log_event("MAIN", "INFO", f"📈 Позиций: {current_positions}/{max_positions}")
+                self.logger.log_event(
+                    "MAIN", "INFO", f"📈 Позиций: {current_positions}/{max_positions}"
+                )
 
                 if current_positions >= max_positions:
-                    self.logger.log_event("MAIN", "INFO", f"Достигнут лимит позиций ({current_positions}/{max_positions})")
+                    self.logger.log_event(
+                        "MAIN",
+                        "INFO",
+                        f"Достигнут лимит позиций ({current_positions}/{max_positions})",
+                    )
                     await asyncio.sleep(10)
                     continue
 
@@ -147,36 +148,41 @@ class SimplifiedTradingBot:
 
                     try:
                         self.logger.log_event("MAIN", "DEBUG", f"📊 Анализ {symbol}...")
-                        
+
                         # Получаем данные для анализа
                         ohlcv = await self.exchange.get_ohlcv(symbol, "15m", 100)
                         if not ohlcv:
-                            self.logger.log_event("MAIN", "DEBUG", f"❌ Нет данных OHLCV для {symbol}")
+                            self.logger.log_event(
+                                "MAIN", "DEBUG", f"❌ Нет данных OHLCV для {symbol}"
+                            )
                             continue
 
                         # Анализируем сигнал
                         signal = await self.strategy_manager.analyze_symbol(symbol, ohlcv)
                         self.logger.log_event("MAIN", "DEBUG", f"📊 Сигнал для {symbol}: {signal}")
 
-                        if signal and signal.get('should_enter'):
+                        if signal and signal.get("should_enter"):
                             self.logger.log_event("MAIN", "INFO", f"🎯 Найден сигнал для {symbol}")
-                            
+
                             # Проверяем, что позиция еще не открыта
                             if not await self.order_manager.has_position(symbol):
-                                self.logger.log_event("MAIN", "INFO", f"🚀 Открываем позицию {symbol}")
-                                
+                                self.logger.log_event(
+                                    "MAIN", "INFO", f"🚀 Открываем позицию {symbol}"
+                                )
+
                                 # Открываем позицию
                                 result = await self.order_manager.place_position_with_tp_sl(
                                     symbol=symbol,
-                                    side=signal.get('side', 'BUY'),
-                                    quantity=signal.get('quantity', 0.001),
-                                    entry_price=signal.get('entry_price', 0),
-                                    leverage=5
+                                    side=signal.get("side", "BUY"),
+                                    quantity=signal.get("quantity", 0.001),
+                                    entry_price=signal.get("entry_price", 0),
+                                    leverage=5,
                                 )
 
-                                if result.get('success'):
-                                    self.logger.log_event("MAIN", "INFO",
-                                        f"✅ Позиция открыта: {symbol} | {result}")
+                                if result.get("success"):
+                                    self.logger.log_event(
+                                        "MAIN", "INFO", f"✅ Позиция открыта: {symbol} | {result}"
+                                    )
                                     if self.telegram_bot:
                                         try:
                                             await self.telegram_bot.send_message(
@@ -185,12 +191,21 @@ class SimplifiedTradingBot:
                                                 f"Количество: {signal.get('quantity'):.6f}"
                                             )
                                         except Exception as e:
-                                            self.logger.log_event("MAIN", "WARNING", f"⚠️ Ошибка отправки в Telegram: {e}")
+                                            self.logger.log_event(
+                                                "MAIN",
+                                                "WARNING",
+                                                f"⚠️ Ошибка отправки в Telegram: {e}",
+                                            )
                                 else:
-                                    self.logger.log_event("MAIN", "ERROR",
-                                        f"❌ Ошибка открытия позиции {symbol}: {result}")
+                                    self.logger.log_event(
+                                        "MAIN",
+                                        "ERROR",
+                                        f"❌ Ошибка открытия позиции {symbol}: {result}",
+                                    )
                             else:
-                                self.logger.log_event("MAIN", "DEBUG", f"⏭️ Позиция уже открыта для {symbol}")
+                                self.logger.log_event(
+                                    "MAIN", "DEBUG", f"⏭️ Позиция уже открыта для {symbol}"
+                                )
 
                     except Exception as e:
                         self.logger.log_event("MAIN", "ERROR", f"Ошибка анализа {symbol}: {e}")
@@ -229,6 +244,7 @@ class SimplifiedTradingBot:
         except Exception as e:
             self.logger.log_event("MAIN", "ERROR", f"Критическая ошибка: {e}")
             import traceback
+
             self.logger.log_event("MAIN", "ERROR", f"Traceback: {traceback.format_exc()}")
         finally:
             self.logger.log_event("MAIN", "INFO", "🛑 Начало завершения работы...")

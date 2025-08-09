@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
 from core.metrics_aggregator import MetricsAggregator
 
 
@@ -311,18 +312,18 @@ class PerformanceMonitor:
     def _generate_text_report(self, summary: dict[str, Any]) -> str:
         """Генерирует текстовый отчет"""
         report = f"""
-📊 Performance Report ({summary['period']})
+📊 Performance Report ({summary["period"]})
 
 📈 Trading Statistics:
-• Total Trades: {summary['total_trades']}
-• Win Rate: {summary['win_rate']:.1%}
-• Total PnL: ${summary['total_pnl']:.2f}
-• Average PnL: ${summary['avg_pnl']:.2f}
-• Max Profit: ${summary['max_profit']:.2f}
-• Max Loss: ${summary['max_loss']:.2f}
-• Profit Factor: {summary['profit_factor']:.2f}
-• Sharpe Ratio: {summary['sharpe_ratio']:.2f}
-• Max Drawdown: {summary['max_drawdown']:.1f}%
+• Total Trades: {summary["total_trades"]}
+• Win Rate: {summary["win_rate"]:.1%}
+• Total PnL: ${summary["total_pnl"]:.2f}
+• Average PnL: ${summary["avg_pnl"]:.2f}
+• Max Profit: ${summary["max_profit"]:.2f}
+• Max Loss: ${summary["max_loss"]:.2f}
+• Profit Factor: {summary["profit_factor"]:.2f}
+• Sharpe Ratio: {summary["sharpe_ratio"]:.2f}
+• Max Drawdown: {summary["max_drawdown"]:.1f}%
 
 🎯 Target Status:
 """

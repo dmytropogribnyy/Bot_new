@@ -3,16 +3,15 @@
 """
 
 import sqlite3
-import asyncio
-from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import json
+from typing import Any
 
 
 @dataclass
 class TradingMetrics:
     """Метрики торговли"""
+
     total_trades: int
     win_rate: float
     total_pnl: float
@@ -24,14 +23,15 @@ class TradingMetrics:
     max_drawdown: float
     trades_per_hour: float
     avg_trade_duration: float
-    best_symbol: Optional[str]
-    worst_symbol: Optional[str]
-    targets_status: Dict[str, Dict[str, Any]]
+    best_symbol: str | None
+    worst_symbol: str | None
+    targets_status: dict[str, dict[str, Any]]
 
 
 @dataclass
 class SymbolMetrics:
     """Метрики по символу"""
+
     symbol: str
     total_trades: int
     win_rate: float
@@ -41,8 +41,8 @@ class SymbolMetrics:
     max_loss: float
     profit_factor: float
     avg_trade_duration: float
-    best_strategy: Optional[str]
-    worst_strategy: Optional[str]
+    best_strategy: str | None
+    worst_strategy: str | None
 
 
 class MetricsAggregator:
@@ -51,11 +51,11 @@ class MetricsAggregator:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
-        self.db_path = config.get('database_path', 'trading_data.db')
+        self.db_path = config.get("database_path", "trading_data.db")
         self.cache = {}
         self.cache_ttl = 300  # 5 минут
 
-    async def get_performance_summary(self, period: str = "1d") -> Dict[str, Any]:
+    async def get_performance_summary(self, period: str = "1d") -> dict[str, Any]:
         """Получает сводку производительности за период"""
         cache_key = f"performance_summary_{period}"
 
@@ -74,20 +74,20 @@ class MetricsAggregator:
 
             # Формируем сводку
             summary = {
-                'total_trades': metrics.total_trades,
-                'win_rate': metrics.win_rate,
-                'total_pnl': metrics.total_pnl,
-                'avg_pnl': metrics.avg_pnl,
-                'max_profit': metrics.max_profit,
-                'max_loss': metrics.max_loss,
-                'profit_factor': metrics.profit_factor,
-                'sharpe_ratio': metrics.sharpe_ratio,
-                'max_drawdown': metrics.max_drawdown,
-                'trades_per_hour': metrics.trades_per_hour,
-                'avg_trade_duration': metrics.avg_trade_duration,
-                'best_symbol': metrics.best_symbol,
-                'worst_symbol': metrics.worst_symbol,
-                'targets_status': targets_status
+                "total_trades": metrics.total_trades,
+                "win_rate": metrics.win_rate,
+                "total_pnl": metrics.total_pnl,
+                "avg_pnl": metrics.avg_pnl,
+                "max_profit": metrics.max_profit,
+                "max_loss": metrics.max_loss,
+                "profit_factor": metrics.profit_factor,
+                "sharpe_ratio": metrics.sharpe_ratio,
+                "max_drawdown": metrics.max_drawdown,
+                "trades_per_hour": metrics.trades_per_hour,
+                "avg_trade_duration": metrics.avg_trade_duration,
+                "best_symbol": metrics.best_symbol,
+                "worst_symbol": metrics.worst_symbol,
+                "targets_status": targets_status,
             }
 
             # Кешируем результат
@@ -96,7 +96,9 @@ class MetricsAggregator:
             return summary
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to get performance summary: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to get performance summary: {e}"
+            )
             return {}
 
     async def get_trading_metrics(self, period: str = "1d") -> TradingMetrics:
@@ -120,23 +122,36 @@ class MetricsAggregator:
             cursor = conn.cursor()
 
             # Получаем все сделки за период
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT symbol, side, entry_price, exit_price, qty, pnl,
                        entry_time, exit_time, strategy, win
                 FROM trades
                 WHERE entry_time >= ? AND entry_time <= ?
                 ORDER BY entry_time DESC
-            """, (start_time.timestamp(), end_time.timestamp()))
+            """,
+                (start_time.timestamp(), end_time.timestamp()),
+            )
 
             trades = cursor.fetchall()
             conn.close()
 
             if not trades:
                 return TradingMetrics(
-                    total_trades=0, win_rate=0.0, total_pnl=0.0, avg_pnl=0.0,
-                    max_profit=0.0, max_loss=0.0, profit_factor=0.0, sharpe_ratio=0.0,
-                    max_drawdown=0.0, trades_per_hour=0.0, avg_trade_duration=0.0,
-                    best_symbol=None, worst_symbol=None, targets_status={}
+                    total_trades=0,
+                    win_rate=0.0,
+                    total_pnl=0.0,
+                    avg_pnl=0.0,
+                    max_profit=0.0,
+                    max_loss=0.0,
+                    profit_factor=0.0,
+                    sharpe_ratio=0.0,
+                    max_drawdown=0.0,
+                    trades_per_hour=0.0,
+                    avg_trade_duration=0.0,
+                    best_symbol=None,
+                    worst_symbol=None,
+                    targets_status={},
                 )
 
             # Анализируем сделки
@@ -153,12 +168,15 @@ class MetricsAggregator:
             # Profit factor
             profits = sum(pnl for pnl in pnls if pnl > 0)
             losses = abs(sum(pnl for pnl in pnls if pnl < 0))
-            profit_factor = profits / losses if losses > 0 else float('inf') if profits > 0 else 0.0
+            profit_factor = profits / losses if losses > 0 else float("inf") if profits > 0 else 0.0
 
             # Sharpe ratio (упрощенный)
             if len(pnls) > 1:
                 import statistics
-                sharpe_ratio = (avg_pnl / statistics.stdev(pnls)) if statistics.stdev(pnls) > 0 else 0.0
+
+                sharpe_ratio = (
+                    (avg_pnl / statistics.stdev(pnls)) if statistics.stdev(pnls) > 0 else 0.0
+                )
             else:
                 sharpe_ratio = 0.0
 
@@ -208,19 +226,31 @@ class MetricsAggregator:
                 avg_trade_duration=avg_trade_duration,
                 best_symbol=best_symbol,
                 worst_symbol=worst_symbol,
-                targets_status={}
+                targets_status={},
             )
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to get trading metrics: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to get trading metrics: {e}"
+            )
             return TradingMetrics(
-                total_trades=0, win_rate=0.0, total_pnl=0.0, avg_pnl=0.0,
-                max_profit=0.0, max_loss=0.0, profit_factor=0.0, sharpe_ratio=0.0,
-                max_drawdown=0.0, trades_per_hour=0.0, avg_trade_duration=0.0,
-                best_symbol=None, worst_symbol=None, targets_status={}
+                total_trades=0,
+                win_rate=0.0,
+                total_pnl=0.0,
+                avg_pnl=0.0,
+                max_profit=0.0,
+                max_loss=0.0,
+                profit_factor=0.0,
+                sharpe_ratio=0.0,
+                max_drawdown=0.0,
+                trades_per_hour=0.0,
+                avg_trade_duration=0.0,
+                best_symbol=None,
+                worst_symbol=None,
+                targets_status={},
             )
 
-    async def get_symbol_performance(self, symbol: str, period: str = "1d") -> Dict[str, Any]:
+    async def get_symbol_performance(self, symbol: str, period: str = "1d") -> dict[str, Any]:
         """Получает производительность по символу"""
         try:
             # Определяем временной интервал
@@ -241,29 +271,32 @@ class MetricsAggregator:
             cursor = conn.cursor()
 
             # Получаем сделки по символу
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT side, entry_price, exit_price, qty, pnl,
                        entry_time, exit_time, strategy, win
                 FROM trades
                 WHERE symbol = ? AND entry_time >= ? AND entry_time <= ?
                 ORDER BY entry_time DESC
-            """, (symbol, start_time.timestamp(), end_time.timestamp()))
+            """,
+                (symbol, start_time.timestamp(), end_time.timestamp()),
+            )
 
             trades = cursor.fetchall()
             conn.close()
 
             if not trades:
                 return {
-                    'total_trades': 0,
-                    'win_rate': 0.0,
-                    'total_pnl': 0.0,
-                    'avg_pnl': 0.0,
-                    'max_profit': 0.0,
-                    'max_loss': 0.0,
-                    'profit_factor': 0.0,
-                    'avg_trade_duration': 0.0,
-                    'best_strategy': None,
-                    'worst_strategy': None
+                    "total_trades": 0,
+                    "win_rate": 0.0,
+                    "total_pnl": 0.0,
+                    "avg_pnl": 0.0,
+                    "max_profit": 0.0,
+                    "max_loss": 0.0,
+                    "profit_factor": 0.0,
+                    "avg_trade_duration": 0.0,
+                    "best_strategy": None,
+                    "worst_strategy": None,
                 }
 
             # Анализируем сделки
@@ -280,7 +313,7 @@ class MetricsAggregator:
             # Profit factor
             profits = sum(pnl for pnl in pnls if pnl > 0)
             losses = abs(sum(pnl for pnl in pnls if pnl < 0))
-            profit_factor = profits / losses if losses > 0 else float('inf') if profits > 0 else 0.0
+            profit_factor = profits / losses if losses > 0 else float("inf") if profits > 0 else 0.0
 
             # Average trade duration
             durations = []
@@ -308,34 +341,36 @@ class MetricsAggregator:
                 worst_strategy = None
 
             return {
-                'total_trades': total_trades,
-                'win_rate': win_rate,
-                'total_pnl': total_pnl,
-                'avg_pnl': avg_pnl,
-                'max_profit': max_profit,
-                'max_loss': max_loss,
-                'profit_factor': profit_factor,
-                'avg_trade_duration': avg_trade_duration,
-                'best_strategy': best_strategy,
-                'worst_strategy': worst_strategy
+                "total_trades": total_trades,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "avg_pnl": avg_pnl,
+                "max_profit": max_profit,
+                "max_loss": max_loss,
+                "profit_factor": profit_factor,
+                "avg_trade_duration": avg_trade_duration,
+                "best_strategy": best_strategy,
+                "worst_strategy": worst_strategy,
             }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to get symbol performance: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to get symbol performance: {e}"
+            )
             return {
-                'total_trades': 0,
-                'win_rate': 0.0,
-                'total_pnl': 0.0,
-                'avg_pnl': 0.0,
-                'max_profit': 0.0,
-                'max_loss': 0.0,
-                'profit_factor': 0.0,
-                'avg_trade_duration': 0.0,
-                'best_strategy': None,
-                'worst_strategy': None
+                "total_trades": 0,
+                "win_rate": 0.0,
+                "total_pnl": 0.0,
+                "avg_pnl": 0.0,
+                "max_profit": 0.0,
+                "max_loss": 0.0,
+                "profit_factor": 0.0,
+                "avg_trade_duration": 0.0,
+                "best_strategy": None,
+                "worst_strategy": None,
             }
 
-    async def get_detailed_analytics(self, period: str = "1d") -> Dict[str, Any]:
+    async def get_detailed_analytics(self, period: str = "1d") -> dict[str, Any]:
         """Получает детальную аналитику производительности"""
         try:
             # Получаем базовые метрики
@@ -357,26 +392,28 @@ class MetricsAggregator:
             trend_analysis = await self._analyze_performance_trends(period)
 
             return {
-                'basic_metrics': {
-                    'total_trades': metrics.total_trades,
-                    'win_rate': metrics.win_rate,
-                    'total_pnl': metrics.total_pnl,
-                    'profit_factor': metrics.profit_factor,
-                    'sharpe_ratio': metrics.sharpe_ratio,
-                    'max_drawdown': metrics.max_drawdown
+                "basic_metrics": {
+                    "total_trades": metrics.total_trades,
+                    "win_rate": metrics.win_rate,
+                    "total_pnl": metrics.total_pnl,
+                    "profit_factor": metrics.profit_factor,
+                    "sharpe_ratio": metrics.sharpe_ratio,
+                    "max_drawdown": metrics.max_drawdown,
                 },
-                'time_analysis': time_analysis,
-                'strategy_correlation': strategy_correlation,
-                'symbol_analysis': symbol_analysis,
-                'risk_analysis': risk_analysis,
-                'trend_analysis': trend_analysis
+                "time_analysis": time_analysis,
+                "strategy_correlation": strategy_correlation,
+                "symbol_analysis": symbol_analysis,
+                "risk_analysis": risk_analysis,
+                "trend_analysis": trend_analysis,
             }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to get detailed analytics: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to get detailed analytics: {e}"
+            )
             return {}
 
-    async def _analyze_time_periods(self, period: str) -> Dict[str, Any]:
+    async def _analyze_time_periods(self, period: str) -> dict[str, Any]:
         """Анализирует производительность по временным периодам"""
         try:
             # Определяем временной интервал
@@ -407,36 +444,49 @@ class MetricsAggregator:
                     interval_start = start_time + timedelta(days=i)
                     interval_end = interval_start + timedelta(days=1)
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT COUNT(*), SUM(pnl), AVG(pnl), SUM(CASE WHEN win THEN 1 ELSE 0 END)
                     FROM trades
                     WHERE entry_time >= ? AND entry_time < ?
-                """, (interval_start.timestamp(), interval_end.timestamp()))
+                """,
+                    (interval_start.timestamp(), interval_end.timestamp()),
+                )
 
                 result = cursor.fetchone()
                 if result[0] > 0:  # Есть сделки
-                    interval_data.append({
-                        'period': interval_start.strftime('%H:%M' if period == "1d" else '%Y-%m-%d'),
-                        'trades': result[0],
-                        'total_pnl': result[1] or 0.0,
-                        'avg_pnl': result[2] or 0.0,
-                        'wins': result[3] or 0,
-                        'win_rate': (result[3] or 0) / result[0] if result[0] > 0 else 0.0
-                    })
+                    interval_data.append(
+                        {
+                            "period": interval_start.strftime(
+                                "%H:%M" if period == "1d" else "%Y-%m-%d"
+                            ),
+                            "trades": result[0],
+                            "total_pnl": result[1] or 0.0,
+                            "avg_pnl": result[2] or 0.0,
+                            "wins": result[3] or 0,
+                            "win_rate": (result[3] or 0) / result[0] if result[0] > 0 else 0.0,
+                        }
+                    )
 
             conn.close()
 
             return {
-                'intervals': interval_data,
-                'best_period': max(interval_data, key=lambda x: x['total_pnl']) if interval_data else None,
-                'worst_period': min(interval_data, key=lambda x: x['total_pnl']) if interval_data else None
+                "intervals": interval_data,
+                "best_period": max(interval_data, key=lambda x: x["total_pnl"])
+                if interval_data
+                else None,
+                "worst_period": min(interval_data, key=lambda x: x["total_pnl"])
+                if interval_data
+                else None,
             }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to analyze time periods: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to analyze time periods: {e}"
+            )
             return {}
 
-    async def _analyze_strategy_correlation(self, period: str) -> Dict[str, Any]:
+    async def _analyze_strategy_correlation(self, period: str) -> dict[str, Any]:
         """Анализирует корреляцию между стратегиями"""
         try:
             # Определяем временной интервал
@@ -455,13 +505,16 @@ class MetricsAggregator:
             cursor = conn.cursor()
 
             # Получаем данные по стратегиям
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT strategy, COUNT(*), SUM(pnl), AVG(pnl),
                        SUM(CASE WHEN win THEN 1 ELSE 0 END)
                 FROM trades
                 WHERE entry_time >= ? AND entry_time <= ?
                 GROUP BY strategy
-            """, (start_time.timestamp(), end_time.timestamp()))
+            """,
+                (start_time.timestamp(), end_time.timestamp()),
+            )
 
             strategies = cursor.fetchall()
             conn.close()
@@ -475,30 +528,36 @@ class MetricsAggregator:
                 strategy_name, trades_count, total_pnl, avg_pnl, wins = strategy
                 win_rate = wins / trades_count if trades_count > 0 else 0.0
 
-                strategy_analysis.append({
-                    'strategy': strategy_name,
-                    'trades': trades_count,
-                    'total_pnl': total_pnl or 0.0,
-                    'avg_pnl': avg_pnl or 0.0,
-                    'win_rate': win_rate,
-                    'profit_per_trade': (total_pnl or 0.0) / trades_count if trades_count > 0 else 0.0
-                })
+                strategy_analysis.append(
+                    {
+                        "strategy": strategy_name,
+                        "trades": trades_count,
+                        "total_pnl": total_pnl or 0.0,
+                        "avg_pnl": avg_pnl or 0.0,
+                        "win_rate": win_rate,
+                        "profit_per_trade": (total_pnl or 0.0) / trades_count
+                        if trades_count > 0
+                        else 0.0,
+                    }
+                )
 
             # Сортируем по прибыльности
-            strategy_analysis.sort(key=lambda x: x['total_pnl'], reverse=True)
+            strategy_analysis.sort(key=lambda x: x["total_pnl"], reverse=True)
 
             return {
-                'strategies': strategy_analysis,
-                'best_strategy': strategy_analysis[0] if strategy_analysis else None,
-                'worst_strategy': strategy_analysis[-1] if strategy_analysis else None,
-                'total_strategies': len(strategy_analysis)
+                "strategies": strategy_analysis,
+                "best_strategy": strategy_analysis[0] if strategy_analysis else None,
+                "worst_strategy": strategy_analysis[-1] if strategy_analysis else None,
+                "total_strategies": len(strategy_analysis),
             }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to analyze strategy correlation: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to analyze strategy correlation: {e}"
+            )
             return {}
 
-    async def _analyze_symbols_performance(self, period: str) -> Dict[str, Any]:
+    async def _analyze_symbols_performance(self, period: str) -> dict[str, Any]:
         """Анализирует производительность по символам"""
         try:
             # Определяем временной интервал
@@ -517,13 +576,16 @@ class MetricsAggregator:
             cursor = conn.cursor()
 
             # Получаем данные по символам
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT symbol, COUNT(*), SUM(pnl), AVG(pnl),
                        SUM(CASE WHEN win THEN 1 ELSE 0 END)
                 FROM trades
                 WHERE entry_time >= ? AND entry_time <= ?
                 GROUP BY symbol
-            """, (start_time.timestamp(), end_time.timestamp()))
+            """,
+                (start_time.timestamp(), end_time.timestamp()),
+            )
 
             symbols = cursor.fetchall()
             conn.close()
@@ -537,30 +599,36 @@ class MetricsAggregator:
                 symbol_name, trades_count, total_pnl, avg_pnl, wins = symbol
                 win_rate = wins / trades_count if trades_count > 0 else 0.0
 
-                symbol_analysis.append({
-                    'symbol': symbol_name,
-                    'trades': trades_count,
-                    'total_pnl': total_pnl or 0.0,
-                    'avg_pnl': avg_pnl or 0.0,
-                    'win_rate': win_rate,
-                    'profit_per_trade': (total_pnl or 0.0) / trades_count if trades_count > 0 else 0.0
-                })
+                symbol_analysis.append(
+                    {
+                        "symbol": symbol_name,
+                        "trades": trades_count,
+                        "total_pnl": total_pnl or 0.0,
+                        "avg_pnl": avg_pnl or 0.0,
+                        "win_rate": win_rate,
+                        "profit_per_trade": (total_pnl or 0.0) / trades_count
+                        if trades_count > 0
+                        else 0.0,
+                    }
+                )
 
             # Сортируем по прибыльности
-            symbol_analysis.sort(key=lambda x: x['total_pnl'], reverse=True)
+            symbol_analysis.sort(key=lambda x: x["total_pnl"], reverse=True)
 
             return {
-                'symbols': symbol_analysis,
-                'best_symbol': symbol_analysis[0] if symbol_analysis else None,
-                'worst_symbol': symbol_analysis[-1] if symbol_analysis else None,
-                'total_symbols': len(symbol_analysis)
+                "symbols": symbol_analysis,
+                "best_symbol": symbol_analysis[0] if symbol_analysis else None,
+                "worst_symbol": symbol_analysis[-1] if symbol_analysis else None,
+                "total_symbols": len(symbol_analysis),
             }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to analyze symbols performance: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to analyze symbols performance: {e}"
+            )
             return {}
 
-    async def _analyze_risk_metrics(self, period: str) -> Dict[str, Any]:
+    async def _analyze_risk_metrics(self, period: str) -> dict[str, Any]:
         """Анализирует метрики риска"""
         try:
             # Определяем временной интервал
@@ -579,12 +647,15 @@ class MetricsAggregator:
             cursor = conn.cursor()
 
             # Получаем все сделки за период
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT pnl, entry_time, exit_time
                 FROM trades
                 WHERE entry_time >= ? AND entry_time <= ?
                 ORDER BY entry_time
-            """, (start_time.timestamp(), end_time.timestamp()))
+            """,
+                (start_time.timestamp(), end_time.timestamp()),
+            )
 
             trades = cursor.fetchall()
             conn.close()
@@ -597,6 +668,7 @@ class MetricsAggregator:
 
             # Value at Risk (VaR) - 95% confidence
             import statistics
+
             if len(pnls) > 1:
                 mean_pnl = statistics.mean(pnls)
                 std_pnl = statistics.stdev(pnls)
@@ -617,24 +689,36 @@ class MetricsAggregator:
             # Risk-adjusted return
             total_pnl = sum(pnls)
             max_loss = min(pnls) if pnls else 0.0
-            risk_adjusted_return = total_pnl / abs(max_loss) if max_loss < 0 else float('inf') if total_pnl > 0 else 0.0
+            risk_adjusted_return = (
+                total_pnl / abs(max_loss)
+                if max_loss < 0
+                else float("inf")
+                if total_pnl > 0
+                else 0.0
+            )
 
             return {
-                'var_95': var_95,
-                'max_consecutive_losses': max_consecutive_losses,
-                'risk_adjusted_return': risk_adjusted_return,
-                'total_trades': len(trades),
-                'loss_trades': len([p for p in pnls if p < 0]),
-                'profit_trades': len([p for p in pnls if p > 0]),
-                'avg_loss': statistics.mean([p for p in pnls if p < 0]) if any(p < 0 for p in pnls) else 0.0,
-                'avg_profit': statistics.mean([p for p in pnls if p > 0]) if any(p > 0 for p in pnls) else 0.0
+                "var_95": var_95,
+                "max_consecutive_losses": max_consecutive_losses,
+                "risk_adjusted_return": risk_adjusted_return,
+                "total_trades": len(trades),
+                "loss_trades": len([p for p in pnls if p < 0]),
+                "profit_trades": len([p for p in pnls if p > 0]),
+                "avg_loss": statistics.mean([p for p in pnls if p < 0])
+                if any(p < 0 for p in pnls)
+                else 0.0,
+                "avg_profit": statistics.mean([p for p in pnls if p > 0])
+                if any(p > 0 for p in pnls)
+                else 0.0,
             }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to analyze risk metrics: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to analyze risk metrics: {e}"
+            )
             return {}
 
-    async def _analyze_performance_trends(self, period: str) -> Dict[str, Any]:
+    async def _analyze_performance_trends(self, period: str) -> dict[str, Any]:
         """Анализирует тренды производительности"""
         try:
             # Определяем временной интервал
@@ -665,11 +749,14 @@ class MetricsAggregator:
                     interval_start = start_time + timedelta(days=i)
                     interval_end = interval_start + timedelta(days=1)
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT SUM(pnl)
                     FROM trades
                     WHERE entry_time >= ? AND entry_time < ?
-                """, (interval_start.timestamp(), interval_end.timestamp()))
+                """,
+                    (interval_start.timestamp(), interval_end.timestamp()),
+                )
 
                 result = cursor.fetchone()
                 interval_pnls.append(result[0] or 0.0)
@@ -689,7 +776,11 @@ class MetricsAggregator:
                 sum_xy = sum(x[i] * y[i] for i in range(n))
                 sum_x2 = sum(x[i] ** 2 for i in range(n))
 
-                slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x ** 2) if (n * sum_x2 - sum_x ** 2) != 0 else 0
+                slope = (
+                    (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x**2)
+                    if (n * sum_x2 - sum_x**2) != 0
+                    else 0
+                )
                 intercept = (sum_y - slope * sum_x) / n
 
                 # Определяем направление тренда
@@ -702,36 +793,39 @@ class MetricsAggregator:
 
                 # Волатильность
                 import statistics
+
                 volatility = statistics.stdev(interval_pnls) if len(interval_pnls) > 1 else 0.0
 
                 return {
-                    'trend': trend,
-                    'slope': slope,
-                    'volatility': volatility,
-                    'consistency': 1 - (volatility / abs(sum_y)) if sum_y != 0 else 0.0,
-                    'intervals': interval_pnls
+                    "trend": trend,
+                    "slope": slope,
+                    "volatility": volatility,
+                    "consistency": 1 - (volatility / abs(sum_y)) if sum_y != 0 else 0.0,
+                    "intervals": interval_pnls,
                 }
             else:
                 return {
-                    'trend': "INSUFFICIENT_DATA",
-                    'slope': 0.0,
-                    'volatility': 0.0,
-                    'consistency': 0.0,
-                    'intervals': interval_pnls
+                    "trend": "INSUFFICIENT_DATA",
+                    "slope": 0.0,
+                    "volatility": 0.0,
+                    "consistency": 0.0,
+                    "intervals": interval_pnls,
                 }
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to analyze performance trends: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to analyze performance trends: {e}"
+            )
             return {}
 
-    async def _get_targets_status(self, period: str) -> Dict[str, Dict[str, Any]]:
+    async def _get_targets_status(self, period: str) -> dict[str, dict[str, Any]]:
         """Получает статус целей"""
         try:
             # Получаем цели из конфигурации
             targets = {
-                'hourly_profit': self.config.get('profit_target_hourly', 0.7),
-                'daily_profit': self.config.get('profit_target_daily', 16.8),
-                'max_daily_loss': self.config.get('max_daily_loss', 8.0)
+                "hourly_profit": self.config.get("profit_target_hourly", 0.7),
+                "daily_profit": self.config.get("profit_target_daily", 16.8),
+                "max_daily_loss": self.config.get("max_daily_loss", 8.0),
             }
 
             # Получаем метрики за период
@@ -754,38 +848,46 @@ class MetricsAggregator:
 
             # Почасовая прибыль
             hourly_profit = metrics.total_pnl / period_hours if period_hours > 0 else 0.0
-            targets_status['hourly_profit'] = {
-                'target': targets['hourly_profit'],
-                'actual': hourly_profit,
-                'achieved': hourly_profit >= targets['hourly_profit'],
-                'percentage': (hourly_profit / targets['hourly_profit']) * 100 if targets['hourly_profit'] > 0 else 0.0
+            targets_status["hourly_profit"] = {
+                "target": targets["hourly_profit"],
+                "actual": hourly_profit,
+                "achieved": hourly_profit >= targets["hourly_profit"],
+                "percentage": (hourly_profit / targets["hourly_profit"]) * 100
+                if targets["hourly_profit"] > 0
+                else 0.0,
             }
 
             # Дневная прибыль
             daily_profit = metrics.total_pnl / (period_hours / 24) if period_hours > 0 else 0.0
-            targets_status['daily_profit'] = {
-                'target': targets['daily_profit'],
-                'actual': daily_profit,
-                'achieved': daily_profit >= targets['daily_profit'],
-                'percentage': (daily_profit / targets['daily_profit']) * 100 if targets['daily_profit'] > 0 else 0.0
+            targets_status["daily_profit"] = {
+                "target": targets["daily_profit"],
+                "actual": daily_profit,
+                "achieved": daily_profit >= targets["daily_profit"],
+                "percentage": (daily_profit / targets["daily_profit"]) * 100
+                if targets["daily_profit"] > 0
+                else 0.0,
             }
 
             # Максимальная дневная просадка
             max_daily_loss = abs(metrics.max_loss) if metrics.max_loss < 0 else 0.0
-            targets_status['max_daily_loss'] = {
-                'target': targets['max_daily_loss'],
-                'actual': max_daily_loss,
-                'achieved': max_daily_loss <= targets['max_daily_loss'],
-                'percentage': (max_daily_loss / targets['max_daily_loss']) * 100 if targets['max_daily_loss'] > 0 else 0.0
+            targets_status["max_daily_loss"] = {
+                "target": targets["max_daily_loss"],
+                "actual": max_daily_loss,
+                "achieved": max_daily_loss <= targets["max_daily_loss"],
+                "percentage": (max_daily_loss / targets["max_daily_loss"]) * 100
+                if targets["max_daily_loss"] > 0
+                else 0.0,
             }
 
             return targets_status
 
         except Exception as e:
-            self.logger.log_event("METRICS_AGGREGATOR", "ERROR", f"Failed to get targets status: {e}")
+            self.logger.log_event(
+                "METRICS_AGGREGATOR", "ERROR", f"Failed to get targets status: {e}"
+            )
             return {}
 
-    def _calculate_max_drawdown(self, pnls: List[float]) -> float:
+    def _calculate_max_drawdown(self, pnls: list[float]) -> float:
         """Рассчитывает максимальную просадку"""
         if not pnls:
             return 0.0

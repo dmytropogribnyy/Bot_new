@@ -5,8 +5,6 @@ Enhanced WebSocket Manager для BinanceBot_V2
 """
 
 # Import Windows compatibility error handling
-import core.windows_compatibility
-
 import asyncio
 import json
 import time
@@ -16,6 +14,7 @@ from typing import Any
 
 import websockets
 
+import core.windows_compatibility
 from core.unified_logger import UnifiedLogger
 
 
@@ -57,12 +56,12 @@ class WebSocketManager:
 
         # Performance metrics - улучшенные метрики
         self.performance_metrics = {
-            'messages_per_second': 0,
-            'average_latency': 0,
-            'connection_uptime': 0,
-            'reconnect_frequency': 0,
-            'total_messages': 0,
-            'uptime_seconds': 0
+            "messages_per_second": 0,
+            "average_latency": 0,
+            "connection_uptime": 0,
+            "reconnect_frequency": 0,
+            "total_messages": 0,
+            "uptime_seconds": 0,
         }
 
         # Connection health monitoring
@@ -88,7 +87,7 @@ class WebSocketManager:
                 asyncio.create_task(self._maintain_user_stream()),
                 asyncio.create_task(self._performance_monitor()),
                 asyncio.create_task(self._heartbeat_monitor()),
-                asyncio.create_task(self._connection_health_monitor())
+                asyncio.create_task(self._connection_health_monitor()),
             ]
 
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -103,16 +102,20 @@ class WebSocketManager:
             # Валидация символов перед подключением
             valid_symbols = await self._validate_websocket_symbols(symbols)
             if not valid_symbols:
-                self.logger.log_event("WEBSOCKET", "WARNING", "No valid symbols for WebSocket subscription")
+                self.logger.log_event(
+                    "WEBSOCKET", "WARNING", "No valid symbols for WebSocket subscription"
+                )
                 return
 
             # Подготавливаем символы для WebSocket (lowercase, без / и :USDC)
-            streams = [f"{s.replace('/', '').replace(':USDC', '').lower()}@ticker" for s in valid_symbols]
+            streams = [
+                f"{s.replace('/', '').replace(':USDC', '').lower()}@ticker" for s in valid_symbols
+            ]
 
             # Ограничиваем количество символов чтобы избежать timeout
             if len(streams) > 5:
                 streams = streams[:5]
-                self.logger.log_event("WEBSOCKET", "INFO", f"Limited to 5 symbols to avoid timeout")
+                self.logger.log_event("WEBSOCKET", "INFO", "Limited to 5 symbols to avoid timeout")
 
             # Используем combined stream для всех символов
             stream_query = "/".join(streams)
@@ -120,28 +123,30 @@ class WebSocketManager:
 
             self.logger.log_event("WEBSOCKET", "INFO", f"🔌 Connecting to combined stream: {url}")
 
-                        # Добавляем retry логику для WebSocket
+            # Добавляем retry логику для WebSocket
             max_retries = 3
             retry_delay = 5
-            
+
             for attempt in range(max_retries):
                 try:
                     async with websockets.connect(
                         url,
-                        ping_interval=30,     # ping каждые 30 секунд
-                        ping_timeout=10,      # pong в течение 10 секунд
-                        open_timeout=5,       # уменьшаем timeout еще больше
-                        max_size=2**20
+                        ping_interval=30,  # ping каждые 30 секунд
+                        ping_timeout=10,  # pong в течение 10 секунд
+                        open_timeout=5,  # уменьшаем timeout еще больше
+                        max_size=2**20,
                     ) as ws:
-                        self.connections['combined'] = {
-                            'websocket': ws,
-                            'streams': streams,
-                            'last_message': time.time(),
-                            'message_count': 0,
-                            'is_healthy': True
+                        self.connections["combined"] = {
+                            "websocket": ws,
+                            "streams": streams,
+                            "last_message": time.time(),
+                            "message_count": 0,
+                            "is_healthy": True,
                         }
 
-                        self.logger.log_event("WEBSOCKET", "INFO", f"✅ WebSocket connected successfully")
+                        self.logger.log_event(
+                            "WEBSOCKET", "INFO", "✅ WebSocket connected successfully"
+                        )
 
                         async for raw_message in ws:
                             try:
@@ -150,26 +155,40 @@ class WebSocketManager:
                                 payload = data.get("data", data)
                                 await self._process_market_message("combined", payload)
                             except Exception as e:
-                                self.logger.log_event("WEBSOCKET", "ERROR", f"Failed to process message: {e}")
-                        
+                                self.logger.log_event(
+                                    "WEBSOCKET", "ERROR", f"Failed to process message: {e}"
+                                )
+
                         # Если дошли сюда, значит соединение закрылось
                         break
-                        
+
                 except Exception as e:
-                    self.logger.log_event("WEBSOCKET", "ERROR", f"WebSocket connection attempt {attempt + 1} failed: {e}")
+                    self.logger.log_event(
+                        "WEBSOCKET",
+                        "ERROR",
+                        f"WebSocket connection attempt {attempt + 1} failed: {e}",
+                    )
                     if attempt < max_retries - 1:
-                        self.logger.log_event("WEBSOCKET", "INFO", f"Retrying in {retry_delay} seconds...")
+                        self.logger.log_event(
+                            "WEBSOCKET", "INFO", f"Retrying in {retry_delay} seconds..."
+                        )
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
                     else:
-                        self.logger.log_event("WEBSOCKET", "WARNING", "All WebSocket connection attempts failed")
-                        self.logger.log_event("WEBSOCKET", "INFO", "WebSocket disabled - using REST API only")
+                        self.logger.log_event(
+                            "WEBSOCKET", "WARNING", "All WebSocket connection attempts failed"
+                        )
+                        self.logger.log_event(
+                            "WEBSOCKET", "INFO", "WebSocket disabled - using REST API only"
+                        )
                         # Продолжаем работу без WebSocket
                         await asyncio.sleep(30)
 
         except Exception as e:
             self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка подписки на рыночные данные: {e}")
-            self.logger.log_event("WEBSOCKET", "INFO", "WebSocket disabled for stability - using REST API only")
+            self.logger.log_event(
+                "WEBSOCKET", "INFO", "WebSocket disabled for stability - using REST API only"
+            )
 
     async def _connect_market_streams(self, symbol: str, streams: list[str]):
         """Подключение к рыночным потокам с оптимизацией"""
@@ -193,28 +212,32 @@ class WebSocketManager:
                 ping_timeout=30,
                 close_timeout=30,
                 max_size=2**20,  # 1MB max message size
-                compression=None,   # Отключаем сжатие для скорости
-                open_timeout=30    # Увеличиваем timeout подключения
+                compression=None,  # Отключаем сжатие для скорости
+                open_timeout=30,  # Увеличиваем timeout подключения
             )
 
             self.connections[symbol] = {
-                'websocket': websocket,
-                'streams': streams,
-                'last_message': time.time(),
-                'message_count': 0,
-                'connection_time': time.time(),
-                'is_healthy': True
+                "websocket": websocket,
+                "streams": streams,
+                "last_message": time.time(),
+                "message_count": 0,
+                "connection_time": time.time(),
+                "is_healthy": True,
             }
 
             # Запускаем обработчик сообщений
             asyncio.create_task(self._handle_market_messages(symbol, websocket))
 
-            self.logger.log_event("WEBSOCKET", "INFO", f"🔌 Подключение к {symbol}: {len(streams)} потоков")
+            self.logger.log_event(
+                "WEBSOCKET", "INFO", f"🔌 Подключение к {symbol}: {len(streams)} потоков"
+            )
 
         except Exception as e:
             self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка подключения к {symbol}: {e}")
             # Fallback - не блокируем работу бота из-за WebSocket
-            self.logger.log_event("WEBSOCKET", "INFO", f"Пропускаем WebSocket для {symbol}, продолжаем работу")
+            self.logger.log_event(
+                "WEBSOCKET", "INFO", f"Пропускаем WebSocket для {symbol}, продолжаем работу"
+            )
 
     async def _handle_market_messages(self, symbol: str, websocket):
         """Обработка рыночных сообщений с оптимизацией производительности"""
@@ -227,7 +250,7 @@ class WebSocketManager:
 
                     # Обновляем метрики производительности
                     self.message_count += 1
-                    self.performance_metrics['total_messages'] += 1
+                    self.performance_metrics["total_messages"] += 1
 
                     # Измеряем латентность обработки
                     processing_time = time.time() - start_time
@@ -239,52 +262,56 @@ class WebSocketManager:
 
                     # Обновляем статистику соединения
                     if symbol in self.connections:
-                        self.connections[symbol]['message_count'] += 1
-                        self.connections[symbol]['last_message'] = time.time()
-                        self.connections[symbol]['is_healthy'] = True
+                        self.connections[symbol]["message_count"] += 1
+                        self.connections[symbol]["last_message"] = time.time()
+                        self.connections[symbol]["is_healthy"] = True
 
                 except json.JSONDecodeError as e:
-                    self.logger.log_event("WEBSOCKET", "WARNING", f"Invalid JSON from {symbol}: {e}")
+                    self.logger.log_event(
+                        "WEBSOCKET", "WARNING", f"Invalid JSON from {symbol}: {e}"
+                    )
                 except Exception as e:
-                    self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка обработки сообщения {symbol}: {e}")
+                    self.logger.log_event(
+                        "WEBSOCKET", "ERROR", f"Ошибка обработки сообщения {symbol}: {e}"
+                    )
 
         except websockets.exceptions.ConnectionClosed:
             self.logger.log_event("WEBSOCKET", "WARNING", f"Соединение закрыто для {symbol}")
             if symbol in self.connections:
-                self.connections[symbol]['is_healthy'] = False
+                self.connections[symbol]["is_healthy"] = False
             await self._reconnect_stream(symbol)
         except Exception as e:
             self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка WebSocket для {symbol}: {e}")
             if symbol in self.connections:
-                self.connections[symbol]['is_healthy'] = False
+                self.connections[symbol]["is_healthy"] = False
             await self._reconnect_stream(symbol)
 
     async def _process_market_message(self, symbol: str, data: dict[str, Any]):
         """Обработка рыночных сообщений с кешированием"""
         try:
             # Обновляем кеш цен
-            if 'c' in data:  # ticker data
+            if "c" in data:  # ticker data
                 self.latest_prices[symbol] = {
-                    'price': float(data['c']),
-                    'volume': float(data['v']),
-                    'timestamp': time.time()
+                    "price": float(data["c"]),
+                    "volume": float(data["v"]),
+                    "timestamp": time.time(),
                 }
 
             # Обновляем order book
-            if 'b' in data and 'a' in data:  # depth data
+            if "b" in data and "a" in data:  # depth data
                 self.order_book_cache[symbol] = {
-                    'bids': data['b'][:10],  # Top 10 bids
-                    'asks': data['a'][:10],  # Top 10 asks
-                    'timestamp': time.time()
+                    "bids": data["b"][:10],  # Top 10 bids
+                    "asks": data["a"][:10],  # Top 10 asks
+                    "timestamp": time.time(),
                 }
 
             # Кешируем сделки
-            if 'p' in data and 'q' in data:  # trade data
+            if "p" in data and "q" in data:  # trade data
                 trade_info = {
-                    'symbol': symbol,
-                    'price': float(data['p']),
-                    'quantity': float(data['q']),
-                    'timestamp': time.time()
+                    "symbol": symbol,
+                    "price": float(data["p"]),
+                    "quantity": float(data["q"]),
+                    "timestamp": time.time(),
                 }
                 self.trade_cache.append(trade_info)
 
@@ -308,7 +335,9 @@ class WebSocketManager:
         except Exception as e:
             # Handle Windows compatibility errors
             if core.windows_compatibility.is_windows_compatibility_error(str(e)):
-                self.logger.log_event("WEBSOCKET", "INFO", "WebSocket отключен для Windows (compatibility)")
+                self.logger.log_event(
+                    "WEBSOCKET", "INFO", "WebSocket отключен для Windows (compatibility)"
+                )
             else:
                 self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка создания listen key: {e}")
 
@@ -356,13 +385,13 @@ class WebSocketManager:
     async def _handle_user_data(self, data: dict[str, Any]):
         """Обработка user data сообщений"""
         try:
-            event_type = data.get('e')
+            event_type = data.get("e")
 
-            if event_type == 'executionReport':
+            if event_type == "executionReport":
                 await self._handle_order_update(data)
-            elif event_type == 'ACCOUNT_UPDATE':
+            elif event_type == "ACCOUNT_UPDATE":
                 await self._handle_position_update(data)
-            elif event_type == 'outboundAccountPosition':
+            elif event_type == "outboundAccountPosition":
                 await self._handle_balance_update(data)
 
         except Exception as e:
@@ -371,25 +400,28 @@ class WebSocketManager:
     async def _handle_order_update(self, data: dict[str, Any]):
         """Обработка обновлений ордеров в реальном времени"""
         try:
-            order_status = data.get('X')
-            symbol = data.get('s')
-            side = data.get('S')
-            price = float(data.get('p', 0))
-            quantity = float(data.get('q', 0))
+            order_status = data.get("X")
+            symbol = data.get("s")
+            side = data.get("S")
+            price = float(data.get("p", 0))
+            quantity = float(data.get("q", 0))
 
-            if order_status == 'FILLED':
+            if order_status == "FILLED":
                 # Мгновенное уведомление о исполнении
                 if self.telegram:
-                    await self.telegram.send_trade_alert({
-                        "symbol": symbol,
-                        "side": side,
-                        "price": price,
-                        "quantity": quantity,
-                        "status": "FILLED"
-                    })
+                    await self.telegram.send_trade_alert(
+                        {
+                            "symbol": symbol,
+                            "side": side,
+                            "price": price,
+                            "quantity": quantity,
+                            "status": "FILLED",
+                        }
+                    )
 
-                self.logger.log_event("WEBSOCKET", "INFO",
-                    f"🎯 Ордер исполнен: {symbol} {side} {quantity} @ {price}")
+                self.logger.log_event(
+                    "WEBSOCKET", "INFO", f"🎯 Ордер исполнен: {symbol} {side} {quantity} @ {price}"
+                )
 
             # Вызываем пользовательские обработчики
             for handler in self.order_update_handlers:
@@ -404,15 +436,16 @@ class WebSocketManager:
     async def _handle_position_update(self, data: dict[str, Any]):
         """Обработка обновлений позиций"""
         try:
-            positions = data.get('a', {}).get('P', [])
+            positions = data.get("a", {}).get("P", [])
 
             for position in positions:
-                symbol = position.get('s')
-                size = float(position.get('pa', 0))
+                symbol = position.get("s")
+                size = float(position.get("pa", 0))
 
                 if abs(size) > 0:
-                    self.logger.log_event("WEBSOCKET", "INFO",
-                        f"📊 Позиция обновлена: {symbol} = {size}")
+                    self.logger.log_event(
+                        "WEBSOCKET", "INFO", f"📊 Позиция обновлена: {symbol} = {size}"
+                    )
 
             # Вызываем пользовательские обработчики
             for handler in self.position_update_handlers:
@@ -427,15 +460,16 @@ class WebSocketManager:
     async def _handle_balance_update(self, data: dict[str, Any]):
         """Обработка обновлений баланса"""
         try:
-            balances = data.get('B', [])
+            balances = data.get("B", [])
 
             for balance in balances:
-                asset = balance.get('a')
-                wallet_balance = float(balance.get('wb', 0))
+                asset = balance.get("a")
+                wallet_balance = float(balance.get("wb", 0))
 
-                if asset == 'USDC':
-                    self.logger.log_event("WEBSOCKET", "INFO",
-                        f"💰 Баланс обновлен: {wallet_balance:.2f} USDC")
+                if asset == "USDC":
+                    self.logger.log_event(
+                        "WEBSOCKET", "INFO", f"💰 Баланс обновлен: {wallet_balance:.2f} USDC"
+                    )
 
         except Exception as e:
             self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка обработки balance update: {e}")
@@ -446,13 +480,16 @@ class WebSocketManager:
             self.reconnect_count += 1
             delay = min(self.reconnect_delay * (2 ** (self.reconnect_count - 1)), 60)
 
-            self.logger.log_event("WEBSOCKET", "WARNING",
-                f"🔄 Переподключение к {symbol} через {delay}с (попытка {self.reconnect_count})")
+            self.logger.log_event(
+                "WEBSOCKET",
+                "WARNING",
+                f"🔄 Переподключение к {symbol} через {delay}с (попытка {self.reconnect_count})",
+            )
 
             await asyncio.sleep(delay)
 
             if symbol in self.connections:
-                streams = self.connections[symbol]['streams']
+                streams = self.connections[symbol]["streams"]
                 await self._connect_market_streams(symbol, streams)
 
         except Exception as e:
@@ -466,33 +503,42 @@ class WebSocketManager:
 
                 # Рассчитываем метрики производительности
                 if len(self.latency_tracker) > 0:
-                    self.performance_metrics['average_latency'] = sum(self.latency_tracker) / len(self.latency_tracker)
+                    self.performance_metrics["average_latency"] = sum(self.latency_tracker) / len(
+                        self.latency_tracker
+                    )
 
                 # Сообщений в секунду - улучшенный расчет
                 uptime = current_time - self.start_time
                 if uptime > 0:
-                    self.performance_metrics['messages_per_second'] = self.message_count / uptime
-                    self.performance_metrics['uptime_seconds'] = uptime
+                    self.performance_metrics["messages_per_second"] = self.message_count / uptime
+                    self.performance_metrics["uptime_seconds"] = uptime
 
                 # Время работы соединения
-                self.performance_metrics['connection_uptime'] = current_time - self.last_message_time
+                self.performance_metrics["connection_uptime"] = (
+                    current_time - self.last_message_time
+                )
 
                 # Частота переподключений
-                self.performance_metrics['reconnect_frequency'] = self.reconnect_count
+                self.performance_metrics["reconnect_frequency"] = self.reconnect_count
 
                 # Логируем метрики каждые 60 секунд
                 if int(current_time) % 60 == 0:
-                    self.logger.log_event("WEBSOCKET", "INFO",
+                    self.logger.log_event(
+                        "WEBSOCKET",
+                        "INFO",
                         f"📊 WebSocket метрики: "
                         f"Latency: {self.performance_metrics['average_latency']:.3f}ms, "
                         f"Msg/s: {self.performance_metrics['messages_per_second']:.1f}, "
                         f"Total: {self.performance_metrics['total_messages']}, "
-                        f"Reconnects: {self.performance_metrics['reconnect_frequency']}")
+                        f"Reconnects: {self.performance_metrics['reconnect_frequency']}",
+                    )
 
                 await asyncio.sleep(10)
 
             except Exception as e:
-                self.logger.log_event("WEBSOCKET", "ERROR", f"Ошибка мониторинга производительности: {e}")
+                self.logger.log_event(
+                    "WEBSOCKET", "ERROR", f"Ошибка мониторинга производительности: {e}"
+                )
                 await asyncio.sleep(10)
 
     async def _heartbeat_monitor(self):
@@ -503,12 +549,15 @@ class WebSocketManager:
 
                 # Проверяем все соединения
                 for symbol, connection in list(self.connections.items()):
-                    last_message = connection.get('last_message', 0)
+                    last_message = connection.get("last_message", 0)
 
                     # Если нет сообщений более 60 секунд, переподключаемся
                     if current_time - last_message > 60:
-                        self.logger.log_event("WEBSOCKET", "WARNING",
-                            f"💓 Heartbeat timeout для {symbol}, переподключение...")
+                        self.logger.log_event(
+                            "WEBSOCKET",
+                            "WARNING",
+                            f"💓 Heartbeat timeout для {symbol}, переподключение...",
+                        )
                         await self._reconnect_stream(symbol)
 
                 # Обновляем listen key каждые 30 минут
@@ -529,16 +578,16 @@ class WebSocketManager:
 
                 for symbol, connection in list(self.connections.items()):
                     # Проверяем здоровье соединения
-                    connection_time = connection.get('connection_time', 0)
-                    message_count = connection.get('message_count', 0)
-                    is_healthy = connection.get('is_healthy', True)
+                    connection_time = connection.get("connection_time", 0)
+                    message_count = connection.get("message_count", 0)
+                    is_healthy = connection.get("is_healthy", True)
 
                     # Обновляем статистику здоровья
                     self.connection_health[symbol] = {
-                        'uptime': current_time - connection_time,
-                        'message_count': message_count,
-                        'is_healthy': is_healthy,
-                        'last_check': current_time
+                        "uptime": current_time - connection_time,
+                        "message_count": message_count,
+                        "is_healthy": is_healthy,
+                        "last_check": current_time,
                     }
 
                 await asyncio.sleep(15)
@@ -562,7 +611,7 @@ class WebSocketManager:
     def get_latest_price(self, symbol: str) -> float | None:
         """Получение последней цены из кеша"""
         if symbol in self.latest_prices:
-            return self.latest_prices[symbol]['price']
+            return self.latest_prices[symbol]["price"]
         return None
 
     def get_order_book(self, symbol: str) -> dict[str, Any] | None:
@@ -587,11 +636,13 @@ class WebSocketManager:
                 valid_symbols = []
                 for symbol in symbols:
                     # Проверяем различные форматы символов
-                    symbol_clean = symbol.replace('/', '').replace(':USDC', '').upper()
+                    symbol_clean = symbol.replace("/", "").replace(":USDC", "").upper()
                     if symbol_clean in self._valid_symbols_cache:
                         valid_symbols.append(symbol)
                     else:
-                        self.logger.log_event("WEBSOCKET", "DEBUG", f"Invalid symbol filtered: {symbol}")
+                        self.logger.log_event(
+                            "WEBSOCKET", "DEBUG", f"Invalid symbol filtered: {symbol}"
+                        )
                 return valid_symbols
 
             # Обновляем кэш валидных символов
@@ -599,12 +650,16 @@ class WebSocketManager:
                 # Получаем информацию о futures символах через CCXT
                 markets = self.exchange.exchange.load_markets()
                 self._valid_symbols_cache = {
-                    market['id'].upper() 
-                    for market in markets.values() 
-                    if market.get('settle') == 'USDC' and market.get('active', True)
+                    market["id"].upper()
+                    for market in markets.values()
+                    if market.get("settle") == "USDC" and market.get("active", True)
                 }
                 self._symbols_cache_time = current_time
-                self.logger.log_event("WEBSOCKET", "INFO", f"Updated valid symbols cache: {len(self._valid_symbols_cache)} symbols")
+                self.logger.log_event(
+                    "WEBSOCKET",
+                    "INFO",
+                    f"Updated valid symbols cache: {len(self._valid_symbols_cache)} symbols",
+                )
             except Exception as e:
                 self.logger.log_event("WEBSOCKET", "ERROR", f"Failed to fetch exchange info: {e}")
                 # Используем базовые символы как fallback
@@ -615,26 +670,26 @@ class WebSocketManager:
             invalid_symbols = []
 
             for symbol in symbols:
-                symbol_clean = symbol.replace('/', '').replace(':USDC', '').upper()
+                symbol_clean = symbol.replace("/", "").replace(":USDC", "").upper()
 
                 # Специальная обработка для символов с числами
-                if symbol_clean.startswith('1000'):
+                if symbol_clean.startswith("1000"):
                     # 1000SHIB -> SHIBUSDC и т.д.
-                    symbol_check = symbol_clean[4:] + 'USDC'
-                elif symbol_clean == 'IP' or symbol_clean == 'IPUSDC':
+                    symbol_check = symbol_clean[4:] + "USDC"
+                elif symbol_clean == "IP" or symbol_clean == "IPUSDC":
                     # IP не существует на Binance Futures
                     invalid_symbols.append(symbol)
                     continue
-                elif symbol_clean == 'TRUMP' or symbol_clean == 'TRUMPUSDC':
+                elif symbol_clean == "TRUMP" or symbol_clean == "TRUMPUSDC":
                     # TRUMP может не существовать
                     invalid_symbols.append(symbol)
                     continue
-                elif symbol_clean == 'KAITO' or symbol_clean == 'KAITOUSDC':
+                elif symbol_clean == "KAITO" or symbol_clean == "KAITOUSDC":
                     # KAITO может не существовать
                     invalid_symbols.append(symbol)
                     continue
                 else:
-                    symbol_check = symbol_clean + 'USDC'
+                    symbol_check = symbol_clean + "USDC"
 
                 if symbol_check in self._valid_symbols_cache:
                     valid_symbols.append(symbol)
@@ -642,11 +697,15 @@ class WebSocketManager:
                     invalid_symbols.append(symbol)
 
             if invalid_symbols:
-                self.logger.log_event("WEBSOCKET", "WARNING", f"Invalid symbols removed: {invalid_symbols}")
+                self.logger.log_event(
+                    "WEBSOCKET", "WARNING", f"Invalid symbols removed: {invalid_symbols}"
+                )
 
             if not valid_symbols:
                 # Fallback к базовым символам
-                self.logger.log_event("WEBSOCKET", "WARNING", "No valid symbols found, using defaults")
+                self.logger.log_event(
+                    "WEBSOCKET", "WARNING", "No valid symbols found, using defaults"
+                )
                 return ["BTC/USDC:USDC", "ETH/USDC:USDC", "BNB/USDC:USDC"]
 
             return valid_symbols
@@ -663,17 +722,21 @@ class WebSocketManager:
 
             # Закрываем все соединения
             for symbol, connection in self.connections.items():
-                if 'websocket' in connection:
+                if "websocket" in connection:
                     try:
-                        await connection['websocket'].close()
+                        await connection["websocket"].close()
                     except Exception as e:
-                        self.logger.log_event("WEBSOCKET", "WARNING", f"Ошибка закрытия соединения {symbol}: {e}")
+                        self.logger.log_event(
+                            "WEBSOCKET", "WARNING", f"Ошибка закрытия соединения {symbol}: {e}"
+                        )
 
             if self.user_stream_ws:
                 try:
                     await self.user_stream_ws.close()
                 except Exception as e:
-                    self.logger.log_event("WEBSOCKET", "WARNING", f"Ошибка закрытия user stream: {e}")
+                    self.logger.log_event(
+                        "WEBSOCKET", "WARNING", f"Ошибка закрытия user stream: {e}"
+                    )
 
             self.logger.log_event("WEBSOCKET", "INFO", "🛑 WebSocket Manager остановлен")
 

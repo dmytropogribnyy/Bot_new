@@ -23,6 +23,7 @@ def run_trading_cycle(symbols, stop_event):
 
     from common.config_loader import AUTO_PROFIT_ENABLED, DRY_RUN
     from common.leverage_config import set_leverage_for_symbols
+
     from core.entry_logger import log_entry
     from core.notifier import notify_dry_trade
     from core.position_manager import get_max_positions
@@ -89,7 +90,10 @@ def run_trading_cycle(symbols, stop_event):
         positions = get_cached_positions()
         current_active_positions = sum(float(pos.get("contracts", 0)) > 0 for pos in positions)
         if current_active_positions >= max_positions:
-            log(f"[engine_controller] Max positions ({max_positions}) reached mid-cycle. Skipping {symbol}.", level="INFO")
+            log(
+                f"[engine_controller] Max positions ({max_positions}) reached mid-cycle. Skipping {symbol}.",
+                level="INFO",
+            )
             continue
 
         try:
@@ -201,7 +205,13 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
             trade_manager.update_trade(symbol, "exit_price", exit_price)
 
         # Запись результата
-        record_trade_result(symbol=symbol, side=trade.get("side", "buy"), entry_price=trade.get("entry", 0.0), exit_price=exit_price, result_type=reason)
+        record_trade_result(
+            symbol=symbol,
+            side=trade.get("side", "buy"),
+            entry_price=trade.get("entry", 0.0),
+            exit_price=exit_price,
+            result_type=reason,
+        )
 
     except Exception as e:
         log(f"[SoftExit] ❌ Failed to close {symbol}: {e}", level="ERROR")
@@ -210,10 +220,10 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
 
 
 def sync_open_positions():
-    import json
-    import time
     from datetime import datetime
+    import json
     from pathlib import Path
+    import time
 
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager
@@ -286,7 +296,9 @@ def sync_open_positions():
                     trade_manager.add_trade(symbol, trade_data)
                     save_active_trades()
 
-                    log(f"[SyncOpenPositions] ✅ Added {symbol} with qty={position_amt} and entry={entry}", level="INFO")
+                    log(
+                        f"[SyncOpenPositions] ✅ Added {symbol} with qty={position_amt} and entry={entry}", level="INFO"
+                    )
                     send_telegram_message(f"🚨 DESYNC FIXED: Added {symbol} to manager")
 
                     synced_count += 1
@@ -306,7 +318,7 @@ def sync_open_positions():
                         # Append to JSON list
                         try:
                             if debug_path.exists():
-                                with open(debug_path, "r") as f:
+                                with open(debug_path) as f:
                                     existing = json.load(f)
                                     if not isinstance(existing, list):
                                         existing = []
@@ -345,7 +357,10 @@ def sync_open_positions():
             save_active_trades()
         # ========== КОНЕЦ FIX #3 ==========
 
-        log(f"[SyncOpenPositions] ✅ Sync complete. Added: {synced_count}, Removed: {removed_count}, Active: {len(exchange_symbols)}", level="INFO")
+        log(
+            f"[SyncOpenPositions] ✅ Sync complete. Added: {synced_count}, Removed: {removed_count}, Active: {len(exchange_symbols)}",
+            level="INFO",
+        )
 
     except Exception as e:
         log(f"[Desync] Sync failed: {e}", level="WARNING")

@@ -10,8 +10,6 @@ from utils_logging import log
 
 
 def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_pct=None, tp2_pct=None, sl_pct=None):
-    import numpy as np
-
     from common.config_loader import (
         SL_PERCENT,
         TP1_PERCENT,
@@ -19,6 +17,7 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
         TP2_PERCENT,
         TP2_SHARE,
     )
+    import numpy as np
 
     direction = direction.upper()
     tp1_pct = TP1_PERCENT if tp1_pct is None else tp1_pct
@@ -47,7 +46,9 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
     except Exception as e:
         log(f"[TP] ATR fallback used due to error: {e}", level="WARNING")
 
-    sl_buffer = sl_pct * 0.1  # Можно сделать dynamic: sl_buffer = max(0.001, atr_value * 0.05 / entry_price) if atr_value else sl_pct * 0.1
+    sl_buffer = (
+        sl_pct * 0.1
+    )  # Можно сделать dynamic: sl_buffer = max(0.001, atr_value * 0.05 / entry_price) if atr_value else sl_pct * 0.1
 
     if direction == "BUY":
         tp1_price = entry_price * (1 + tp1_pct)
@@ -323,14 +324,20 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
         else:
             adjusted_sl = round(current_price * (1 + min_sl_gap_percent), 6)
             sl_price = max(adjusted_sl, old_sl * 1.005)
-        log(f"[SL ADJUST] {symbol}: SL={old_sl:.4f} → {sl_price:.4f} (gap was {sl_gap:.3%}, current={current_price:.4f})", level="WARNING")
+        log(
+            f"[SL ADJUST] {symbol}: SL={old_sl:.4f} → {sl_price:.4f} (gap was {sl_gap:.3%}, current={current_price:.4f})",
+            level="WARNING",
+        )
         send_telegram_message(f"⚠️ {symbol}: SL adjusted to avoid immediate trigger")
 
     # Проверка максимального расстояния SL
     actual_sl_percent = abs(sl_price - entry_price) / entry_price
     max_sl_percent = 0.05
     if actual_sl_percent > max_sl_percent:
-        log(f"[SL CHECK] {symbol}: SL distance {actual_sl_percent:.2%} exceeds max {max_sl_percent:.0%} — aborting entry", level="ERROR")
+        log(
+            f"[SL CHECK] {symbol}: SL distance {actual_sl_percent:.2%} exceeds max {max_sl_percent:.0%} — aborting entry",
+            level="ERROR",
+        )
         send_telegram_message(f"❌ {symbol}: SL too far from entry — closing position", force=True)
         close_real_trade(symbol, reason="sl_distance_exceeded")
         return False
@@ -471,7 +478,9 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
 
     # Проверка результатов
     if tp_total < min_qty:
-        log(f"[TP/SL] {symbol}: Total TP qty {tp_total:.6f} < min_qty {min_qty} — TP counted as failed", level="WARNING")
+        log(
+            f"[TP/SL] {symbol}: Total TP qty {tp_total:.6f} < min_qty {min_qty} — TP counted as failed", level="WARNING"
+        )
         send_telegram_message(f"⚠️ {symbol}: Total TP qty too small ({tp_total:.6f}) — check position or min_qty")
 
     if tp_total == 0.0:

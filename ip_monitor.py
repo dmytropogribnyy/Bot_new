@@ -1,15 +1,15 @@
 # ip_monitor.py
+from datetime import datetime, timedelta
 import os
 import time
-from datetime import datetime, timedelta
-
-import requests
 
 from common.config_loader import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
 )
+import requests
+
 from constants import IP_STATUS_FILE
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_logging import log
@@ -31,7 +31,7 @@ def get_current_ip():
 
 def read_last_ip():
     try:
-        with open(IP_STATUS_FILE, "r") as f:
+        with open(IP_STATUS_FILE) as f:
             ip = f.read().strip()
             log(f"Read last IP: {ip}", level="DEBUG")
             return ip
@@ -64,9 +64,21 @@ def check_ip_change(stop_callback):
         now = datetime.now().strftime("%d %b %Y, %H:%M")
 
         if router_reboot_mode["enabled"]:
-            msg = "⚠️ IP Address Changed\n" f"🕒 Time: {now} (Bratislava)\n" f"🌐 Old IP: {last_ip}\n" f"🌐 New IP: {current_ip}\n" "✅ No action needed (reboot mode active)."
+            msg = (
+                "⚠️ IP Address Changed\n"
+                f"🕒 Time: {now} (Bratislava)\n"
+                f"🌐 Old IP: {last_ip}\n"
+                f"🌐 New IP: {current_ip}\n"
+                "✅ No action needed (reboot mode active)."
+            )
         elif time.time() - boot_time <= 300:
-            msg = "⚠️ IP Address Changed\n" f"🕒 Time: {now} (Bratislava)\n" f"🌐 Old IP: {last_ip}\n" f"🌐 New IP: {current_ip}\n" "ℹ️ Ignored due to recent startup (within 5 minutes)."
+            msg = (
+                "⚠️ IP Address Changed\n"
+                f"🕒 Time: {now} (Bratislava)\n"
+                f"🌐 Old IP: {last_ip}\n"
+                f"🌐 New IP: {current_ip}\n"
+                "ℹ️ Ignored due to recent startup (within 5 minutes)."
+            )
             log("[IP Monitor] IP changed, but within 5 minutes of startup — ignoring", level="INFO")
         else:
             msg = (
@@ -167,7 +179,10 @@ def force_ip_check_now(stop_callback):
         elif time.time() - boot_time <= 300:
             result_msg += "\nℹ️ Ignored due to recent startup."
         else:
-            result_msg += "\n🚫 Bot will stop after closing orders.\n" f"ℹ️ Update Binance API IP whitelist with {current_ip or 'Unknown'}, then use /resume_after_ip."
+            result_msg += (
+                "\n🚫 Bot will stop after closing orders.\n"
+                f"ℹ️ Update Binance API IP whitelist with {current_ip or 'Unknown'}, then use /resume_after_ip."
+            )
     else:
         result_msg = "✅ No changes detected."
 

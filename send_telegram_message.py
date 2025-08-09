@@ -5,8 +5,8 @@ Send messages to your Telegram bot quickly
 """
 
 import asyncio
-import sys
 from pathlib import Path
+import sys
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -55,8 +55,8 @@ async def send_quick_message(message: str):
 async def main():
     """Main function"""
     if len(sys.argv) < 2:
-        print("Usage: python send_telegram_message.py \"Your message here\"")
-        print("Example: python send_telegram_message.py \"Hello from BinanceBot!\"")
+        print('Usage: python send_telegram_message.py "Your message here"')
+        print('Example: python send_telegram_message.py "Hello from BinanceBot!"')
         return
 
     message = sys.argv[1]

@@ -1,7 +1,7 @@
-import os
-import shutil
 from contextlib import contextmanager
 from datetime import datetime
+import os
+import shutil
 
 from colorama import Fore, Style, init
 from filelock import FileLock
@@ -117,7 +117,7 @@ def get_recent_logs(n=50):
     if not os.path.exists(LOG_FILE_PATH):
         log(f"Log file {LOG_FILE_PATH} not found.", level="WARNING")
         return "Log file not found."
-    with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
+    with open(LOG_FILE_PATH, encoding="utf-8") as f:
         lines = f.readlines()
         return "".join(lines[-n:])
 
@@ -178,9 +178,9 @@ def restore_config(backup_file=None):
 
 def notify_ip_change(old_ip, new_ip, timestamp, forced_stop=False):
     try:
-        message = f"⚠️ *IP Address Changed!*\n\n" f"🕒 `{timestamp}`\n" f"🌐 Old IP: `{old_ip}`\n" f"🌐 New IP: `{new_ip}`\n"
+        message = f"⚠️ *IP Address Changed!*\n\n🕒 `{timestamp}`\n🌐 Old IP: `{old_ip}`\n🌐 New IP: `{new_ip}`\n"
         if forced_stop:
-            message += "\n\n🚫 *Bot will stop after closing open orders.*\n" "You can cancel this with `/cancel_stop`."
+            message += "\n\n🚫 *Bot will stop after closing open orders.*\nYou can cancel this with `/cancel_stop`."
         send_telegram_message(message, force=True)
         log(f"IP changed from {old_ip} to {new_ip}", level="WARNING")
     except Exception as e:

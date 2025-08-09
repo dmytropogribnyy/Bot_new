@@ -7,7 +7,6 @@ Focuses on core trading functionality without complex components
 import asyncio
 import signal
 import sys
-from datetime import datetime
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
@@ -17,8 +16,8 @@ from core.symbol_manager import SymbolManager
 from core.trading_engine import TradingEngine
 from core.unified_logger import UnifiedLogger
 from core.websocket_manager import WebSocketManager
-from strategies.symbol_selector import SymbolSelector
 from strategies.strategy_manager import StrategyManager
+from strategies.symbol_selector import SymbolSelector
 
 
 async def main():
@@ -32,7 +31,9 @@ async def main():
 
     # Initialize logger
     logger = UnifiedLogger(config)
-    logger.log_event("MAIN", "INFO", f"🚀 Simplified Bot started with ${config.profit_target_hourly}/hour target")
+    logger.log_event(
+        "MAIN", "INFO", f"🚀 Simplified Bot started with ${config.profit_target_hourly}/hour target"
+    )
 
     try:
         # Initialize exchange client
@@ -68,8 +69,14 @@ async def main():
         # Initialize trading engine
         logger.log_event("MAIN", "INFO", "⚙️ Initializing trading engine...")
         trading_engine = TradingEngine(
-            config, exchange, symbol_selector, None, risk_manager, logger,
-            order_manager=order_manager, strategy_manager=strategy_manager
+            config,
+            exchange,
+            symbol_selector,
+            None,
+            risk_manager,
+            logger,
+            order_manager=order_manager,
+            strategy_manager=strategy_manager,
         )
 
         logger.log_event("MAIN", "INFO", "✅ Trading engine initialized")
@@ -96,6 +103,7 @@ async def graceful_shutdown():
     print("\n🛑 Graceful shutdown initiated...")
     # Здесь можно добавить закрытие сессий, сохранение состояния и т.д.
     print("✅ Bot shutdown complete")
+
 
 def signal_handler(signum, frame):
     """Handle shutdown signals"""

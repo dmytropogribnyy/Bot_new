@@ -156,19 +156,23 @@ class LeverageManager:
 
         return report
 
-    def batch_analyze_all_symbols(self, performance_data: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    def batch_analyze_all_symbols(
+        self, performance_data: dict[str, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Analyze all symbols and return suggestions"""
         suggestions = []
 
         for symbol, stats in performance_data.items():
             suggestion = self.analyze_performance_and_suggest(symbol, stats)
             if suggestion:
-                suggestions.append({
-                    "symbol": symbol,
-                    "current": self.get_optimal_leverage(symbol),
-                    "suggested": suggestion,
-                    "stats": stats
-                })
+                suggestions.append(
+                    {
+                        "symbol": symbol,
+                        "current": self.get_optimal_leverage(symbol),
+                        "suggested": suggestion,
+                        "stats": stats,
+                    }
+                )
 
         # Sort by potential improvement
         suggestions.sort(key=lambda x: abs(x["suggested"] - x["current"]), reverse=True)

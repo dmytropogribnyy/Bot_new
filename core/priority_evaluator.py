@@ -1,6 +1,6 @@
+from datetime import datetime
 import json
 import os
-from datetime import datetime
 
 from core.fail_stats_tracker import get_symbols_failure_count
 from core.tp_utils import get_tp_performance_stats
@@ -79,7 +79,7 @@ def gather_symbol_data():
 
         # Load active symbols from dynamic_symbols.json
         try:
-            with open(SYMBOLS_FILE, "r") as f:
+            with open(SYMBOLS_FILE) as f:
                 active_symbols = json.load(f)
         except Exception as e:
             log(f"Error loading symbols file: {e}", level="ERROR")
@@ -161,7 +161,7 @@ def generate_priority_pairs(threshold=0.65, ensure_minimum=True):
         for i, item in enumerate(scored_symbols[:10]):
             d = item["data"]
             log_message += (
-                f"\n  {i+1}. {item['symbol']}: Score={item['score']:.3f}, "
+                f"\n  {i + 1}. {item['symbol']}: Score={item['score']:.3f}, "
                 f"Signals={d.get('signal_activity', 0)}, "
                 f"TP1={d.get('tp_winrate', 0):.2f}, TP2={d.get('tp2_winrate', 0):.2f}, "
                 f"ATR%={d.get('atr_percent', 0):.3f}"
@@ -207,7 +207,7 @@ def load_priority_pairs():
     """Load priority pairs from JSON file with fallback to defaults."""
     try:
         if os.path.exists(PRIORITY_JSON_PATH):
-            with open(PRIORITY_JSON_PATH, "r") as f:
+            with open(PRIORITY_JSON_PATH) as f:
                 data = json.load(f)
             pairs = data.get("pairs", [])
             log(f"[PriorityEval] Loaded {len(pairs)} priority pairs from file", level="DEBUG")

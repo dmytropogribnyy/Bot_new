@@ -61,8 +61,9 @@ class IPMonitor:
             self.current_ip = new_ip
 
             if self.logger:
-                self.logger.log_event("IP_MONITOR", "WARNING",
-                    f"⚠️ IP адрес изменился: {old_ip} → {new_ip}")
+                self.logger.log_event(
+                    "IP_MONITOR", "WARNING", f"⚠️ IP адрес изменился: {old_ip} → {new_ip}"
+                )
 
             return True
 
@@ -81,8 +82,11 @@ class IPMonitor:
                 if ip_changed:
                     # Отправляем уведомление о смене IP
                     if self.logger:
-                        self.logger.log_event("IP_MONITOR", "CRITICAL",
-                            "🚨 ВНИМАНИЕ: IP адрес изменился! Проверьте безопасность!")
+                        self.logger.log_event(
+                            "IP_MONITOR",
+                            "CRITICAL",
+                            "🚨 ВНИМАНИЕ: IP адрес изменился! Проверьте безопасность!",
+                        )
 
                 # Ждем 5 минут до следующей проверки
                 await asyncio.sleep(self.check_interval)

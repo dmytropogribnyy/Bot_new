@@ -26,7 +26,7 @@ class StrategyPerformanceMonitor:
             "low_win_rate": 0.4,
             "negative_pnl": -0.001,
             "high_drawdown": -0.05,
-            "low_roi": -0.02
+            "low_roi": -0.02,
         }
 
     async def update_strategy_performance(self, strategy_name: str, trade_data: dict[str, Any]):
@@ -45,9 +45,9 @@ class StrategyPerformanceMonitor:
                         "best_trade": 0.0,
                         "worst_trade": 0.0,
                         "avg_trade_duration": 0.0,
-                        "sharpe_ratio": 0.0
+                        "sharpe_ratio": 0.0,
                     },
-                    "last_updated": datetime.utcnow()
+                    "last_updated": datetime.utcnow(),
                 }
 
             # Добавляем сделку
@@ -61,8 +61,9 @@ class StrategyPerformanceMonitor:
 
         except Exception as e:
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "ERROR",
-                f"Failed to update performance for {strategy_name}: {e}"
+                "PERFORMANCE_MONITOR",
+                "ERROR",
+                f"Failed to update performance for {strategy_name}: {e}",
             )
 
     async def _recalculate_metrics(self, strategy_name: str):
@@ -113,25 +114,28 @@ class StrategyPerformanceMonitor:
                 sharpe_ratio = 0.0
 
             # Обновляем метрики
-            data["metrics"].update({
-                "total_trades": total_trades,
-                "win_rate": win_rate,
-                "avg_pnl": avg_pnl,
-                "total_pnl": total_pnl,
-                "roi": roi,
-                "max_drawdown": max_drawdown,
-                "best_trade": best_trade,
-                "worst_trade": worst_trade,
-                "avg_trade_duration": avg_duration,
-                "sharpe_ratio": sharpe_ratio
-            })
+            data["metrics"].update(
+                {
+                    "total_trades": total_trades,
+                    "win_rate": win_rate,
+                    "avg_pnl": avg_pnl,
+                    "total_pnl": total_pnl,
+                    "roi": roi,
+                    "max_drawdown": max_drawdown,
+                    "best_trade": best_trade,
+                    "worst_trade": worst_trade,
+                    "avg_trade_duration": avg_duration,
+                    "sharpe_ratio": sharpe_ratio,
+                }
+            )
 
             data["last_updated"] = datetime.utcnow()
 
         except Exception as e:
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "ERROR",
-                f"Failed to recalculate metrics for {strategy_name}: {e}"
+                "PERFORMANCE_MONITOR",
+                "ERROR",
+                f"Failed to recalculate metrics for {strategy_name}: {e}",
             )
 
     async def _check_alerts(self, strategy_name: str):
@@ -162,19 +166,20 @@ class StrategyPerformanceMonitor:
 
             if alerts:
                 alert_message = f"⚠️ Strategy Alert - {strategy_name}:\n" + "\n".join(alerts)
-                self.alerts.append({
-                    "timestamp": datetime.utcnow(),
-                    "strategy": strategy_name,
-                    "alerts": alerts,
-                    "metrics": metrics
-                })
+                self.alerts.append(
+                    {
+                        "timestamp": datetime.utcnow(),
+                        "strategy": strategy_name,
+                        "alerts": alerts,
+                        "metrics": metrics,
+                    }
+                )
 
                 self.logger.log_event("PERFORMANCE_MONITOR", "WARNING", alert_message)
 
         except Exception as e:
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "ERROR",
-                f"Failed to check alerts for {strategy_name}: {e}"
+                "PERFORMANCE_MONITOR", "ERROR", f"Failed to check alerts for {strategy_name}: {e}"
             )
 
     async def get_performance_report(self, strategy_name: str | None = None) -> dict[str, Any]:
@@ -189,7 +194,7 @@ class StrategyPerformanceMonitor:
                     "strategy": strategy_name,
                     "metrics": data["metrics"],
                     "recent_trades": data["trades"][-10:],  # Последние 10 сделок
-                    "last_updated": data["last_updated"]
+                    "last_updated": data["last_updated"],
                 }
             else:
                 # Общий отчет по всем стратегиям
@@ -197,7 +202,7 @@ class StrategyPerformanceMonitor:
                     "summary": {},
                     "strategies": {},
                     "alerts": self.alerts[-10:],  # Последние 10 алертов
-                    "recommendations": []
+                    "recommendations": [],
                 }
 
                 total_trades = 0
@@ -213,9 +218,15 @@ class StrategyPerformanceMonitor:
                     total_pnl += metrics["total_pnl"]
 
                     # Находим лучшую и худшую стратегии
-                    if best_strategy is None or metrics["roi"] > report["strategies"][best_strategy]["roi"]:
+                    if (
+                        best_strategy is None
+                        or metrics["roi"] > report["strategies"][best_strategy]["roi"]
+                    ):
                         best_strategy = name
-                    if worst_strategy is None or metrics["roi"] < report["strategies"][worst_strategy]["roi"]:
+                    if (
+                        worst_strategy is None
+                        or metrics["roi"] < report["strategies"][worst_strategy]["roi"]
+                    ):
                         worst_strategy = name
 
                 # Общая сводка
@@ -224,7 +235,7 @@ class StrategyPerformanceMonitor:
                     "total_trades": total_trades,
                     "total_pnl": total_pnl,
                     "best_strategy": best_strategy,
-                    "worst_strategy": worst_strategy
+                    "worst_strategy": worst_strategy,
                 }
 
                 # Рекомендации
@@ -237,8 +248,7 @@ class StrategyPerformanceMonitor:
 
         except Exception as e:
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "ERROR",
-                f"Failed to generate performance report: {e}"
+                "PERFORMANCE_MONITOR", "ERROR", f"Failed to generate performance report: {e}"
             )
             return {"error": str(e)}
 
@@ -248,21 +258,19 @@ class StrategyPerformanceMonitor:
             export_data = {
                 "export_timestamp": datetime.utcnow().isoformat(),
                 "performance_data": self.performance_data,
-                "alerts": self.alerts
+                "alerts": self.alerts,
             }
 
-            with open(filepath, 'w') as f:
+            with open(filepath, "w") as f:
                 json.dump(export_data, f, indent=2, default=str)
 
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "INFO",
-                f"Performance data exported to {filepath}"
+                "PERFORMANCE_MONITOR", "INFO", f"Performance data exported to {filepath}"
             )
 
         except Exception as e:
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "ERROR",
-                f"Failed to export performance data: {e}"
+                "PERFORMANCE_MONITOR", "ERROR", f"Failed to export performance data: {e}"
             )
 
     async def cleanup_old_data(self, days_to_keep: int = 30):
@@ -273,7 +281,8 @@ class StrategyPerformanceMonitor:
             for strategy_name, data in self.performance_data.items():
                 # Очищаем старые сделки
                 data["trades"] = [
-                    trade for trade in data["trades"]
+                    trade
+                    for trade in data["trades"]
                     if trade.get("timestamp", datetime.min) > cutoff_date
                 ]
 
@@ -281,18 +290,13 @@ class StrategyPerformanceMonitor:
                 await self._recalculate_metrics(strategy_name)
 
             # Очищаем старые алерты
-            self.alerts = [
-                alert for alert in self.alerts
-                if alert["timestamp"] > cutoff_date
-            ]
+            self.alerts = [alert for alert in self.alerts if alert["timestamp"] > cutoff_date]
 
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "INFO",
-                f"Cleaned up data older than {days_to_keep} days"
+                "PERFORMANCE_MONITOR", "INFO", f"Cleaned up data older than {days_to_keep} days"
             )
 
         except Exception as e:
             self.logger.log_event(
-                "PERFORMANCE_MONITOR", "ERROR",
-                f"Failed to cleanup old data: {e}"
+                "PERFORMANCE_MONITOR", "ERROR", f"Failed to cleanup old data: {e}"
             )

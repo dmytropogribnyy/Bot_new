@@ -4,8 +4,8 @@ Key Management Script for BinanceBot v2.1
 Quick and easy management of API keys and settings
 """
 
-import sys
 from pathlib import Path
+import sys
 
 from env_manager import EnvManager
 
@@ -20,6 +20,10 @@ def show_help():
     print("  update          - Update config from .env")
     print("  set-api         - Set Binance API keys")
     print("  set-telegram    - Set Telegram credentials")
+    print("  set-var K V     - Set arbitrary .env variable")
+    print("  get-var K       - Get .env variable (sanitized)")
+    print("  print           - Print sanitized .env contents")
+    print("  switch PROFILE  - Switch .env <- .env.PROFILE (e.g., prod/testnet)")
     print("  template        - Create .env template")
     print("  validate        - Validate .env file")
     print("  help            - Show this help")
@@ -70,6 +74,74 @@ def show_status():
     manager.show_env_status()
 
 
+def _sanitize(key: str, value: str) -> str:
+    """Redact sensitive values for display."""
+    if value is None:
+        return ""
+    k = key.lower()
+    if any(x in k for x in ["secret", "key", "token", "password"]):
+        return value[:4] + "…" + value[-4:] if len(value) > 8 else "****"
+    return value
+
+
+def set_var():
+    """Set arbitrary .env variable: set-var KEY VALUE"""
+    if len(sys.argv) < 4:
+        print("❌ Usage: python manage_keys.py set-var <KEY> <VALUE>")
+        return
+    key, value = sys.argv[2], sys.argv[3]
+    manager = EnvManager()
+    env_vars = manager.load_env_file()
+    env_vars[key] = value
+    manager.save_env_file(env_vars)
+    print(f"✅ Set {key}={_sanitize(key, value)}")
+
+
+def get_var():
+    """Get .env variable (sanitized): get-var KEY"""
+    if len(sys.argv) < 3:
+        print("❌ Usage: python manage_keys.py get-var <KEY>")
+        return
+    key = sys.argv[2]
+    manager = EnvManager()
+    env_vars = manager.load_env_file()
+    if key in env_vars:
+        print(f"{key}={_sanitize(key, env_vars[key])}")
+    else:
+        print(f"❌ {key} not found in .env")
+
+
+def print_env():
+    """Print sanitized .env contents"""
+    manager = EnvManager()
+    env_vars = manager.load_env_file()
+    if not env_vars:
+        print("(empty or missing .env)")
+        return
+    for k in sorted(env_vars.keys()):
+        print(f"{k}={_sanitize(k, env_vars[k])}")
+
+
+def switch_profile():
+    """Switch .env from .env.<profile> (e.g., testnet/prod)"""
+    if len(sys.argv) < 3:
+        print("❌ Usage: python manage_keys.py switch <profile>")
+        return
+    import shutil
+
+    profile = sys.argv[2].strip()
+    src = Path(f".env.{profile}")
+    dst = Path(".env")
+    if not src.exists():
+        print(f"❌ Profile file not found: {src}")
+        return
+    shutil.copyfile(src, dst)
+    print(f"✅ Switched .env <- {src}")
+    # Optionally update config
+    manager = EnvManager()
+    manager.update_config_from_env()
+
+
 def update_config():
     """Update configuration from .env"""
     manager = EnvManager()
@@ -94,19 +166,19 @@ def validate_env():
         print("✅ .env file is valid!")
         return
 
-    if issues['missing']:
+    if issues["missing"]:
         print("❌ Missing required variables:")
-        for var in issues['missing']:
+        for var in issues["missing"]:
             print(f"   - {var}")
 
-    if issues['invalid']:
+    if issues["invalid"]:
         print("⚠️ Invalid values:")
-        for var in issues['invalid']:
+        for var in issues["invalid"]:
             print(f"   - {var}")
 
-    if issues['warnings']:
+    if issues["warnings"]:
         print("⚠️ Warnings:")
-        for var in issues['warnings']:
+        for var in issues["warnings"]:
             print(f"   - {var}")
 
 
@@ -118,19 +190,19 @@ def main():
 
     command = sys.argv[1].lower()
 
-    if command == 'help':
+    if command == "help":
         show_help()
-    elif command == 'status':
+    elif command == "status":
         show_status()
-    elif command == 'update':
+    elif command == "update":
         update_config()
-    elif command == 'set-api':
+    elif command == "set-api":
         set_api_keys()
-    elif command == 'set-telegram':
+    elif command == "set-telegram":
         set_telegram_credentials()
-    elif command == 'template':
+    elif command == "template":
         create_template()
-    elif command == 'validate':
+    elif command == "validate":
         validate_env()
     else:
         print(f"❌ Unknown command: {command}")

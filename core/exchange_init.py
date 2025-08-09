@@ -2,24 +2,30 @@
 import time
 
 import ccxt
-
 from common.config_loader import API_KEY, API_SECRET, DRY_RUN, SYMBOLS_ACTIVE, USE_TESTNET
 from common.leverage_config import LEVERAGE_MAP
+
 from telegram.telegram_utils import send_telegram_message
 from utils_logging import log
 
 # Initialize Binance Futures exchange (USDT-M)
-exchange = ccxt.binance(
-    {
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "future",  # USDT-M futures mode
-            "adjustForTimeDifference": True,
-        },
-    }
-)
+exchange_config = {
+    "apiKey": API_KEY,
+    "secret": API_SECRET,
+    "enableRateLimit": True,
+    "options": {
+        "defaultType": "future",  # USDT-M futures mode
+        "adjustForTimeDifference": True,
+        "recvWindow": 60000,
+    },
+}
+
+exchange = ccxt.binance(exchange_config)
+
+# Enable testnet mode if configured
+if USE_TESTNET:
+    exchange.set_sandbox_mode(True)
+    log("Testnet mode enabled", level="INFO")
 
 # ✅ Explicitly reinforce USDT-M futures mode
 exchange.options["defaultType"] = "future"
@@ -69,6 +75,9 @@ def set_leverage_for_symbols():
             log(f"Ошибка установки кредитного плеча для {symbol}: {e}", level="ERROR")
             error_count += 1
 
-    log(f"Настройка кредитного плеча завершена: установлено для {success_count} символов, {error_count} ошибок", level="INFO")
+    log(
+        f"Настройка кредитного плеча завершена: установлено для {success_count} символов, {error_count} ошибок",
+        level="INFO",
+    )
     if success_count > 0:
         send_telegram_message(f"✅ Кредитное плечо установлено для {success_count} символов", force=True)

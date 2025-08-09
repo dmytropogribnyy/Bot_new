@@ -2,6 +2,7 @@
 import time
 
 from common.config_loader import MAKER_FEE_RATE, TAKER_FEE_RATE, USE_TESTNET
+
 from core.exchange_init import exchange
 from utils_core import safe_call_retry
 from utils_logging import log
@@ -26,7 +27,7 @@ def convert_symbol(symbol: str) -> str:
 def fetch_balance():
     """Получает баланс USDC."""
     result = safe_call_retry(lambda: exchange.fetch_balance()["total"].get("USDC", 0), label="fetch_balance")
-    if not isinstance(result, (int, float)):
+    if not isinstance(result, int | float):
         # Если вдруг пришёл None или что-то нечисловое, возвращаем 0 (или логируем)
         log(f"[fetch_balance] Invalid result: {result}", level="ERROR")
         return 0
@@ -46,7 +47,9 @@ def fetch_ticker(symbol):
 def fetch_ohlcv(symbol, timeframe="15m", limit=100):
     """Получает OHLCV данные для символа."""
     api_symbol = convert_symbol(symbol)
-    result = safe_call_retry(lambda: exchange.fetch_ohlcv(api_symbol, timeframe, limit=limit), label=f"fetch_ohlcv {symbol}")
+    result = safe_call_retry(
+        lambda: exchange.fetch_ohlcv(api_symbol, timeframe, limit=limit), label=f"fetch_ohlcv {symbol}"
+    )
     # Если результат не список — значит ошибка (мы ждём list of candles)
     if not isinstance(result, list):
         log(f"[fetch_ohlcv] Invalid result for {symbol}: {type(result)}", level="ERROR")
@@ -166,10 +169,17 @@ def validate_order_size(symbol, side, amount, price=None):
     min_notional = market.get("limits", {}).get("cost", {}).get("min", 0)
     if notional < min_notional:
         required_amount = min_notional / price
-        return False, (f"Order value ${notional:.2f} below minimum ${min_notional:.2f}. " f"Need at least {required_amount:.6f} {symbol.split('/')[0]}.")
+        return False, (
+            f"Order value ${notional:.2f} below minimum ${min_notional:.2f}. "
+            f"Need at least {required_amount:.6f} {symbol.split('/')[0]}."
+        )
 
     # ✅ Успешная валидация — логируем для отладки
-    log(f"[validate_order_size] ✅ {symbol} {side}: amount={amount}, price={price}, " f"notional={notional:.4f}, min_amount={min_amount}, min_notional={min_notional}", level="DEBUG")
+    log(
+        f"[validate_order_size] ✅ {symbol} {side}: amount={amount}, price={price}, "
+        f"notional={notional:.4f}, min_amount={min_amount}, min_notional={min_notional}",
+        level="DEBUG",
+    )
 
     return True, ""
 
@@ -205,7 +215,9 @@ def create_safe_market_order(symbol, side, amount):
 
     if not amount or amount <= 0:
         log(f"[MarketOrder] ❌ Skipped: qty is zero or negative for {symbol} → qty={amount}", level="ERROR")
-        send_telegram_message(f"❌ *Order Failed:* `{symbol}`\nReason: `qty_zero_or_invalid`\nQty: `{amount}`", force=True)
+        send_telegram_message(
+            f"❌ *Order Failed:* `{symbol}`\nReason: `qty_zero_or_invalid`\nQty: `{amount}`", force=True
+        )
         return {"success": False, "error": "qty_zero_or_invalid"}
 
     if not exchange.markets or api_symbol not in exchange.markets:
@@ -226,7 +238,10 @@ def create_safe_market_order(symbol, side, amount):
     # ✅ округляем количество через round_step_size
     amount = round_step_size(symbol, amount)
 
-    log(f"[MarketOrder] DEBUG {symbol} | qty={amount}, step={precision}, min_qty={limits.get('min')}, min_notional={cost_limits.get('min')}", level="DEBUG")
+    log(
+        f"[MarketOrder] DEBUG {symbol} | qty={amount}, step={precision}, min_qty={limits.get('min')}, min_notional={cost_limits.get('min')}",
+        level="DEBUG",
+    )
 
     is_valid, error = validate_order_size(symbol, side, amount)
 
@@ -241,7 +256,11 @@ def create_safe_market_order(symbol, side, amount):
 
     try:
         params = {"newOrderRespType": "RESULT"}
-        order = exchange.create_market_buy_order(api_symbol, amount, params=params) if side == "buy" else exchange.create_market_sell_order(api_symbol, amount, params=params)
+        order = (
+            exchange.create_market_buy_order(api_symbol, amount, params=params)
+            if side == "buy"
+            else exchange.create_market_sell_order(api_symbol, amount, params=params)
+        )
         log(f"[BINANCE] Market response: {order}", level="DEBUG")
 
         order_id = order.get("id")
@@ -391,10 +410,13 @@ def handle_rate_limits(func):
                 error_str = str(e).lower()
                 if ("rate limit" in error_str or "too many requests" in error_str) and attempt < max_retries - 1:
                     delay = 1 * (2**attempt)  # 1, 2, 4 сек
-                    log(f"⏳ Rate limit hit, retrying in {delay}s (attempt {attempt+1}/{max_retries})", level="WARNING")
+                    log(
+                        f"⏳ Rate limit hit, retrying in {delay}s (attempt {attempt + 1}/{max_retries})",
+                        level="WARNING",
+                    )
                     time.sleep(delay)
                 else:
-                    log(f"[RateLimit] ❌ Failed after {attempt+1} attempts: {e}", level="ERROR")
+                    log(f"[RateLimit] ❌ Failed after {attempt + 1} attempts: {e}", level="ERROR")
                     raise
 
     return wrapper

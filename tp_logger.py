@@ -2,9 +2,9 @@ import csv
 import os
 from threading import Lock
 
+from common.config_loader import EXPORT_PATH
 import pandas as pd
 
-from common.config_loader import EXPORT_PATH
 from utils_logging import log
 
 # ===========================

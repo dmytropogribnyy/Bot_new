@@ -3,24 +3,28 @@
 Детальный анализ структуры markets
 """
 
-import ccxt
-import os
 import json
+import os
+
+import ccxt
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def debug_market_details():
     """Детально анализируем структуру markets"""
 
-    exchange = ccxt.binance({
-        'apiKey': os.getenv('BINANCE_API_KEY'),
-        'secret': os.getenv('BINANCE_API_SECRET'),
-        'sandbox': False,
-        'options': {
-            'defaultType': 'future',
+    exchange = ccxt.binance(
+        {
+            "apiKey": os.getenv("BINANCE_API_KEY"),
+            "secret": os.getenv("BINANCE_API_SECRET"),
+            "sandbox": False,
+            "options": {
+                "defaultType": "future",
+            },
         }
-    })
+    )
 
     print("🔍 Детальный анализ структуры markets...")
     print("=" * 60)
@@ -29,7 +33,7 @@ def debug_market_details():
         markets = exchange.load_markets()
 
         # Загружаем наши символы
-        with open('data/valid_usdc_symbols.json', 'r') as f:
+        with open("data/valid_usdc_symbols.json") as f:
             our_symbols = json.load(f)
 
         print(f"📊 Всего рынков: {len(markets)}")
@@ -58,35 +62,40 @@ def debug_market_details():
                 print(f"\n❌ {symbol} не найден в markets")
 
         # Проверяем все символы с USDC
-        usdc_symbols = [s for s in markets.keys() if 'USDC' in s]
+        usdc_symbols = [s for s in markets.keys() if "USDC" in s]
         print(f"\n📊 Всего символов с USDC: {len(usdc_symbols)}")
 
         for symbol in usdc_symbols[:10]:
             market = markets[symbol]
-            print(f"   • {symbol}: type={market.get('type')}, future={market.get('future')}, quote={market.get('quote')}")
+            print(
+                f"   • {symbol}: type={market.get('type')}, future={market.get('future')}, quote={market.get('quote')}"
+            )
 
         # Проверяем фильтры
-        print(f"\n🔍 Проверяем фильтры:")
+        print("\n🔍 Проверяем фильтры:")
 
         # Фильтр 1: USDC в названии
-        usdc_in_name = [s for s in markets.keys() if 'USDC' in s]
+        usdc_in_name = [s for s in markets.keys() if "USDC" in s]
         print(f"   • USDC в названии: {len(usdc_in_name)}")
 
         # Фильтр 2: quote == 'USDC'
-        usdc_quote = [s for s in markets.keys() if markets[s].get('quote') == 'USDC']
+        usdc_quote = [s for s in markets.keys() if markets[s].get("quote") == "USDC"]
         print(f"   • quote == 'USDC': {len(usdc_quote)}")
 
         # Фильтр 3: future == True
-        future_markets = [s for s in markets.keys() if markets[s].get('future')]
+        future_markets = [s for s in markets.keys() if markets[s].get("future")]
         print(f"   • future == True: {len(future_markets)}")
 
         # Фильтр 4: комбинация
-        usdc_futures = [s for s in markets.keys()
-                       if markets[s].get('quote') == 'USDC' and markets[s].get('future')]
+        usdc_futures = [
+            s
+            for s in markets.keys()
+            if markets[s].get("quote") == "USDC" and markets[s].get("future")
+        ]
         print(f"   • quote == 'USDC' AND future == True: {len(usdc_futures)}")
 
         if usdc_futures:
-            print(f"\n📋 USDC Futures (по фильтру):")
+            print("\n📋 USDC Futures (по фильтру):")
             for symbol in usdc_futures[:10]:
                 print(f"   • {symbol}")
             if len(usdc_futures) > 10:
@@ -94,6 +103,7 @@ def debug_market_details():
 
     except Exception as e:
         print(f"❌ Ошибка при анализе: {e}")
+
 
 if __name__ == "__main__":
     debug_market_details()

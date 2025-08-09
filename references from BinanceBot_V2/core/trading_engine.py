@@ -3,8 +3,6 @@
 import asyncio
 from typing import Any
 
-from .external_monitoring import ExternalMonitoring
-
 
 class TradingEngine:
     def __init__(
@@ -52,8 +50,11 @@ class TradingEngine:
             if self.order_manager:
                 current_positions = self.order_manager.get_position_count()
                 if current_positions >= self.config.max_concurrent_positions:
-                    self.logger.log_event("TRADING_ENGINE", "INFO",
-                        f"Max positions reached ({current_positions}/{self.config.max_concurrent_positions})")
+                    self.logger.log_event(
+                        "TRADING_ENGINE",
+                        "INFO",
+                        f"Max positions reached ({current_positions}/{self.config.max_concurrent_positions})",
+                    )
                     await asyncio.sleep(30)
                     continue
 
@@ -64,7 +65,7 @@ class TradingEngine:
                 # Проверяем, не в позиции ли уже
                 if self.order_manager:
                     positions = self.order_manager.get_active_positions()
-                    if any(pos['symbol'] == symbol for pos in positions):
+                    if any(pos["symbol"] == symbol for pos in positions):
                         continue
                 elif symbol in self.in_position:
                     continue
@@ -145,10 +146,10 @@ class TradingEngine:
                         side=side,
                         quantity=qty,
                         entry_price=entry_price,
-                        leverage=leverage
+                        leverage=leverage,
                     )
 
-                    if result['success']:
+                    if result["success"]:
                         # Обновляем локальный трекинг для обратной совместимости
                         self.in_position[symbol] = {
                             "entry_price": entry_price,
@@ -157,14 +158,18 @@ class TradingEngine:
                         }
 
                         # Используем новый метод логирования торговых событий
-                        self.logger.log_trading_event("ENTRY", symbol, {
-                            "entry_price": entry_price,
-                            "qty": qty,
-                            "leverage": leverage,
-                            "side": side,
-                            "signal_strength": entry_signal.get("signal_strength", 0),
-                            "reason": entry_signal.get("reason", "unknown")
-                        })
+                        self.logger.log_trading_event(
+                            "ENTRY",
+                            symbol,
+                            {
+                                "entry_price": entry_price,
+                                "qty": qty,
+                                "leverage": leverage,
+                                "side": side,
+                                "signal_strength": entry_signal.get("signal_strength", 0),
+                                "reason": entry_signal.get("reason", "unknown"),
+                            },
+                        )
 
                         # Record trade in ProfitTracker if available
                         if self.profit_tracker:
@@ -176,10 +181,14 @@ class TradingEngine:
                                     exit_price=entry_price,  # Will be updated on exit
                                     quantity=qty,
                                     pnl=0.0,  # Will be calculated on exit
-                                    duration_seconds=0
+                                    duration_seconds=0,
                                 )
                             except Exception as e:
-                                self.logger.log_event("TRADING_ENGINE", "WARNING", f"Failed to record trade in ProfitTracker: {e}")
+                                self.logger.log_event(
+                                    "TRADING_ENGINE",
+                                    "WARNING",
+                                    f"Failed to record trade in ProfitTracker: {e}",
+                                )
 
                         if self.logger.config.telegram_enabled:
                             await self.logger.telegram.send_trade_notification(
@@ -191,18 +200,24 @@ class TradingEngine:
                                 }
                             )
                     else:
-                        self.logger.log_trading_event("ENTRY_FAILED", symbol, {
-                            "error": result.get('error'),
-                            "entry_price": entry_price,
-                            "qty": qty,
-                            "side": side
-                        })
+                        self.logger.log_trading_event(
+                            "ENTRY_FAILED",
+                            symbol,
+                            {
+                                "error": result.get("error"),
+                                "entry_price": entry_price,
+                                "qty": qty,
+                                "side": side,
+                            },
+                        )
 
                 else:
                     # Fallback без OrderManager
                     response = await self.exchange.place_order(symbol, side, qty)
                     if response.get("status") != "FILLED":
-                        self.logger.log_event(f"Order failed: {response}", "ERROR", "trading_engine")
+                        self.logger.log_event(
+                            f"Order failed: {response}", "ERROR", "trading_engine"
+                        )
                         return
 
                     self.in_position[symbol] = {
@@ -210,7 +225,9 @@ class TradingEngine:
                         "qty": qty,
                         "side": side,
                     }
-                    self.logger.log_trade(symbol, side, qty, entry_price, "Position opened", 0.0, True)
+                    self.logger.log_trade(
+                        symbol, side, qty, entry_price, "Position opened", 0.0, True
+                    )
 
                     if self.logger.config.telegram_enabled:
                         await self.logger.telegram.send_trade_notification(
@@ -225,12 +242,11 @@ class TradingEngine:
                     asyncio.create_task(self.monitor_position(symbol))
 
             except Exception as e:
-                self.logger.log_trading_event("EXECUTION_ERROR", symbol, {
-                    "error": str(e),
-                    "entry_price": entry_price,
-                    "qty": qty,
-                    "side": side
-                })
+                self.logger.log_trading_event(
+                    "EXECUTION_ERROR",
+                    symbol,
+                    {"error": str(e), "entry_price": entry_price, "qty": qty, "side": side},
+                )
 
     async def monitor_position(self, symbol: str):
         """Мониторинг позиции (fallback без OrderManager)"""
@@ -269,7 +285,9 @@ class TradingEngine:
 
                 response = await self.exchange.place_order(symbol, side, qty)
                 if response.get("status") != "FILLED":
-                    self.logger.log_event(f"Close order failed: {response}", "ERROR", "trading_engine")
+                    self.logger.log_event(
+                        f"Close order failed: {response}", "ERROR", "trading_engine"
+                    )
                     return {"success": False, "error": f"Order failed: {response}"}
 
                 pnl = (
@@ -279,9 +297,7 @@ class TradingEngine:
                 )
                 win = pnl > 0
 
-                self.logger.log_trade(
-                    symbol, side, qty, exit_price, "Position closed", pnl, win
-                )
+                self.logger.log_trade(symbol, side, qty, exit_price, "Position closed", pnl, win)
 
                 if win:
                     await self.risk_manager.register_win()
@@ -290,15 +306,19 @@ class TradingEngine:
 
                 del self.in_position[symbol]
 
-                self.logger.log_trading_event("EXIT", symbol, {
-                    "pnl": pnl,
-                    "win": win,
-                    "exit_price": exit_price,
-                    "entry_price": position["entry_price"],
-                    "qty": qty,
-                    "side": side,
-                    "duration_seconds": 0  # TODO: calculate actual duration
-                })
+                self.logger.log_trading_event(
+                    "EXIT",
+                    symbol,
+                    {
+                        "pnl": pnl,
+                        "win": win,
+                        "exit_price": exit_price,
+                        "entry_price": position["entry_price"],
+                        "qty": qty,
+                        "side": side,
+                        "duration_seconds": 0,  # TODO: calculate actual duration
+                    },
+                )
 
                 return {"success": True, "pnl": pnl, "win": win}
 
@@ -324,50 +344,64 @@ class TradingEngine:
             if self.order_manager:
                 positions = self.order_manager.get_active_positions()
                 total_value = sum(
-                    abs(pos.get('qty', 0) * pos.get('entry_price', 0))
-                    for pos in positions
+                    abs(pos.get("qty", 0) * pos.get("entry_price", 0)) for pos in positions
                 )
-                balance = self.exchange.get_balance() if hasattr(self.exchange, 'get_balance') else 0
+                balance = (
+                    self.exchange.get_balance() if hasattr(self.exchange, "get_balance") else 0
+                )
                 return (total_value / balance * 100) if balance > 0 else 0.0
             else:
                 # Fallback без OrderManager
                 total_value = sum(
-                    abs(data.get('qty', 0) * data.get('entry_price', 0))
+                    abs(data.get("qty", 0) * data.get("entry_price", 0))
                     for data in self.in_position.values()
                 )
-                balance = self.exchange.get_balance() if hasattr(self.exchange, 'get_balance') else 0
+                balance = (
+                    self.exchange.get_balance() if hasattr(self.exchange, "get_balance") else 0
+                )
                 return (total_value / balance * 100) if balance > 0 else 0.0
         except Exception as e:
-            self.logger.log_event("TRADING_ENGINE", "ERROR", f"Capital utilization calculation failed: {e}")
+            self.logger.log_event(
+                "TRADING_ENGINE", "ERROR", f"Capital utilization calculation failed: {e}"
+            )
             return 0.0
 
     def pause_trading(self):
         """Приостанавливает торговлю"""
         self.paused = True
-        self.logger.log_runtime_status("PAUSED", {
-            "reason": "manual_pause",
-            "active_positions": len(self.get_open_positions()),
-            "capital_utilization": self.get_capital_utilization()
-        })
+        self.logger.log_runtime_status(
+            "PAUSED",
+            {
+                "reason": "manual_pause",
+                "active_positions": len(self.get_open_positions()),
+                "capital_utilization": self.get_capital_utilization(),
+            },
+        )
 
     def resume_trading(self):
         """Возобновляет торговлю"""
         self.paused = False
-        self.logger.log_runtime_status("ACTIVE", {
-            "reason": "manual_resume",
-            "active_positions": len(self.get_open_positions()),
-            "capital_utilization": self.get_capital_utilization()
-        })
+        self.logger.log_runtime_status(
+            "ACTIVE",
+            {
+                "reason": "manual_resume",
+                "active_positions": len(self.get_open_positions()),
+                "capital_utilization": self.get_capital_utilization(),
+            },
+        )
 
     def stop_trading(self):
         """Полностью останавливает торговый движок"""
         self.running = False
         self.paused = True
-        self.logger.log_runtime_status("STOPPED", {
-            "reason": "manual_stop",
-            "active_positions": len(self.get_open_positions()),
-            "capital_utilization": self.get_capital_utilization()
-        })
+        self.logger.log_runtime_status(
+            "STOPPED",
+            {
+                "reason": "manual_stop",
+                "active_positions": len(self.get_open_positions()),
+                "capital_utilization": self.get_capital_utilization(),
+            },
+        )
 
     def get_performance_report(self, days: int = 1) -> dict[str, Any]:
         """Получает отчет о производительности"""
@@ -375,11 +409,11 @@ class TradingEngine:
             if self.profit_tracker:
                 stats = self.profit_tracker.get_profit_stats()
                 return {
-                    "pnl": stats.get('current_day_profit', 0.0),
-                    "win_rate": stats.get('win_rate', 0.0),
-                    "total_trades": stats.get('total_trades', 0),
-                    "hourly_profit": stats.get('current_hour_profit', 0.0),
-                    "aggression_level": stats.get('aggression_level', 1.0)
+                    "pnl": stats.get("current_day_profit", 0.0),
+                    "win_rate": stats.get("win_rate", 0.0),
+                    "total_trades": stats.get("total_trades", 0),
+                    "hourly_profit": stats.get("current_hour_profit", 0.0),
+                    "aggression_level": stats.get("aggression_level", 1.0),
                 }
             else:
                 # Fallback без ProfitTracker
@@ -388,7 +422,7 @@ class TradingEngine:
                     "win_rate": 0.0,
                     "total_trades": 0,
                     "hourly_profit": 0.0,
-                    "aggression_level": 1.0
+                    "aggression_level": 1.0,
                 }
         except Exception as e:
             self.logger.log_event("TRADING_ENGINE", "ERROR", f"Performance report failed: {e}")

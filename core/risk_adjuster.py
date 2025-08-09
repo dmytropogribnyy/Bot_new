@@ -1,6 +1,7 @@
 # core/risk_adjuster.py
 
 from common.config_loader import trade_stats
+
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, update_runtime_config
 from utils_logging import log
@@ -38,7 +39,11 @@ def auto_adjust_risk():
 
         update_runtime_config({"risk_multiplier": round(new_risk, 4)})
 
-        msg = f"🤖 AutoRisk → {new_risk*100:.2f}%\n" f"(total={total}, wins={wins}, w%={winrate:.1f}, " f"streak_win={streak_win}, streak_loss={streak_loss}, balance={balance:.2f})"
+        msg = (
+            f"🤖 AutoRisk → {new_risk * 100:.2f}%\n"
+            f"(total={total}, wins={wins}, w%={winrate:.1f}, "
+            f"streak_win={streak_win}, streak_loss={streak_loss}, balance={balance:.2f})"
+        )
         log(f"[AutoRisk] {msg}", level="INFO")
         send_telegram_message(msg, force=True, parse_mode="")
 
