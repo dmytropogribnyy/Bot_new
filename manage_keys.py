@@ -4,8 +4,8 @@ Key Management Script for BinanceBot v2.1
 Quick and easy management of API keys and settings
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from env_manager import EnvManager
 

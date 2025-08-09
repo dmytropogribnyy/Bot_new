@@ -10,6 +10,7 @@ from utils_logging import log
 
 
 def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_pct=None, tp2_pct=None, sl_pct=None):
+    import numpy as np
     from common.config_loader import (
         SL_PERCENT,
         TP1_PERCENT,
@@ -17,7 +18,6 @@ def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_p
         TP2_PERCENT,
         TP2_SHARE,
     )
-    import numpy as np
 
     direction = direction.upper()
     tp1_pct = TP1_PERCENT if tp1_pct is None else tp1_pct

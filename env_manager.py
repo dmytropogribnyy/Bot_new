@@ -5,7 +5,6 @@ Automatically manage .env file and transfer keys to configuration
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from core.config import TradingConfig
 

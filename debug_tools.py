@@ -1,7 +1,7 @@
-from collections import Counter
-from datetime import datetime
 import json
 import os
+from collections import Counter
+from datetime import datetime
 
 from utils_core import extract_symbol
 from utils_logging import log
@@ -12,8 +12,8 @@ TUNING_LOG_FILE = "data/filter_tuning_log.json"
 
 
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
-    from common.leverage_config import get_leverage_for_symbol
     import pandas as pd
+    from common.leverage_config import get_leverage_for_symbol
 
     from core.binance_api import fetch_ohlcv
     from core.fail_stats_tracker import get_symbol_risk_factor

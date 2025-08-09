@@ -1,6 +1,6 @@
 import csv
-from datetime import datetime
 import os
+from datetime import datetime
 
 from common.config_loader import TAKER_FEE_RATE
 

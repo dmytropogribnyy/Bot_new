@@ -1,4 +1,3 @@
-from typing import Dict
 
 
 def ensure_perp_usdc_format(symbol: str) -> str:

@@ -2,7 +2,6 @@ import json
 import os
 import threading
 import time
-from typing import Dict, List, Optional
 
 from utils_logging import log
 

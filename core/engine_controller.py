@@ -220,10 +220,10 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
 
 
 def sync_open_positions():
-    from datetime import datetime
     import json
-    from pathlib import Path
     import time
+    from datetime import datetime
+    from pathlib import Path
 
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager

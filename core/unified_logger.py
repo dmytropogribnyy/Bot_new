@@ -5,13 +5,13 @@ Simplified version based on v2 structure
 """
 
 import asyncio
-from datetime import datetime, timedelta
 import json
 import logging
-from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Dict
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 from core.config import TradingConfig
 

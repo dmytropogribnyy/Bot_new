@@ -13,8 +13,6 @@ It intentionally avoids legacy dependencies from core/trade_engine.py.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
-
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager

@@ -5,7 +5,6 @@ No dependencies, just manage .env file
 """
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 
 class SimpleEnvManager:

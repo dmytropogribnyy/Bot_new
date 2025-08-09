@@ -16,9 +16,9 @@ def log_missed_signal(symbol, breakdown, reason=""):
         breakdown (dict): Components breakdown
         reason (str): Reason for signal rejection
     """
-    from datetime import datetime
     import json
     import os
+    from datetime import datetime
 
     from common.config_loader import TAKER_FEE_RATE
 

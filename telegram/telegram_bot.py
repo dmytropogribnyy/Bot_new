@@ -6,7 +6,7 @@ Simplified version for notifications and commands
 
 import asyncio
 import time
-from typing import Any, Dict
+from typing import Any
 
 import requests
 

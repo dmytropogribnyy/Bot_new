@@ -2,9 +2,11 @@
 
 import json
 import threading
-from threading import Lock
 import time
+from threading import Lock
 
+import pandas as pd
+import ta
 from common.config_loader import (
     AUTO_CLOSE_PROFIT_THRESHOLD,
     BONUS_PROFIT_THRESHOLD,
@@ -14,8 +16,6 @@ from common.config_loader import (
     MICRO_TRADE_SIZE_THRESHOLD,
     MICRO_TRADE_TIMEOUT_MINUTES,
 )
-import pandas as pd
-import ta
 
 from core.binance_api import fetch_ohlcv
 from core.exchange_init import exchange
@@ -424,9 +424,10 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     - Обновление qty на подтверждённый
     - Защита от tp_sl_fail и fallback закрытия
     """
-    from threading import Lock, Thread
     import time
+    from threading import Lock, Thread
 
+    import numpy as np
     from common.config_loader import (
         DRY_RUN,
         MAX_OPEN_ORDERS,
@@ -436,7 +437,6 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
         get_runtime_config,
     )
     from common.leverage_config import get_leverage_for_symbol
-    import numpy as np
 
     from core.binance_api import convert_symbol, create_safe_market_order
     from core.component_tracker import log_component_data
@@ -1004,8 +1004,8 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     - FIX #2: полностью очищает кеш после успешного закрытия
     """
     import json
-    from pathlib import Path
     import time
+    from pathlib import Path
 
     from core.exchange_init import exchange
     from core.trade_engine import save_active_trades, trade_manager

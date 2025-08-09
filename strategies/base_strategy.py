@@ -3,7 +3,7 @@ Base strategy class for all trading strategies
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import pandas as pd
 

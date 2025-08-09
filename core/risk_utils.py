@@ -182,9 +182,9 @@ def set_max_risk(risk):
     Set the current maximum risk value in [0.01..0.05]
     """
     try:
-        from datetime import datetime
         import json
         import os
+        from datetime import datetime
 
         risk = max(0.01, min(0.05, risk))
         os.makedirs("data", exist_ok=True)

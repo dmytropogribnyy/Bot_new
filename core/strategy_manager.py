@@ -2,7 +2,7 @@
 Strategy Manager for coordinating different trading strategies
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import pandas as pd
 

@@ -1,7 +1,7 @@
 # core/failure_logger.py
-from datetime import datetime
 import json
 import os
+from datetime import datetime
 from threading import Lock
 
 from constants import FAILURE_LOG_FILE

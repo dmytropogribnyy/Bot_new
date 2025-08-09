@@ -1,14 +1,14 @@
 # ip_monitor.py
-from datetime import datetime, timedelta
 import os
 import time
+from datetime import datetime, timedelta
 
+import requests
 from common.config_loader import (
     DRY_RUN,
     IP_MONITOR_INTERVAL_SECONDS,
     ROUTER_REBOOT_MODE_TIMEOUT_MINUTES,
 )
-import requests
 
 from constants import IP_STATUS_FILE
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message

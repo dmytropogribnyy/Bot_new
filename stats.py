@@ -1,7 +1,9 @@
+import os
 from datetime import datetime, timedelta
 from math import ceil
-import os
 
+import matplotlib.pyplot as plt
+import pandas as pd
 from common.config_loader import (
     DAILY_PROFIT_TARGET,
     DAILY_TRADE_TARGET,
@@ -11,8 +13,6 @@ from common.config_loader import (
     trade_stats,
     trade_stats_lock,
 )
-import matplotlib.pyplot as plt
-import pandas as pd
 
 from core.risk_utils import get_max_risk, set_max_risk
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message

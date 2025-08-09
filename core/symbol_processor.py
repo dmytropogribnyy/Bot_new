@@ -5,8 +5,8 @@ def process_symbol(symbol, balance, last_trade_times, lock):
     - проверяет TP/SL, min_profit, min_notional
     - возвращает параметры сделки или None
     """
-    from collections import defaultdict
     import traceback
+    from collections import defaultdict
 
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
 

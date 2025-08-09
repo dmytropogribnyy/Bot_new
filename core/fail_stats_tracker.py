@@ -1,7 +1,7 @@
 # core/fail_stats_tracker.py
-from datetime import datetime
 import json
 import os
+from datetime import datetime
 from threading import Lock
 
 from constants import FAIL_STATS_FILE

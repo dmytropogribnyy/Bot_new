@@ -2,12 +2,13 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
-from threading import Lock
 import time
+from pathlib import Path
+from threading import Lock
 
+import pandas as pd
 from common.config_loader import (
     FIXED_PAIRS,
     USDC_SYMBOLS,
@@ -15,7 +16,6 @@ from common.config_loader import (
     USE_TESTNET,
     get_priority_small_balance_pairs,
 )
-import pandas as pd
 
 from constants import SIGNAL_FAILURES_FILE, SYMBOLS_FILE
 from core.binance_api import convert_symbol

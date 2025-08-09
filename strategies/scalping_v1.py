@@ -3,7 +3,7 @@ Scalping V1 Strategy
 Based on the reliable core logic from v1 with RSI, MACD, EMA, and volume analysis
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import pandas as pd
 

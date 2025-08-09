@@ -1,12 +1,12 @@
 import csv
-from datetime import datetime
 import decimal
-from decimal import Decimal, InvalidOperation
 import json
 import os
+import time
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import Lock
-import time
 
 from constants import ENTRY_LOG_FILE, STATE_FILE
 from telegram.telegram_utils import send_telegram_message
@@ -354,8 +354,8 @@ def get_min_net_profit(balance=None):
     """
     import os
 
-    from common.config_loader import TP_LOG_FILE
     import pandas as pd
+    from common.config_loader import TP_LOG_FILE
 
     from tp_logger import get_last_trade
     from utils_logging import log
