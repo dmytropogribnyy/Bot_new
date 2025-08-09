@@ -353,3 +353,5 @@ git add -A && git commit -m "[stage-F] feat: RiskGuard + integration & tests" &&
 python main.py --dry --log-level=info
 # затем короткий testnet прогон с микролотом; убедиться, что SL/TP ставятся по конфигурации
 ```
+
+========================================

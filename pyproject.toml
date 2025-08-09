@@ -9,7 +9,9 @@ exclude = [
     "__pycache__",
     ".ruff_cache",
     "backup_before_refactor",
-    "references from BinanceBot_V2"
+    "references from BinanceBot_V2",
+    "core/legacy/",
+    "references_archive/"
 ]
 
 [tool.ruff.lint]
@@ -64,3 +66,8 @@ target-version = ["py312"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+exclude = '(^(core/legacy|references_archive|references from BinanceBot_V2|\.venv|venv)/)'
