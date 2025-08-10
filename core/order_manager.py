@@ -91,6 +91,62 @@ class OrderManager:
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to load emergency flag: {e}")
 
+    async def startup_cleanup(self, symbols: list[str]) -> dict:
+        """
+        Отменяет «хвосты»:
+         - reduceOnly TP/SL без соответствующей позиции (или при qty≈0)
+         - минимальная дедупликация по параметрам при возможности
+        Возвращает статистику {'cancelled': N, 'skipped': M}.
+        """
+        cancelled = 0
+        skipped = 0
+
+        for sym in symbols:
+            try:
+                orders = await self.exchange.get_open_orders(sym)
+            except Exception:
+                orders = []
+
+            try:
+                pos = await self.exchange.get_position(sym)
+            except Exception:
+                pos = None
+
+            try:
+                size_val = abs(float((pos or {}).get("contracts") or (pos or {}).get("size") or 0))
+            except Exception:
+                size_val = 0.0
+
+            has_pos = bool(size_val > 0)
+
+            for o in orders or []:
+                try:
+                    is_reduce = bool(o.get("reduceOnly") is True or (o.get("info", {}).get("reduceOnly") is True))
+                    if is_reduce and not has_pos:
+                        try:
+                            await self.exchange.cancel_order(o["id"], sym)
+                            cancelled += 1
+                        except Exception:
+                            skipped += 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    skipped += 1
+
+        # Log summary
+        try:
+            self.logger.log_event("ORDER_MANAGER", "INFO", f"[CLEANUP] cancelled={cancelled} skipped={skipped}")
+        except Exception:
+            pass
+
+        # TTL cleanup for idempotency store
+        try:
+            self.idem.cleanup_old(days=7)
+        except Exception:
+            pass
+
+        return {"cancelled": cancelled, "skipped": skipped}
+
     def _save_emergency_flag(self):
         """Save emergency shutdown flag to file"""
         try:
