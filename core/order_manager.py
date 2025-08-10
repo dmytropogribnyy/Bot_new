@@ -6,10 +6,13 @@ Simplified version based on v2 structure
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
+from core.idempotency_store import IdempotencyStore
+from core.ids import make_client_id
 from core.precision import PrecisionError, normalize
 from core.unified_logger import UnifiedLogger
 
@@ -21,6 +24,14 @@ class OrderManager:
         self.config = config
         self.exchange = exchange
         self.logger = logger
+
+        # Idempotency store (persistent across restarts)
+        self.idem = IdempotencyStore(path=str(Path("runtime") / "idemp.json"))
+        Path("runtime").mkdir(parents=True, exist_ok=True)
+        try:
+            self.idem.load()
+        except Exception:
+            pass
 
         # Position and order tracking
         self.active_positions: dict[str, dict] = {}  # symbol -> position_data
@@ -48,6 +59,21 @@ class OrderManager:
 
         # Load emergency flag on initialization
         self._load_emergency_flag()
+
+    def _intent_key(
+        self,
+        *,
+        env: str,
+        strategy: str,
+        symbol: str,
+        side: str,
+        order_type: str,
+        qty_norm: float,
+        price_norm: float | None,
+        tp: float | None = None,
+        sl: float | None = None,
+    ) -> str:
+        return f"{env}|{strategy}|{symbol}|{side}|{order_type}|{qty_norm}|{price_norm or 'MKT'}|{tp or ''}|{sl or ''}"
 
     def _load_emergency_flag(self):
         """Load emergency shutdown flag from file"""
@@ -178,8 +204,25 @@ class OrderManager:
                 f"Normalized market entry for {symbol}: qty {quantity} -> {qty_norm}",
             )
 
-            # Place market order with normalized qty
-            order = await self.exchange.create_market_order(symbol, side, qty_norm)
+            # Place market order with normalized qty (idempotent)
+            env = getattr(self.config, "ENV", "PROD")
+            strategy = getattr(self.config, "STRATEGY", "DEFAULT")
+            intent_entry = self._intent_key(
+                env=env,
+                strategy=strategy,
+                symbol=symbol,
+                side=side,
+                order_type="MARKET",
+                qty_norm=qty_norm,
+                price_norm=None,
+            )
+            cid_entry = self.idem.get(intent_entry) or make_client_id(env, strategy, symbol, side, intent_entry)
+            if self.idem.get(intent_entry) is None:
+                self.idem.put(intent_entry, cid_entry)
+            params_entry = {"newClientOrderId": cid_entry}
+            self.logger.log_event("ORDER_MANAGER", "DEBUG", f"[IDEMP] intent={intent_entry} clientId={cid_entry}")
+
+            order = await self.exchange.create_order(symbol, "market", side, qty_norm, None, params_entry)
 
             if not order or "id" not in order:
                 return {"success": False, "reason": "Failed to place order"}
@@ -243,8 +286,31 @@ class OrderManager:
                 "DEBUG",
                 f"Normalized SL for {symbol}: price {sl_price} -> {sl_price_norm}, qty {quantity} -> {sl_qty_norm}",
             )
-            # Place stop loss order on the closing side (reduceOnly set in client)
-            sl_order = await self.exchange.create_stop_loss_order(symbol, close_side, sl_qty_norm, sl_price_norm)
+            # Idempotent SL order
+            env = getattr(self.config, "ENV", "PROD")
+            strategy = getattr(self.config, "STRATEGY", "DEFAULT")
+            intent_sl = self._intent_key(
+                env=env,
+                strategy=strategy,
+                symbol=symbol,
+                side=close_side,
+                order_type="STOP_MARKET",
+                qty_norm=sl_qty_norm,
+                price_norm=sl_price_norm,
+                tp=None,
+                sl=sl_price_norm,
+            )
+            cid_sl = self.idem.get(intent_sl) or make_client_id(env, strategy, symbol, close_side, intent_sl)
+            if self.idem.get(intent_sl) is None:
+                self.idem.put(intent_sl, cid_sl)
+            params_sl = {
+                "stopPrice": float(sl_price_norm),
+                "reduceOnly": True,
+                "workingType": self.config.working_type,
+                "newClientOrderId": cid_sl,
+            }
+            self.logger.log_event("ORDER_MANAGER", "DEBUG", f"[IDEMP] intent={intent_sl} clientId={cid_sl}")
+            sl_order = await self.exchange.create_order(symbol, "STOP_MARKET", close_side, sl_qty_norm, None, params_sl)
 
             # Place take profit orders
             tp_orders = []
@@ -262,7 +328,36 @@ class OrderManager:
                     "DEBUG",
                     f"Normalized TP for {symbol}: price {tp_price} -> {tp_price_norm}, qty {tp_amount} -> {tp_qty_norm}",
                 )
-                tp_order = await self.exchange.create_take_profit_order(symbol, close_side, tp_qty_norm, tp_price_norm)
+                # Idempotent TP order
+                intent_tp = self._intent_key(
+                    env=env,
+                    strategy=strategy,
+                    symbol=symbol,
+                    side=close_side,
+                    order_type=("TAKE_PROFIT_MARKET" if self.config.tp_order_style == "market" else "TAKE_PROFIT"),
+                    qty_norm=tp_qty_norm,
+                    price_norm=tp_price_norm,
+                    tp=tp_price_norm,
+                    sl=None,
+                )
+                cid_tp = self.idem.get(intent_tp) or make_client_id(env, strategy, symbol, close_side, intent_tp)
+                if self.idem.get(intent_tp) is None:
+                    self.idem.put(intent_tp, cid_tp)
+                params_tp = {
+                    "reduceOnly": True,
+                    "workingType": self.config.working_type,
+                    "newClientOrderId": cid_tp,
+                }
+                if self.config.tp_order_style == "market":
+                    params_tp["stopPrice"] = float(tp_price_norm)
+                    tp_order = await self.exchange.create_order(
+                        symbol, "TAKE_PROFIT_MARKET", close_side, tp_qty_norm, None, params_tp
+                    )
+                else:
+                    params_tp["stopPrice"] = float(tp_price_norm)
+                    tp_order = await self.exchange.create_order(
+                        symbol, "TAKE_PROFIT", close_side, tp_qty_norm, float(tp_price_norm), params_tp
+                    )
                 tp_orders.append(tp_order)
 
             # Store orders
@@ -508,6 +603,27 @@ class OrderManager:
             price_norm, qty_norm, _min_notional = normalize(
                 price, float(quantity), market_schema, current_price, symbol
             )
+
+            # Idempotent client order ID
+            env = getattr(self.config, "ENV", "PROD")
+            strategy = getattr(self.config, "STRATEGY", "DEFAULT")
+            intent = self._intent_key(
+                env=env,
+                strategy=strategy,
+                symbol=symbol,
+                side=side,
+                order_type=(order_type or "").upper(),
+                qty_norm=qty_norm,
+                price_norm=price_norm,
+                tp=None,
+                sl=None,
+            )
+            client_id = self.idem.get(intent) or make_client_id(env, strategy, symbol, side, intent)
+            if self.idem.get(intent) is None:
+                self.idem.put(intent, client_id)
+
+            params = (params or {}) | {"newClientOrderId": client_id}
+            self.logger.log_event("ORDER_MANAGER", "DEBUG", f"[IDEMP] intent={intent} clientId={client_id}")
 
             # Create order using normalized values
             return await self.exchange.create_order(symbol, order_type, side, qty_norm, price_norm, params)
