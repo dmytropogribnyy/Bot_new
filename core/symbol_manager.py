@@ -57,15 +57,9 @@ class SymbolManager:
                 selected_symbols: list[str] = []
 
                 for symbol, market in markets.items():
-                    quote = market.get("quote")
-                    settle = market.get("settle")
-                    if self.config.testnet:
-                        # Testnet: restrict to a small stable default universe to avoid delisted pairs
-                        if symbol in self.default_symbols or quote == "USDT" or settle == "USDT":
-                            selected_symbols.append(symbol)
-                    else:
-                        if is_usdc_contract_market(market):
-                            selected_symbols.append(ensure_perp_usdc_format(symbol))
+                    # Always select USDC-settled contract markets
+                    if is_usdc_contract_market(market):
+                        selected_symbols.append(ensure_perp_usdc_format(symbol))
 
                 if selected_symbols:
                     # Keep a manageable top slice

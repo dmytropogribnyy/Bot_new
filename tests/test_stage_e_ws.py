@@ -131,8 +131,15 @@ async def test_stream_user_data_event_handling():
 
     # Mock aiohttp WebSocket
     with patch("aiohttp.ClientSession") as mock_client_session:
-        mock_ws = AsyncMock()
-        mock_ws.__aiter__ = AsyncMock(return_value=[mock_msg].__iter__())
+        # Provide a simple async-iterable WebSocket stub
+        class _DummyWS:
+            def __aiter__(self):
+                async def _gen():
+                    yield mock_msg
+
+                return _gen()
+
+        mock_ws = _DummyWS()
 
         # Create mock context manager for ws_connect
         mock_ws_cm = AsyncMock()
@@ -272,8 +279,7 @@ def test_stage_e_structure():
     """Test that Stage E components are properly structured."""
 
     # Import all Stage E components
-    from core.ws_client import (UserDataStreamManager, get_listen_key, keepalive, log_event_handler,
-                                stream_user_data)
+    from core.ws_client import UserDataStreamManager, get_listen_key, keepalive, log_event_handler, stream_user_data
 
     # Check that all required functions exist
     assert callable(get_listen_key)

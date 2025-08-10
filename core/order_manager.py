@@ -10,6 +10,7 @@ from typing import Any
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
+from core.precision import PrecisionError, normalize
 from core.unified_logger import UnifiedLogger
 
 
@@ -161,8 +162,24 @@ class OrderManager:
             except Exception as e:
                 self.logger.log_event("ORDER_MANAGER", "WARNING", f"Failed to set leverage for {symbol}: {e}")
 
-            # Place market order
-            order = await self.exchange.create_market_order(symbol, side, quantity)
+            # Precision gate for market entry
+            markets = await self.exchange.get_markets()
+            market = markets.get(symbol, {})
+            ticker = await self.exchange.get_ticker(symbol)
+            try:
+                current_price = float((ticker or {}).get("last") or (ticker or {}).get("close") or 0) or None
+            except Exception:
+                current_price = None
+
+            _, qty_norm, _ = normalize(None, float(quantity), market, current_price, symbol)
+            self.logger.log_event(
+                "ORDER_MANAGER",
+                "DEBUG",
+                f"Normalized market entry for {symbol}: qty {quantity} -> {qty_norm}",
+            )
+
+            # Place market order with normalized qty
+            order = await self.exchange.create_market_order(symbol, side, qty_norm)
 
             if not order or "id" not in order:
                 return {"success": False, "reason": "Failed to place order"}
@@ -212,11 +229,22 @@ class OrderManager:
             sl_price = self.calculate_stop_loss(entry_price, side)
             tp_levels = self.calculate_take_profit_levels(entry_price, side)
 
+            # Load market schema for precision gate
+            markets = await self.exchange.get_markets()
+            market = markets.get(symbol, {})
+
             # Determine closing side for protective orders (opposite to entry)
             close_side = "sell" if side == "buy" else "buy"
 
-            # Place stop loss order on the closing side
-            sl_order = await self.exchange.create_stop_loss_order(symbol, close_side, quantity, sl_price)
+            # Normalize SL before placing
+            sl_price_norm, sl_qty_norm, _ = normalize(sl_price, float(quantity), market, None, symbol)
+            self.logger.log_event(
+                "ORDER_MANAGER",
+                "DEBUG",
+                f"Normalized SL for {symbol}: price {sl_price} -> {sl_price_norm}, qty {quantity} -> {sl_qty_norm}",
+            )
+            # Place stop loss order on the closing side (reduceOnly set in client)
+            sl_order = await self.exchange.create_stop_loss_order(symbol, close_side, sl_qty_norm, sl_price_norm)
 
             # Place take profit orders
             tp_orders = []
@@ -225,7 +253,16 @@ class OrderManager:
                 tp_amount = round(float(quantity) * float(tp_fraction), 6)
                 if tp_amount <= 0:
                     continue
-                tp_order = await self.exchange.create_take_profit_order(symbol, close_side, tp_amount, tp_price)
+                # Normalize TP before placing
+                tp_price_norm, tp_qty_norm, _ = normalize(tp_price, tp_amount, market, None, symbol)
+                if tp_qty_norm <= 0:
+                    continue
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "DEBUG",
+                    f"Normalized TP for {symbol}: price {tp_price} -> {tp_price_norm}, qty {tp_amount} -> {tp_qty_norm}",
+                )
+                tp_order = await self.exchange.create_take_profit_order(symbol, close_side, tp_qty_norm, tp_price_norm)
                 tp_orders.append(tp_order)
 
             # Store orders
@@ -434,6 +471,56 @@ class OrderManager:
     def is_emergency_shutdown(self) -> bool:
         """Check if emergency shutdown is active"""
         return self.emergency_shutdown_flag
+
+    async def place_order(
+        self,
+        symbol: str,
+        order_type: str,
+        side: str,
+        quantity: float,
+        price: float | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Place an order with pre-order precision normalization and validation.
+
+        Applies PRICE_FILTER, LOT_SIZE, and MIN_NOTIONAL checks before sending.
+        """
+        try:
+            # Determine current price for market orders
+            current_price: float | None = None
+            if (order_type or "").strip().upper() == "MARKET":
+                try:
+                    ticker = await self.exchange.get_ticker(symbol)
+                    if ticker:
+                        last_val = ticker.get("last") or ticker.get("close")
+                        current_price = float(last_val) if last_val is not None else None
+                except Exception:
+                    current_price = None
+
+            # Pull market schema once from exchange client
+            try:
+                markets = await self.exchange.get_markets()
+                market_schema = markets.get(symbol, {})
+            except Exception:
+                market_schema = {}
+
+            # Normalize and validate against filters
+            price_norm, qty_norm, _min_notional = normalize(
+                price, float(quantity), market_schema, current_price, symbol
+            )
+
+            # Create order using normalized values
+            return await self.exchange.create_order(symbol, order_type, side, qty_norm, price_norm, params)
+
+        except PrecisionError:
+            raise
+        except Exception as e:
+            # Map known filter failures to PrecisionError for clarity
+            err_text = str(e)
+            lowered = err_text.lower()
+            if any(key in lowered for key in ("price_filter", "lot_size", "min_notional", "notional")):
+                raise PrecisionError(f"Exchange filter rejection: {err_text}") from None
+            raise
 
     async def shutdown(self, emergency: bool = False):
         """Shutdown OrderManager"""
