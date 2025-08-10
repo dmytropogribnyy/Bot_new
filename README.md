@@ -5,7 +5,9 @@
 
 Материал носит образовательный характер и **не является инвестиционным советом**.
 
--   Финальная концепция и Roadmap: [`USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md`](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md) (RC1.1)
+-   **Финальная концепция и Roadmap:** [`USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md`](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md) (RC1.1)
+-   **Execution Plan:** [`USDC Futures Bot — Execution Plan (Stages) — RC1.1`](USDC%20Futures%20Bot%20%E2%80%94%20Execution%20Plan%20%28Stages%29%20%E2%80%94%20RC1.1.md)
+-   **GPT Perspectives & Strategies:** [`GPT PERSPECTIVES & STRATEGIES INCOME.md`](GPT%20PERSPECTIVES%20%26%20STRATEGIES%20INCOME.md)
 -   **Статус проекта:** RC1.1 (09.08.2025)
 
     -   Тестнет‑прогон: выполнен
@@ -13,55 +15,57 @@
     -   Автозакрытие позиций и уборка «висячих» ордеров: реализованы
     -   TP/SL параметризация: реализована
     -   RiskGuard: реализован
+    -   GPT Perspectives (Tier A/B/C, auto‑rationale, audit trail): реализованы частично (P0–P2)
     -   Продовые WS‑стримы включаются после стабилизации (по умолчанию REST)
+
+---
 
 ## 🧭 Doc Map
 
--   **Spec:** [USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md](USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md) (RC1.1)
--   **Execution:** [USDC Futures Bot — Execution Plan (Stages) — RC1.1](USDC%20Futures%20Bot%20%E2%80%94%20Execution%20Plan%20%28Stages%29%20%E2%80%94%20RC1.1.md)
--   **Operator:** _README.md_ (this file)
+-   **Spec:** `USDC_FUTURES_FINAL_CONCEPT_AND_ROADMAP.md`
+-   **Execution:** `USDC Futures Bot — Execution Plan (Stages) — RC1.1.md`
+-   **Perspectives:** `GPT PERSPECTIVES & STRATEGIES INCOME.md`
+-   **Operator:** _README.md_ (этот файл)
 
 ---
 
 ## 📂 Структура
 
 -   `main.py` — точка входа (async), инициализация, основной цикл
-
 -   `core/`
 
     -   `config.py` — конфигурация (Pydantic + .env + runtime JSON)
-    -   `exchange_client.py` — слой биржи: `ccxt.binanceusdm`, sandbox/testnet, тайм‑синхронизация, бэкофф/ретраи
-    -   `symbol_utils.py` — нормализация символов: `perp_symbol(base, coin) -> f"{base}/{coin}:{coin}"`
-    -   `symbol_manager.py` — загрузка и фильтрация рынков (contract + settle/quote)
-    -   `order_manager.py` — идемпотентные `create/replace/cancel`, `clientOrderId`, логирование
-    -   `risk.py` — лимиты: `risk_per_trade_pct`, `daily_drawdown_pct`, `max_concurrent_positions`
-    -   `risk_guard.py` — **RiskGuard**: SL‑streak, daily‑loss блокировки
+    -   `exchange_client.py` — слой биржи (ccxt.binanceusdm, sandbox/testnet, тайм‑синхронизация, бэкофф/ретраи)
+    -   `symbol_utils.py` / `symbol_manager.py` — нормализация и фильтрация рынков
+    -   `order_manager.py` — идемпотентные операции, clientOrderId, логирование
+    -   `risk.py` / `risk_guard.py` — лимиты, SL‑streak/daily‑loss блокировки
     -   `sizing.py` — размер позиции в quote‑коине
-    -   `unified_logger.py` — логи: консоль/файл/SQLite/Telegram
-    -   `trade_engine_v2.py` — скан/сигналы/вход; интеграция со стратегией
+    -   `audit_logger.py` — аудит‑лог с sha256‑цепочкой (P4)
+    -   `trade_engine_v2.py` — логика сигналов и исполнения
 
--   `strategies/`
-
-    -   `base_strategy.py`, `scalping_v1.py`
-
--   `telegram/telegram_bot.py` — уведомления и команды управления
-
--   `tests/*.py` — базовые и интеграционные тесты
-
--   `data/` — конфиги и БД (`data/trading_bot.db`, `data/runtime_config.json`)
+-   `strategies/` — базовые стратегии (`base_strategy.py`, `scalping_v1.py`)
+-   `telegram/` — уведомления и команды управления
+-   `tests/` — юнит‑ и интеграционные тесты
+-   `data/` — конфиги и БД (`runtime_config.json`, `trading_bot.db`)
 
 ---
 
 ## ⚙️ Возможности
 
--   Асинхронная архитектура (asyncio), модульность
--   Управление риском: дневной лимит, ограничение одновременно открытых позиций, обязательный SL
--   **RiskGuard**: блокировка после SL‑streak и при дневном убытке
--   Ступенчатый TP, уборка зависших ордеров
--   **Параметризация TP/SL**: выбор limit/market для TP, `workingType` для триггеров
--   Символы под USDC/USDT: фильтры по контрактности/объёму/волатильности
+-   Асинхронная модульная архитектура
+-   Управление риском: дневной лимит, ограничение позиций, обязательный SL
+-   **RiskGuard:** блокировка после SL‑streak и при дневном убытке
+-   **TP/SL параметризация:** limit/market, `workingType` для триггеров
+-   Символы под USDC/USDT с фильтрацией
 -   Telegram‑команды: статус, пауза/резюм, emergency‑стоп
--   Логи и аналитика: файл, SQLite, агрегаты и runtime‑снапшоты
+-   Логи: файл, SQLite, агрегаты, runtime‑снапшоты
+-   **GPT Perspectives:**
+
+    -   Trader/Risk/Execution/Capital/Compliance Lens
+    -   Автоматическое обоснование действий (Decision Rationale)
+    -   Audit trail с sha256
+    -   Tier A/B/C стратегии
+
 -   Режимы: DRY‑RUN / TESTNET (USDT) / PROD (USDC)
 
 ---
@@ -84,29 +88,23 @@ cp .env.example .env
 ### Переменные окружения (.env)
 
 ```env
-# Binance API
 API_KEY=...
 API_SECRET=...
-
-# Окружение
-TESTNET=true            # true → USDT и sandbox; false → прод
-QUOTE_COIN=USDC         # по умолчанию USDC; при TESTNET=true можно опустить — будет USDT
+TESTNET=true
+QUOTE_COIN=USDC
 SETTLE_COIN=USDC
-
-# Торговые настройки
 LEVERAGE_DEFAULT=5
 RISK_PER_TRADE_PCT=0.5
 DAILY_DRAWDOWN_PCT=3.0
 MAX_CONCURRENT_POSITIONS=2
-MIN_POSITION_SIZE=10.0   # в quote-коине (USDC/USDT)
-
-# RC1.1: Параметры ордеров
-WORKING_TYPE=MARK_PRICE   # MARK_PRICE или CONTRACT_PRICE
-TP_ORDER_STYLE=limit      # limit или market
-MAX_SL_STREAK=3           # макс. число SL подряд
+MIN_POSITION_SIZE=10.0
+WORKING_TYPE=MARK_PRICE
+TP_ORDER_STYLE=limit
+MAX_SL_STREAK=3
+STRATEGY_TIER=A
 ```
 
-> Примечание: переменные окружения в UPPER_CASE соответствуют полям Pydantic‑конфига `working_type`, `tp_order_style`, `max_sl_streak`.
+> `STRATEGY_TIER`: A — консервативная, B — сбалансированная, C — агрессивная.
 
 ---
 
@@ -115,22 +113,16 @@ MAX_SL_STREAK=3           # макс. число SL подряд
 ```python
 import asyncio, ccxt.async_support as ccxt
 
-API_KEY = "..."
-API_SECRET = "..."
-TESTNET = True  # False для продакшена
-
 async def init():
     ex = ccxt.binanceusdm({
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
+        "apiKey": "...",
+        "secret": "...",
         "enableRateLimit": True,
         "options": {"adjustForTimeDifference": True},
     })
-    ex.set_sandbox_mode(TESTNET)
+    ex.set_sandbox_mode(True)
     await ex.load_markets()
-
-    quote = "USDT" if TESTNET else "USDC"
-    symbol = f"BTC/{quote}:{quote}"
+    symbol = "BTC/USDT:USDT"
     await ex.set_leverage(5, symbol, {"marginMode": "isolated"})
     return ex, symbol
 
@@ -142,46 +134,33 @@ asyncio.run(init())
 ## ▶️ Запуск
 
 ```bash
-# Dry‑run
-python main.py --dry
-
-# Testnet (USDT)
-export TESTNET=true
-python main.py
-
-# Prod (USDC)
-export TESTNET=false
-python main.py
+python main.py --dry         # Dry-run
+export TESTNET=true && python main.py   # Testnet
+export TESTNET=false && python main.py  # Prod
 ```
-
-### Быстрый чек (Testnet)
-
-1. `python quick_check.py` — проверка рынков/плеча/доступов.
-2. Создание/отмена тестового ордера; проверка статусов через WS.
-3. Перезапуск — сверка позиций/ордеров.
 
 ---
 
 ## 🧪 Тесты
 
--   Юнит‑тесты: `perp_symbol`, фильтрация рынков, сайзинг/риск, RiskGuard.
--   Интеграционные (Testnet): place/cancel, приём событий WS, реконнект + ресинк.
+-   Юнит‑тесты: конфиг, символы, RiskGuard, sizing
+-   Интеграционные: Testnet place/cancel, WS поток, реконнект + ресинк
 
 ---
 
 ## 🚀 Деплой
 
--   Dockerfile (+ optional compose), переменные окружения через `.env`.
--   Логи: ротация.
--   Алерты: Telegram/Email/Slack (по желанию).
+-   Dockerfile/compose
+-   Логи: ротация
+-   Алерты: Telegram/Email/Slack
 
 ---
 
 ## ⚠️ Безопасность
 
--   Ключи только в `.env`. Никогда не коммитить реальные ключи.
--   Включать реальную торговлю только после успешного DRY RUN и тестнета.
+-   Ключи только в `.env`
+-   Прод включать только после DRY RUN и тестнета
 
-—
+---
 
-© Binance USDC Futures Bot v2.4 RC1.1 — актуальная документация и статус поддерживаются в этом README и сопроводительных `.md` файлах.
+© Binance USDC Futures Bot v2.4 RC1.1

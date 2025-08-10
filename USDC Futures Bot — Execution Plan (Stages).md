@@ -18,340 +18,497 @@
 
 ---
 
-## Delta (что изменилось vs RC1)
+## Execution Order (Safety-first)
 
-1. **TP параметризуется**: `tp_order_style = "limit"|"market"` (по умолчанию — `"limit"`).
-2. **SL/TP всегда с `reduceOnly=True` и `workingType`** (по умолчанию `"MARK_PRICE"`).
-3. **RiskGuard**: единая точка блокировки входов (SL-streak и дневной стоп).
-4. **Hygiene**: формализован перенос легаси в `core/legacy/` и `references_archive/`.
-   Порядок приоритетов: A → D → F → (тестнет) → E.
-
-## Авторитетный порядок выполнения (Safety‑first)
-
-1. **Stage A — Repo Hygiene**
-2. **Stage D — Exchange Client** _(содержит B‑lite конфиг: `tp_order_style`, `working_type`)_
-3. **Stage F — Risk & Sizing (RiskGuard)**
-4. **Testnet smoke** _(dry‑run → micro lot)_
-5. **Stage B — Unified Config (full)**
-6. **Stage C — Symbols & Markets (full)**
-7. **Stage E — WebSocket**
-8. **Stage G/H/I/J** по плану
+1. Stage A — Repo Hygiene
+2. Stage D — Exchange Client (B-lite config: `tp_order_style`, `working_type`)
+3. Stage F — Risk & Sizing (RiskGuard)
+4. Testnet smoke-test
+5. Stage B — Unified Config (full)
+6. Stage C — Symbols & Markets (full)
+7. Stage E — WebSocket
+8. Stage P0–P5 — GPT Perspectives Integration
+9. Stage G/H/I/J
 
 ---
 
-## Stage 0 — Alignment & Baseline (0.5д)
+## Stage D — Exchange Client (+ B-lite config) — Пример кода
 
-**Цель:** зафиксировать исходную точку и рабочий процесс.
+**Задача:** добавить поля `working_type` и `tp_order_style` в `TradingConfig`, обновить функции создания SL/TP.
 
--   [ ] Issue-борд со стадиями A–J
--   [ ] Зафиксировать README + Final Concept (RC1.1) в репо
--   [ ] `.editorconfig`, `ruff`, `mypy` (строгий профиль)
+```python
+class TradingConfig(BaseModel):
+    working_type: Literal["MARK_PRICE","CONTRACT_PRICE"] = "MARK_PRICE"
+    tp_order_style: Literal["limit","market"] = "limit"
 
-**Инструменты:** gpt-5-fast (без MAX)
-**DoD:** PR `docs: rc1.1 docs landed`, зелёный `ruff/mypy`.
+def create_stop_loss_order(symbol, sl_price):
+    params = {
+        "reduceOnly": True,
+        "workingType": config.working_type
+    }
+    return client.create_order(
+        symbol=symbol,
+        type="STOP_MARKET",
+        side="SELL",
+        stopPrice=sl_price,
+        params=params
+    )
+
+def create_take_profit_order(symbol, tp_price):
+    params = {
+        "reduceOnly": True,
+        "workingType": config.working_type,
+        "stopPrice": tp_price
+    }
+    order_type = "TAKE_PROFIT_MARKET" if config.tp_order_style == "market" else "TAKE_PROFIT"
+    price_arg = None if order_type == "TAKE_PROFIT_MARKET" else tp_price
+    return client.create_order(
+        symbol=symbol,
+        type=order_type,
+        side="SELL",
+        price=price_arg,
+        params=params
+    )
+```
+
+**Acceptance:** интеграционный тест на testnet ставит SL и TP обоих стилей, логи содержат `workingType` и `reduceOnly`.
 
 ---
 
-## Stage A — Repo Hygiene (0.5д)
+## Stage F — RiskGuard — Пример кода
 
-**Цель:** репозиторий без дублей/«references…» в рантайме; фикс Python; чистые кеши.
+```python
+class RiskGuard:
+    def __init__(self, config, logger):
+        self.config = config
+        self.logger = logger
+        self.sl_streak = 0
+        self.daily_loss = 0.0
+        self.max_sl_streak = getattr(config, 'max_sl_streak', 3)
 
-**Tasks**
+    def can_open_position(self):
+        if self.sl_streak >= self.max_sl_streak:
+            return False, "Max SL streak reached"
+        if self.daily_loss >= self.config.daily_drawdown_pct:
+            return False, "Daily drawdown limit reached"
+        return True, "OK"
+```
 
--   [ ] Увести легаси в архив: `core/legacy/` и `references_archive/` (не импортируются).
--   [ ] Исключить `references …` из PYTHONPATH и `.gitignore`.
--   [ ] Очистить кеши (`__pycache__`, `.ruff_cache`, `.mypy_cache`).
--   [ ] `pyproject.toml`: Python 3.12; профили `ruff/mypy`; `make lint|fmt|type|all`.
+**Acceptance:** тесты на 3 подряд SL и превышение дневного лимита блокируют вход.
 
-**Пример команд**
+---
+
+## Stage P0–P5 — GPT Perspectives Integration — Ключевые детали
+
+-   P0: `strategy.tier`, секции risk/orders/execution/compliance в конфиге, audit.jsonl.
+-   P1: Авто-rationale для действий, формат JSON.
+-   P2: RiskGuard++ с tier-зависимыми лимитами.
+-   P3: Автодеградация WS→REST при сбоях.
+-   P4: Audit trail с цепочкой sha256.
+-   P5: Playbooks для инцидентов (`/playbook`).
+
+**Acceptance:** все пункты в тестах; при старте в логах карточка сборки (commit hash, tier, лимиты).
+
+---
+
+Остальные стадии (A, B, C, E, G, H, I, J) остаются без изменений, но с учётом кода и требований из Final Concept RC1.1.
+
+---
+
+# Appendix — Implementation details & code scaffolds
+
+> Ниже — **конкретные заготовки кода** и команды для быстрых PR по Stage A/D/F и P‑блокам (Perspectives). Все сниппеты минимальны и предназначены для встраивания без ломки текущей структуры. Названия модулей можно адаптировать под фактические пути.
+
+## Stage A — Repo Hygiene (команды)
 
 ```bash
-mkdir -p core/legacy references_archive
-mv core/trade_engine.py core/legacy/ || true
-mv core/binance_api.py core/legacy/ || true
-mv "references from BinanceBot_V2"/* references_archive/ 2>/dev/null || true
+# Стандартизация окружения
+python -m venv .venv && source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt || true
 
+# Изоляция легаси
+mkdir -p core/legacy references_archive
+mv core/trade_engine.py core/legacy/        2>/dev/null || true
+mv core/binance_api.py core/legacy/         2>/dev/null || true
+mv core/exchange_init.py core/legacy/       2>/dev/null || true
+mv core/position_manager.py core/legacy/    2>/dev/null || true
+mv core/order_utils.py core/legacy/         2>/dev/null || true
+mv core/engine_controller.py core/legacy/   2>/dev/null || true
+mv core/risk_adjuster.py core/legacy/       2>/dev/null || true
+mv core/fail_stats_tracker.py core/legacy/  2>/dev/null || true
+mv core/tp_utils.py core/legacy/            2>/dev/null || true
+
+# Чистка кешей
 find . -type d -name "__pycache__" -exec rm -rf {} +
 rm -rf .ruff_cache .mypy_cache
 
-echo "core/legacy/"           >> .gitignore
-echo "references_archive/"    >> .gitignore
+echo "core/legacy/"        >> .gitignore
+echo "references_archive/" >> .gitignore
 ```
 
-**Инструменты:** gpt-5-fast (BA=off)
-**Acceptance:** `make fmt && make lint && make type` ок; `python main.py --dry` не падает.
+---
+
+## Stage B — Unified Config (код)
+
+`core/config.py`
+
+```python
+from __future__ import annotations
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
+import os
+
+QuoteCoin = Literal["USDT", "USDC"]
+WorkingType = Literal["MARK_PRICE", "CONTRACT_PRICE"]
+TPStyle = Literal["limit", "market"]
+
+class TradingConfig(BaseModel):
+    TESTNET: bool = Field(default=True)
+    QUOTE_COIN: Optional[QuoteCoin] = Field(default=None)
+    SETTLE_COIN: str = Field(default="USDC")
+
+    LEVERAGE_DEFAULT: int = 5
+    RISK_PER_TRADE_PCT: float = 0.005
+    DAILY_DRAWDOWN_PCT: float = 0.03
+    MAX_CONCURRENT_POSITIONS: int = 2
+
+    working_type: WorkingType = "MARK_PRICE"
+    tp_order_style: TPStyle = "limit"
+
+    max_sl_streak: int = 3
+
+    @property
+    def resolved_quote_coin(self) -> QuoteCoin:
+        # Автоподстановка USDT для тестнета, иначе USDC
+        if self.TESTNET and not self.QUOTE_COIN:
+            return "USDT"
+        return self.QUOTE_COIN or "USDC"
+
+    @classmethod
+    def from_env(cls) -> "TradingConfig":
+        def getenv_bool(k: str, default: bool) -> bool:
+            v = os.getenv(k)
+            return default if v is None else v.lower() in {"1","true","yes","y"}
+        return cls(
+            TESTNET=getenv_bool("TESTNET", True),
+            QUOTE_COIN=os.getenv("QUOTE_COIN") or None,
+            SETTLE_COIN=os.getenv("SETTLE_COIN", "USDC"),
+            LEVERAGE_DEFAULT=int(os.getenv("LEVERAGE_DEFAULT", 5)),
+            RISK_PER_TRADE_PCT=float(os.getenv("RISK_PER_TRADE_PCT", 0.005)),
+            DAILY_DRAWDOWN_PCT=float(os.getenv("DAILY_DRAWDOWN_PCT", 0.03)),
+            MAX_CONCURRENT_POSITIONS=int(os.getenv("MAX_CONCURRENT_POSITIONS", 2)),
+            working_type=(os.getenv("WORKING_TYPE") or "MARK_PRICE"),
+            tp_order_style=(os.getenv("TP_ORDER_STYLE") or "limit"),
+            max_sl_streak=int(os.getenv("MAX_SL_STREAK", 3)),
+        )
+```
+
+`tests/test_config.py`
+
+```python
+from core.config import TradingConfig
+
+def test_auto_quote_coin_testnet():
+    cfg = TradingConfig(TESTNET=True, QUOTE_COIN=None)
+    assert cfg.resolved_quote_coin == "USDT"
+
+def test_auto_quote_coin_prod_default_usdc():
+    cfg = TradingConfig(TESTNET=False, QUOTE_COIN=None)
+    assert cfg.resolved_quote_coin == "USDC"
+```
 
 ---
 
-## Stage B — Unified Config (после D+F) (0.5–1д)
+## Stage C — Symbols & Markets (код)
 
-**Цель:** единый конфиг + автопереключение USDT(Testnet)/USDC(Prod).
+`core/symbol_utils.py`
 
-**Tasks**
+```python
+def perp_symbol(base: str, coin: str) -> str:
+    base = base.upper(); coin = coin.upper()
+    return f"{base}/{coin}:{coin}"
+```
 
--   [ ] `core/config.py`: `TESTNET`, `QUOTE_COIN`, `SETTLE_COIN`, `LEVERAGE_DEFAULT` и риск-поля.
--   [ ] Автологика: `TESTNET=true` & пустой `QUOTE_COIN` → `USDT`, иначе → `USDC`.
--   [ ] `.env.example` обновлён.
+`core/symbol_manager.py`
 
-**Инструменты:** gpt-5-high-fast (BA, MAX=ON)
-**Acceptance:** юнит-тесты конфигурации; лог старта печатает режим (USDT testnet / USDC prod).
+```python
+from typing import Iterable, Dict, Any, List
+
+def filter_usdsm_contracts(markets: Dict[str, Any], settle_coin: str, quote_coin: str) -> List[str]:
+    result = []
+    for m in markets.values():
+        if not m.get("contract"):
+            continue
+        if m.get("settle") == settle_coin or m.get("quote") == quote_coin:
+            result.append(m["symbol"])  # формат CCXT, например "BTC/USDC:USDC"
+    return sorted(set(result))
+
+def default_symbols(coin: str) -> List[str]:
+    bases = ["BTC", "ETH", "BNB", "SOL", "ADA"]
+    return [f"{b}/{coin}:{coin}" for b in bases]
+```
+
+`tests/test_symbols.py`
+
+```python
+from core.symbol_utils import perp_symbol
+
+def test_perp_symbol():
+    assert perp_symbol("btc","usdc") == "BTC/USDC:USDC"
+```
 
 ---
 
-## Stage C — Symbols & Markets (после D+F) (0.5–1д)
+## Stage D — Exchange Client (+ TP/SL параметризация)
 
-**Цель:** нормализация символов и фильтр рынков.
+`core/exchange_client.py` (фрагменты)
 
-**Tasks**
+```python
+from typing import Optional, Dict, Any
 
--   [ ] `core/symbol_utils.py`: `perp_symbol(base, coin)` → `BASE/QUOTE:QUOTE`.
--   [ ] `core/symbol_manager.py`: фильтр `contract==True` и `settle==SETTLE_COIN` (или `quote==QUOTE_COIN`).
--   [ ] `default_symbols(coin)` → BTC, ETH, BNB, SOL, ADA.
+async def create_stop_loss_order(exchange, symbol: str, side: str, qty: float, stop_price: float, cfg) -> Dict[str, Any]:
+    params = {
+        "reduceOnly": True,
+        "workingType": cfg.working_type,
+        "stopPrice": float(stop_price),
+    }
+    order_type = "STOP_MARKET"
+    price = None
+    return await exchange.create_order(symbol, order_type, side, qty, price, params)
 
-**Инструменты:** gpt-5-high-fast (BA, MAX=ON)
-**Acceptance:** юнит-тесты `perp_symbol`/фильтров; лог корректно выводит набор символов.
+async def create_take_profit_order(exchange, symbol: str, side: str, qty: float, tp_price: float, cfg) -> Dict[str, Any]:
+    params = {
+        "reduceOnly": True,
+        "workingType": cfg.working_type,
+        "stopPrice": float(tp_price),
+    }
+    if cfg.tp_order_style == "market":
+        order_type = "TAKE_PROFIT_MARKET"; price = None
+    else:
+        order_type = "TAKE_PROFIT"; price = float(tp_price)
+    return await exchange.create_order(symbol, order_type, side, qty, price, params)
+```
+
+`tests/test_tp_sl.py`
+
+```python
+import types
+import pytest
+from core.config import TradingConfig
+from core.exchange_client import create_stop_loss_order, create_take_profit_order
+
+class DummyEx:
+    async def create_order(self, symbol, order_type, side, amount, price, params):
+        return {"symbol": symbol, "type": order_type, "side": side, "amount": amount, "price": price, "params": params}
+
+@pytest.mark.asyncio
+async def test_tp_styles():
+    ex = DummyEx(); cfg = TradingConfig()
+    o1 = await create_take_profit_order(ex, "BTC/USDC:USDC", "sell", 0.01, 50000, cfg)
+    assert o1["type"] == "TAKE_PROFIT" and o1["price"] == 50000
+    cfg.tp_order_style = "market"
+    o2 = await create_take_profit_order(ex, "BTC/USDC:USDC", "sell", 0.01, 50000, cfg)
+    assert o2["type"] == "TAKE_PROFIT_MARKET" and o2["price"] is None
+
+@pytest.mark.asyncio
+async def test_sl_params():
+    ex = DummyEx(); cfg = TradingConfig(working_type="MARK_PRICE")
+    o = await create_stop_loss_order(ex, "BTC/USDC:USDC", "sell", 0.01, 49000, cfg)
+    assert o["params"]["reduceOnly"] is True
+    assert o["params"]["workingType"] == "MARK_PRICE"
+```
 
 ---
 
-## Stage D — Exchange Client (+ TP/SL параметризация, + B-lite конфиг) (0.5–1д)
+## Stage F — Risk & Sizing (код)
 
-**Цель:** устойчивый Exchange Layer + гибкая логика TP/SL.
+`core/risk_guard.py`
 
-_Примечание (B‑lite): на этом этапе из Stage B добавляем только 2 поля конфигурации — `tp_order_style` и `working_type`; остальная унификация конфигурации будет выполнена позже (Stage B full)._
+```python
+from dataclasses import dataclass
 
-**Tasks**
+@dataclass
+class RiskState:
+    sl_streak: int = 0
+    daily_loss: float = 0.0  # в quote-коине
 
--   [ ] `ccxt.binanceusdm`, `set_sandbox_mode(TESTNET)`, `await load_markets()`.
--   [ ] `set_leverage(LEVERAGE_DEFAULT, symbol, {"marginMode": "isolated"})`.
--   [ ] **Config**: добавить
+class RiskGuard:
+    def __init__(self, config, logger):
+        self.cfg = config
+        self.log = logger
+        self.s = RiskState()
 
-    -   `working_type: Literal["MARK_PRICE","CONTRACT_PRICE"]="MARK_PRICE"`
-    -   `tp_order_style: Literal["limit","market"]="limit"`
+    def record_sl(self, loss_quote: float) -> None:
+        self.s.sl_streak += 1
+        self.s.daily_loss += abs(loss_quote)
 
--   [ ] **SL**: `STOP_MARKET` + `reduceOnly=True` + `params["workingType"]=config.working_type`.
--   [ ] **TP**: если `tp_order_style=="market"` → `TAKE_PROFIT_MARKET` (`price=None`, `stopPrice=tp`); иначе `TAKE_PROFIT` (`price=tp`, `stopPrice=tp`), всегда `reduceOnly=True` и `workingType` из конфига.
--   [ ] OMS: идемпотентный `clientOrderId`, ретраи/бэкофф, чистые логи.
+    def record_tp(self, profit_quote: float) -> None:
+        # сбрасываем серию при профите
+        self.s.sl_streak = 0
+        self.s.daily_loss = max(0.0, self.s.daily_loss - abs(profit_quote) * 0.0)
 
-**Cursor prompt (кусок)**
+    def can_open_position(self) -> tuple[bool, str]:
+        if self.s.sl_streak >= self.cfg.max_sl_streak:
+            return False, f"SL streak reached: {self.s.sl_streak}/{self.cfg.max_sl_streak}"
+        # daily_loss проверяется относительно эквити — передайте сюда актуальный баланс при вызове, если нужно
+        # Можно вынести в отдельный метод с dependency на Portfolio/Account
+        return True, "ok"
+```
+
+`tests/test_risk_guard.py`
+
+```python
+from core.config import TradingConfig
+from core.risk_guard import RiskGuard
+
+class DummyLogger:
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+
+def test_streak_blocks_after_3():
+    g = RiskGuard(TradingConfig(max_sl_streak=3), DummyLogger())
+    for _ in range(3):
+        g.record_sl(10)
+    ok, reason = g.can_open_position()
+    assert not ok and "SL streak" in reason
+```
+
+---
+
+## Stage E — WebSocket/User Data (скелет)
+
+`core/ws_client.py`
+
+```python
+import asyncio, aiohttp, time, json
+
+# Примерный скелет: получение listenKey и keepalive через REST, события — через сокет
+async def get_listen_key(http, api_base, headers) -> str:
+    async with http.post(f"{api_base}/fapi/v1/listenKey", headers=headers) as r:
+        data = await r.json()
+        return data["listenKey"]
+
+async def keepalive(http, api_base, headers, listen_key):
+    while True:
+        await asyncio.sleep(25*60)
+        await http.put(f"{api_base}/fapi/v1/listenKey?listenKey={listen_key}", headers=headers)
+
+async def stream_user_data(ws_url, listen_key, on_event):
+    url = f"{ws_url}/ws/{listen_key}"
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(url, heartbeat=30) as ws:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    await on_event(json.loads(msg.data))
+```
+
+---
+
+## P4 — Compliance/Audit (append-only JSONL с хеш-цепочкой)
+
+`core/audit_logger.py`
+
+```python
+import json, hashlib, os, time
+from typing import Optional
+
+class AuditLogger:
+    def __init__(self, path: str):
+        self.path = path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    def _last_hash(self) -> str:
+        try:
+            with open(self.path, "rb") as f:
+                last = None
+                for line in f: last = line
+                if not last: return "0"*64
+                obj = json.loads(last)
+                return obj.get("hash", "0"*64)
+        except FileNotFoundError:
+            return "0"*64
+
+    def write(self, payload: dict) -> None:
+        prev = self._last_hash()
+        body = {"ts": time.time(), "prev_hash": prev, **payload}
+        raw = json.dumps(body, sort_keys=True).encode()
+        h = hashlib.sha256(raw).hexdigest()
+        body["hash"] = h
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(body, ensure_ascii=False) + "
+")
+```
+
+Пример использования:
+
+```python
+from core.audit_logger import AuditLogger
+
+audit = AuditLogger("logs/audit.jsonl")
+audit.write({"action":"order.place", "symbol":"BTC/USDC:USDC", "why":"signal=breakout; rr>=1.8"})
+```
+
+---
+
+## P1 — Decision Rationale (структура записи)
+
+```json
+{
+    "ts": 1723286400.123,
+    "action": "order.place",
+    "lens": ["Trader", "Risk"],
+    "symbol": "BTC/USDC:USDC",
+    "side": "buy",
+    "size": 0.01,
+    "why": "breakout>ATR; trend=up; risk_ok",
+    "config": {
+        "tp_style": "limit",
+        "working_type": "MARK_PRICE",
+        "risk": { "per_trade_pct": 0.5, "daily_dd_pct": 3 }
+    }
+}
+```
+
+---
+
+## Stage H — quick_check (скелет)
+
+`tools/quick_check.py`
+
+```python
+from core.config import TradingConfig
+
+def main():
+    cfg = TradingConfig.from_env()
+    print("Mode:", "TESTNET" if cfg.TESTNET else "PROD", cfg.resolved_quote_coin)
+    print("Leverage:", cfg.LEVERAGE_DEFAULT)
+    print("TP style:", cfg.tp_order_style, "WorkingType:", cfg.working_type)
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## Cursor промпты (готовые блоки для Stage D/F)
+
+**Stage D**
 
 ```
 Задача: доработка Exchange Client.
-1) В TradingConfig добавь поля:
-   - working_type: Literal["MARK_PRICE","CONTRACT_PRICE"]="MARK_PRICE"
-   - tp_order_style: Literal["limit","market"]="limit"
-2) В create_stop_loss_order / create_take_profit_order:
-   - всегда params["reduceOnly"]=True и params["workingType"]=config.working_type
-   - TP: "market" → TAKE_PROFIT_MARKET (price=None, stopPrice=tp);
-         иначе → TAKE_PROFIT (price=tp, stopPrice=tp)
-3) Покажи DIFF, не трогай бизнес-логику вне этих функций.
+1) В TradingConfig добавь поля working_type и tp_order_style (дефолты, как в docs).
+2) В create_stop_loss_order / create_take_profit_order всегда проставляй reduceOnly и workingType; TP: market → TAKE_PROFIT_MARKET.
+3) Покажи DIFF, не трогать остальной код.
 ```
 
-**Инструменты:** gpt-5-fast → gpt-5-high (на OMS)
-**Acceptance:** интеграционный тест на testnet ставит SL и TP обоих стилей; логи содержат `workingType` и `reduceOnly`.
-
----
-
-## Stage E — User Data / WebSocket (1–2д)
-
-**Цель:** устойчивый WS-контур; включать после стабилизации REST.
-
-**Tasks**
-
--   [ ] `listenKey` + keepalive \~30 мин
--   [ ] Подписки: `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`
--   [ ] Реконнект + пост-рестарт **полная REST-сверка**
-
-**Инструменты:** gpt-5-high; аудит **Opus 4.1** (MAX=ON, один проход)
-**Acceptance:** длительный прогон на тестнете (2–4ч) без потери событий/рассинхронизаций.
-
----
-
-## Stage F — Risk & Sizing (0.5–1д)
-
-**Цель:** строгие лимиты и детерминированный сайзинг; **RiskGuard**.
-
-**Tasks**
-
--   [ ] `core/risk_guard.py`: класс `RiskGuard(config, logger)` с `sl_streak`, `daily_loss`, `max_sl_streak`, `can_open_position()->(bool,str)`.
--   [ ] Интеграция: перед открытием позиций спрашивать guard; блокировать по streak/day-loss.
--   [ ] Сайзинг от эквити в `QUOTE_COIN` c учётом `stepSize/tickSize`.
--   [ ] Тесты на граничные кейсы (3 подряд SL, дневной предел).
-
-**Инструменты:** gpt-5-high; аудит **Opus 4.1** точечно
-**Acceptance:** юниты зелёные; ручной тест: при превышении лимитов вход блокируется.
-
----
-
-## Stage G — Strategy Integration (0.5д)
-
-**Цель:** чистая интеграция `scalping_v1` с кулдауном.
-
-**Инструменты:** gpt-5-fast
-**Acceptance:** dry-run/тестнет-прогон, ожидаемые входы/выходы в логах.
-
----
-
-## Stage H — Utilities & Quick Check (0.5д)
-
-**Цель:** операционная готовность.
-
-**Tasks**
-
--   [ ] Обновить `check_orders.py`, `check_positions.py`, `close_position.py`, `main.py`.
--   [ ] `quick_check.py`: режим, рынки, плечо, доступы; по возможности ping WS; вывод стройного отчёта.
-
-**Инструменты:** gpt-5-fast
-**Acceptance:** `python quick_check.py` проходит.
-
----
-
-## Stage I — Tests & CI (0.5–1д)
-
-**Цель:** воспроизводимость.
-
-**Tasks**
-
--   [ ] Юниты: symbols, filters, sizing, risk
--   [ ] Интеграция: testnet place/cancel, WS поток, реконнект
--   [ ] CI: 2 прогона (USDT testnet / USDC prod-mock)
-
-**Инструменты:** gpt-5-fast + gpt-5-high
-**Acceptance:** зелёный CI, стабильные тайминги.
-
----
-
-## Stage J — Deploy & Observability (0.5–1д)
-
-**Цель:** пред-прод.
-
-**Tasks**
-
--   [ ] Dockerfile/compose, лог-ротация
--   [ ] Алерты (Telegram/Email/Slack)
-
-**Инструменты:** gpt-5-fast
-**Acceptance:** запуск контейнера (testnet), алерты работают.
-
----
-
-## Параллельные потоки
-
--   **Docs polish (опционально):** Opus 4.1 — финальный аудит README/Concept после E/F.
--   **Perf pass:** профилирование задержек, оптимизация ретраев (после D/E).
-
----
-
-## Решения по моделям
-
--   По умолчанию: **gpt-5-fast**
--   Большие/многофайловые задачи: **gpt-5-high-fast** + **BA** + **MAX ON** (B/C)
--   Глубокая логика/риск/WS: **gpt-5-high**; аудит: **Opus 4.1** (разово, MAX ON)
-
----
-
-## Контроль качества
-
--   **Definition of Done**: acceptance + тесты + обновлённые логи/README при необходимости
--   **Evidence pack**: дифф PR, пример лога запуска, артефакты тестов
--   **Roll-back**: feature branches, atomic commits, метки `rc1.1.stageX`
-
----
-
-## What to do Now (Next 24h)
-
-1. **Stage A (Repo Hygiene)** → BA off, gpt-5-fast → PR.
-2. **Stage D (Exchange Client + TP/SL + B-lite config)** → gpt-5-high, BA on → PR.
-3. **Stage F (RiskGuard)** → gpt-5-high → PR.
-4. **Smoke test**: `--dry` → короткий testnet с микролотом.
-5. Затем: **Stage B (full) → Stage C (full) → Stage E (WS)**.
-
----
-
-## Сегодня — оперативный чек‑лист
-
-### Stage A — Hygiene (≈30 мин)
-
-```bash
-cd BinanceBot_OLD_migration
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-mkdir -p core/legacy references_archive
-mv core/trade_engine.py core/legacy/        || true
-mv core/binance_api.py core/legacy/         || true
-mv core/exchange_init.py core/legacy/       || true
-mv core/position_manager.py core/legacy/    || true
-mv core/order_utils.py core/legacy/         || true
-mv core/engine_controller.py core/legacy/   || true
-mv core/risk_adjuster.py core/legacy/       || true
-mv core/fail_stats_tracker.py core/legacy/  || true
-mv core/tp_utils.py core/legacy/            || true
-mv "references from BinanceBot_V2"/* references_archive/ 2>/dev/null || true
-
-find . -type d -name "__pycache__" -exec rm -rf {} +
-rm -rf .ruff_cache .mypy_cache
-echo "core/legacy/" >> .gitignore
-echo "references_archive/" >> .gitignore
-
-python main.py --dry
-git add -A && git commit -m "[stage-A] chore: repo hygiene & legacy isolation" && git push
-```
-
-### Stage D — Exchange Client (+ B-lite config) (≈1 час)
-
-**Cursor → промпт:**
+**Stage F**
 
 ```
-Задача: доработка Exchange Client (Stage D) + B-lite конфиг.
-1) В TradingConfig добавь поля:
-   - working_type: Literal["MARK_PRICE","CONTRACT_PRICE"] = "MARK_PRICE"
-   - tp_order_style: Literal["limit","market"] = "limit"
-2) В create_stop_loss_order / create_take_profit_order:
-   - всегда добавляй params["reduceOnly"]=True
-   - всегда добавляй params["workingType"]=config.working_type
-   - TP: если tp_order_style=="market" → type="TAKE_PROFIT_MARKET", price=None, params["stopPrice"]=tp
-         иначе → type="TAKE_PROFIT", price=tp, params["stopPrice"]=tp
-3) Ничего вне этих функций не трогать. Покажи DIFF и обнови docstring.
-Acceptance: интеграционный тест (testnet) ставит SL и TP обоих стилей без ошибок;
-в логах видны workingType и reduceOnly.
+Создай core/risk_guard.py с классом RiskGuard(config, logger): поля sl_streak, daily_loss; методы record_sl/record_tp/can_open_position.
+Интегрируй проверку в точке входа, добавь юнит-тесты.
 ```
 
-**Терминал:**
+---
 
-```bash
-git checkout -b feat/stage-d-exchange
-pytest -q || true
-git add -A && git commit -m "[stage-D] feat: TP/SL parametrization + workingType" && git push
-```
-
-### Stage F — RiskGuard (≈1 час)
-
-**Cursor → промпт:**
-
-```
-Создай core/risk_guard.py и внедри RiskGuard.
-Требования:
-- class RiskGuard(config, logger) c полями sl_streak, daily_loss, max_sl_streak(getattr(config, 'max_sl_streak',3))
-- can_open_position() -> tuple[bool,str]: блок по streak и по daily_drawdown_pct
-- В точке входа перед открытием позиции: спросить guard, при False — лог и отказ от входа
-- Юнит-тесты: 3 подряд SL → блок; превышение daily_drawdown_pct → блок
-Покажи DIFF.
-```
-
-**Терминал:**
-
-```bash
-git checkout -b feat/stage-f-riskguard
-pytest -q
-git add -A && git commit -m "[stage-F] feat: RiskGuard + integration & tests" && git push
-```
-
-### Smoke test (сегодня)
-
-```bash
-# DRY
-python main.py --dry --log-level=info
-# затем короткий testnet прогон с микролотом; убедиться, что SL/TP ставятся по конфигурации
-```
-
-========================================
+> Готов подключить дополнительные сниппеты (sizing формула, расчёт qty от эквити/ATR, graceful shutdown-хендлер) — скажи, куда именно встроить в текущем дереве проекта.
