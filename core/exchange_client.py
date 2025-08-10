@@ -11,6 +11,7 @@ from typing import Any
 import ccxt.async_support as ccxt
 
 from core.config import TradingConfig
+from core.risk_guard_stage_f import RiskGuardStageF
 from core.symbol_utils import ensure_perp_usdc_format
 from core.unified_logger import UnifiedLogger
 
@@ -36,6 +37,9 @@ class OptimizedExchangeClient:
         self.connection_healthy = False
         self.last_health_check = 0
         self.health_check_interval = 60  # seconds
+
+        # Stage F: Global risk guard (daily SL streak and daily loss %)
+        self.risk_guard_f = RiskGuardStageF(config, logger)
 
     async def initialize(self):
         """Initialize exchange connection"""
@@ -259,6 +263,14 @@ class OptimizedExchangeClient:
             if self.config.dry_run:
                 order_params["test"] = True
 
+            # Stage F: Block only orders that OPEN positions (not reduceOnly)
+            is_reduce_only = bool(order_params.get("reduceOnly", False))
+            if not is_reduce_only:
+                can_trade, reason = self.risk_guard_f.can_open_new_position()
+                if not can_trade:
+                    self.logger.log_event("RISK_F", "WARNING", f"New position blocked: {reason}")
+                    return {"status": "blocked_by_risk", "reason": reason, "type": "stage_f_block"}
+
             normalized_type = self._normalize_order_type(order_type, price)
 
             order = await self.exchange.create_order(
@@ -277,6 +289,13 @@ class OptimizedExchangeClient:
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to create order for {symbol}: {e}")
             raise
+
+    # Stage F helper: call when trade close PnL is known (hook from settlement/close flows)
+    def record_trade_close_stage_f(self, pnl_pct: float) -> None:
+        try:
+            self.risk_guard_f.record_trade_close(pnl_pct)
+        except Exception:
+            pass
 
     async def create_market_order(self, symbol: str, side: str, amount: float) -> dict[str, Any]:
         """Create a market order"""

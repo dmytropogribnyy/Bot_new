@@ -162,6 +162,14 @@ class TradingConfig(BaseModel):
     working_type: Literal["MARK_PRICE", "CONTRACT_PRICE"] = "MARK_PRICE"
     tp_order_style: Literal["limit", "market"] = "limit"
 
+    # === Stage F additions (global daily guard) ===
+    max_sl_streak: int = Field(default=3, description="Maximum consecutive stop-losses per day before blocking entries")
+    daily_drawdown_pct: float = Field(default=3.0, description="Daily loss percent threshold to block new entries")
+    enable_stage_f_guard: bool = Field(default=True, description="Enable Stage F global daily guard")
+    stage_f_state_path: str = Field(
+        default="data/runtime/stage_f_state.json", description="Path to persist Stage F state"
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
