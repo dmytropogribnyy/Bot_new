@@ -1,5 +1,6 @@
 import csv
 import decimal
+import importlib
 import json
 import os
 import time
@@ -9,8 +10,21 @@ from pathlib import Path
 from threading import Lock
 
 from constants import ENTRY_LOG_FILE, STATE_FILE
-from telegram.telegram_utils import send_telegram_message
+from core.config import TradingConfig
 from utils_logging import log
+
+
+def send_telegram_message(*args, **kwargs):
+    """Lazy Telegram sender to avoid hard dependency at import time."""
+    try:
+        mod = importlib.import_module("telegram.telegram_utils")
+        func = getattr(mod, "send_telegram_message", None)
+        if callable(func):
+            return func(*args, **kwargs)
+    except Exception:
+        pass
+    return None
+
 
 MARGIN_SAFETY_BUFFER = 0.92  # безопасность на случай нехватки маржи
 
@@ -196,8 +210,6 @@ def save_state(state, retries=3, delay=1):
 def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
     import time
 
-    from telegram.telegram_utils import send_telegram_message
-
     for attempt in range(tries):
         try:
             result = func(*args, **kwargs)
@@ -236,20 +248,25 @@ def safe_call_retry(func, *args, tries=3, delay=1, label="API call", **kwargs):
 
 
 def get_runtime_config() -> dict:
-    """Загружает runtime_config.json, возвращает dict или пустой dict при ошибке."""
+    """Legacy compatibility wrapper - returns dict from unified TradingConfig.
 
-    if RUNTIME_CONFIG_FILE.exists():
-        try:
-            with open(RUNTIME_CONFIG_FILE) as f:
-                config = json.load(f)
-
-            if not isinstance(config, dict):
-                raise TypeError(f"runtime_config is not a dict → {type(config)}")
-
-            return config
-        except Exception as e:
-            log(f"⚠️ Failed to load runtime_config.json: {e}", level="ERROR")
-    return {}
+    Falls back to existing runtime_config.json if needed.
+    """
+    try:
+        cfg = TradingConfig.from_env()
+        return cfg.dict()
+    except Exception as e:
+        log(f"[Stage B] TradingConfig.from_env failed, fallback to file: {e}", level="WARNING")
+        if RUNTIME_CONFIG_FILE.exists():
+            try:
+                with open(RUNTIME_CONFIG_FILE) as f:
+                    config = json.load(f)
+                if not isinstance(config, dict):
+                    raise TypeError(f"runtime_config is not a dict → {type(config)}")
+                return config
+            except Exception as e:
+                log(f"⚠️ Failed to load runtime_config.json: {e}", level="ERROR")
+        return {}
 
 
 def update_runtime_config(new_values: dict):
@@ -355,7 +372,11 @@ def get_min_net_profit(balance=None):
     import os
 
     import pandas as pd
-    from common.config_loader import TP_LOG_FILE
+
+    try:
+        TP_LOG_FILE = importlib.import_module("common.config_loader").TP_LOG_FILE  # type: ignore[attr-defined]
+    except Exception:
+        TP_LOG_FILE = "data/tp_log.csv"
 
     from tp_logger import get_last_trade
     from utils_logging import log

@@ -2,18 +2,19 @@
 """
 Testnet Smoke-Test for Binance USDC Futures Bot.
 
-Verifies:
-- Stage D: TP/SL integration (via normal order path)
-- Stage F: Global guard blocks new positions after loss
-- Telegram bot: start/end/error pings
+ Verifies:
+ - Stage D: TP/SL integration (via normal order path)
+ - Stage F: Global guard blocks new positions after loss
+ - Telegram bot: start/end/error pings
 
-Safe by design:
-- Forces TESTNET mode via env
-- Small size order
-- Cancels open orders at the end
+ Safe by design:
+ - Forces TESTNET mode via env
+ - Small size order
+ - Cancels open orders at the end
 """
 
 import asyncio
+import importlib
 import os
 import sys
 import traceback
@@ -24,9 +25,10 @@ from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.unified_logger import UnifiedLogger
 
-# Optional Telegram helper
+# Optional Telegram helper (import lazily to avoid static import errors)
 try:
-    from telegram.telegram_utils import send_telegram_message as _tg_send  # optional helper
+    _tg_mod = importlib.import_module("telegram.telegram_utils")
+    _tg_send = getattr(_tg_mod, "send_telegram_message", None)
 except Exception:
     _tg_send = None
 

@@ -170,6 +170,83 @@ class TradingConfig(BaseModel):
         default="data/runtime/stage_f_state.json", description="Path to persist Stage F state"
     )
 
+    # === Stage B: Unified Config - from_env loader ===
+    @classmethod
+    def from_env(cls) -> "TradingConfig":
+        """Load configuration from environment variables (unified mapping).
+
+        Note: This is additive and does not remove existing file/env loaders.
+        """
+
+        def env_bool(key: str, default: bool) -> bool:
+            val = os.getenv(key)
+            if val is None:
+                return default
+            return str(val).strip().lower() in ("true", "1", "yes", "on")
+
+        def env_list_float(key: str, default: list[float]) -> list[float]:
+            val = os.getenv(key)
+            if not val:
+                return default
+            try:
+                return [float(x.strip()) for x in val.split(",") if x.strip()]
+            except Exception:
+                return default
+
+        return cls(
+            # API
+            api_key=os.getenv("API_KEY", os.getenv("BINANCE_API_KEY", "")),
+            api_secret=os.getenv("API_SECRET", os.getenv("BINANCE_API_SECRET", "")),
+            testnet=env_bool("TESTNET", os.getenv("BINANCE_TESTNET", "true").lower() == "true"),
+            dry_run=env_bool("DRY_RUN", False),
+            # Stage D
+            working_type=os.getenv("WORKING_TYPE", getattr(cls, "working_type", "MARK_PRICE")),
+            tp_order_style=os.getenv("TP_ORDER_STYLE", getattr(cls, "tp_order_style", "limit")),
+            # Stage F
+            max_sl_streak=int(os.getenv("MAX_SL_STREAK", str(getattr(cls, "max_sl_streak", 3)))),
+            daily_drawdown_pct=float(os.getenv("DAILY_DRAWDOWN_PCT", str(getattr(cls, "daily_drawdown_pct", 3.0)))),
+            enable_stage_f_guard=env_bool("ENABLE_STAGE_F_GUARD", True),
+            stage_f_state_path=os.getenv("STAGE_F_STATE_PATH", "data/runtime/stage_f_state.json"),
+            # Trading
+            default_leverage=int(os.getenv("LEVERAGE_DEFAULT", str(getattr(cls, "default_leverage", 5)))),
+            min_position_size_usdt=float(
+                os.getenv("MIN_POSITION_SIZE_USDT", str(getattr(cls, "min_position_size_usdt", 10.0)))
+            ),
+            max_position_size_usdt=float(
+                os.getenv("MAX_POSITION_SIZE_USDT", str(getattr(cls, "max_position_size_usdt", 100.0)))
+            ),
+            max_concurrent_positions=int(
+                os.getenv("MAX_CONCURRENT_POSITIONS", str(getattr(cls, "max_concurrent_positions", 3)))
+            ),
+            # Risk
+            max_capital_utilization_pct=float(
+                os.getenv("MAX_CAPITAL_UTILIZATION_PCT", str(getattr(cls, "max_capital_utilization_pct", 0.8)))
+            ),
+            max_margin_percent=float(os.getenv("MAX_MARGIN_PERCENT", str(getattr(cls, "max_margin_percent", 0.4)))),
+            max_slippage_pct=float(os.getenv("MAX_SLIPPAGE_PCT", str(getattr(cls, "max_slippage_pct", 0.02)))),
+            risk_multiplier=float(os.getenv("RISK_MULTIPLIER", str(getattr(cls, "risk_multiplier", 1.0)))),
+            # TP/SL
+            take_profit_percent=float(os.getenv("TAKE_PROFIT_PERCENT", str(getattr(cls, "take_profit_percent", 1.5)))),
+            stop_loss_percent=float(os.getenv("STOP_LOSS_PERCENT", str(getattr(cls, "stop_loss_percent", 2.0)))),
+            step_tp_levels=env_list_float("STEP_TP_LEVELS", getattr(cls, "step_tp_levels", [0.004, 0.008, 0.012])),
+            step_tp_sizes=env_list_float("STEP_TP_SIZES", getattr(cls, "step_tp_sizes", [0.5, 0.3, 0.2])),
+            # Telegram
+            telegram_enabled=env_bool("TELEGRAM_ENABLED", getattr(cls, "telegram_enabled", False)),
+            telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", "")),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+            # Logging
+            log_level=os.getenv("LOG_LEVEL", getattr(cls, "log_level", "INFO")),
+            log_to_file=env_bool("LOG_TO_FILE", getattr(cls, "log_to_file", True)),
+            log_to_console=env_bool("LOG_TO_CONSOLE", getattr(cls, "log_to_console", True)),
+            # WebSocket
+            ws_reconnect_interval=int(
+                os.getenv("WS_RECONNECT_INTERVAL", str(getattr(cls, "ws_reconnect_interval", 5)))
+            ),
+            ws_heartbeat_interval=int(
+                os.getenv("WS_HEARTBEAT_INTERVAL", str(getattr(cls, "ws_heartbeat_interval", 30)))
+            ),
+        )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
