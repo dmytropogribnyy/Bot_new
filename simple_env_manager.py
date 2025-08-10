@@ -35,6 +35,10 @@ class SimpleEnvManager:
                         key, value = line.split("=", 1)
                         key = key.strip()
                         value = value.strip()
+                        
+                        # Strip inline comments
+                        if '#' in value:
+                            value = value.split('#')[0].strip()
 
                         # Remove quotes if present
                         if (value.startswith('"') and value.endswith('"')) or (
