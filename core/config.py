@@ -7,7 +7,7 @@ Unified configuration with leverage mapping and simplified loading
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -157,6 +157,10 @@ class TradingConfig(BaseModel):
 
     # Monitoring Hours (UTC)
     monitoring_hours_utc: list = Field(default=list(range(24)), description="Monitoring hours UTC")
+
+    # === Stage D additions (add at the end) ===
+    working_type: Literal["MARK_PRICE", "CONTRACT_PRICE"] = "MARK_PRICE"
+    tp_order_style: Literal["limit", "market"] = "limit"
 
     class Config:
         env_file = ".env"

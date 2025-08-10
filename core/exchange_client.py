@@ -287,18 +287,32 @@ class OptimizedExchangeClient:
         return await self.create_order(symbol, "limit", side, amount, price)
 
     async def create_stop_loss_order(self, symbol: str, side: str, amount: float, stop_price: float) -> dict[str, Any]:
-        """Create a stop loss order (STOP/STOP_MARKET) with reduceOnly"""
-        params = {"stopPrice": stop_price, "reduceOnly": True}
-        # Prefer STOP_MARKET for SL
+        """Create a stop loss order with reduceOnly and configurable workingType"""
+        params = {
+            "stopPrice": float(stop_price),  # Stage D: explicit float cast
+            "reduceOnly": True,
+            "workingType": self.config.working_type,  # Stage D: add workingType
+        }
         return await self.create_order(symbol, "STOP_MARKET", side, amount, None, params)
 
     async def create_take_profit_order(
         self, symbol: str, side: str, amount: float, take_profit_price: float
     ) -> dict[str, Any]:
-        """Create a take profit order (TAKE_PROFIT/TAKE_PROFIT_MARKET) with reduceOnly"""
-        params = {"stopPrice": take_profit_price, "reduceOnly": True}
-        # Use TAKE_PROFIT for limit-style TP when providing price
-        return await self.create_order(symbol, "TAKE_PROFIT", side, amount, take_profit_price, params)
+        """Create a take profit order with reduceOnly and configurable style"""
+        params = {
+            "reduceOnly": True,
+            "workingType": self.config.working_type,  # Stage D: add workingType
+        }
+
+        # Stage D: Handle limit vs market TP
+        if self.config.tp_order_style == "market":
+            # Market TP - no price, only stopPrice
+            params["stopPrice"] = float(take_profit_price)
+            return await self.create_order(symbol, "TAKE_PROFIT_MARKET", side, amount, None, params)
+        else:
+            # Limit TP - both price and stopPrice
+            params["stopPrice"] = float(take_profit_price)
+            return await self.create_order(symbol, "TAKE_PROFIT", side, amount, float(take_profit_price), params)
 
     async def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any]:
         """Cancel an order"""
