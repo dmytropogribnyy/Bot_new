@@ -71,3 +71,11 @@ data/config.json
 !data/*example*.json
 !.env.example
 test-output/
+
+# Stage A: Repository organization
+core/legacy/
+references_archive/
+
+# Editor swap files
+*.swo
+*~
