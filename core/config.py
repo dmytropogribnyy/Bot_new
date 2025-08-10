@@ -228,8 +228,8 @@ class TradingConfig(BaseModel):
             testnet=env_bool("TESTNET", str(os.getenv("BINANCE_TESTNET", "true")).lower() == "true"),
             dry_run=env_bool("DRY_RUN", False),
             # Stage D
-            working_type=os.getenv("WORKING_TYPE", getattr(cls, "working_type", "MARK_PRICE")),
-            tp_order_style=os.getenv("TP_ORDER_STYLE", getattr(cls, "tp_order_style", "limit")),
+            working_type=env_str("WORKING_TYPE", "MARK_PRICE"),
+            tp_order_style=env_str("TP_ORDER_STYLE", "limit"),
             # Stage F
             max_sl_streak=env_int("MAX_SL_STREAK", getattr(cls, "max_sl_streak", 3)),
             daily_drawdown_pct=env_float("DAILY_DRAWDOWN_PCT", getattr(cls, "daily_drawdown_pct", 3.0)),
