@@ -133,10 +133,10 @@ process_file() {
   [[ ! -f "$f" ]] && return 0
   [[ "$f" == *"references_archive"* ]] && return 0
   [[ "$f" == *"core/legacy"* ]] && return 0
-  
+
   local base="$(basename "$f")"
   local ext="$(get_ext "$f")"
-  
+
   if is_doc_media "$ext"; then
     move_to_archive "$f"
     ((ARCHIVED_CNT++))
@@ -197,5 +197,3 @@ if [[ $DRY_RUN -eq 1 ]]; then
   echo ""
   echo "💡 To apply changes, run: $0 --force"
 fi
-
-
