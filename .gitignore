@@ -79,3 +79,9 @@ references_archive/
 # Editor swap files
 *.swo
 *~
+
+# Tools cache and data (append-only for Stage F tools)
+tools/__pycache__/
+logs/
+data/*.json
+data/runtime/*.json
