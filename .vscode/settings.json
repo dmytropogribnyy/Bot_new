@@ -8,7 +8,7 @@
         "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
             "source.fixAll.ruff": "explicit",
-            "source.organizeImports.ruff": "explicit"
+            "source.organizeImports.ruff": "never"
         }
     },
 
@@ -17,8 +17,8 @@
     "files.insertFinalNewline": true,
     "files.trimFinalNewlines": true,
 
-    // Ruff аргументы
-    "ruff.args": ["--config=pyproject.toml"],
+    // Ruff аргументы (новый ключ для расширения VS Code)
+    "ruff.lint.args": ["--config=pyproject.toml"],
 
     // Отключаем другие линтеры
     "python.linting.enabled": false,

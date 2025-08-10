@@ -31,8 +31,6 @@ try:
 except Exception:
     pass
 
-from pathlib import Path
-
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager

@@ -3,11 +3,14 @@
 
 import asyncio
 
+import pytest
+
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.unified_logger import UnifiedLogger
 
 
+@pytest.mark.asyncio
 async def test_stage_d():
     """Test Stage D modifications"""
 
