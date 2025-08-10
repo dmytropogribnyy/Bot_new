@@ -2,9 +2,10 @@
 """Check and clean up orphaned orders"""
 
 import asyncio
-import os
 
 from dotenv import load_dotenv
+
+from core.config import TradingConfig
 
 # Fix for Windows
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
@@ -18,8 +19,9 @@ import ccxt.async_support as ccxt
 async def check_and_clean_orders():
     """Check for orphaned orders and clean them up"""
 
-    API_KEY = os.getenv("BINANCE_API_KEY")
-    API_SECRET = os.getenv("BINANCE_API_SECRET")
+    cfg = TradingConfig.from_env()
+    API_KEY = cfg.api_key
+    API_SECRET = cfg.api_secret
 
     exchange = ccxt.binance(
         {

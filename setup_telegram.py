@@ -4,8 +4,9 @@ Setup Telegram Credentials
 Helper script to configure Telegram bot credentials
 """
 
-import os
 from pathlib import Path
+
+from core.config import TradingConfig
 
 
 def setup_telegram_credentials():
@@ -111,8 +112,8 @@ def test_telegram_connection():
     print("\n🧪 Testing Telegram Connection...")
 
     # Check if credentials are set
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    cfg = TradingConfig.from_env()
+    token, chat_id = cfg.get_telegram_credentials()
 
     if not token or not chat_id:
         print("❌ Telegram credentials not found in environment")
@@ -155,8 +156,8 @@ def main():
     print("=" * 60)
 
     # Check if credentials already exist
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    cfg = TradingConfig.from_env()
+    token, chat_id = cfg.get_telegram_credentials()
 
     if token and chat_id:
         print("✅ Telegram credentials found!")

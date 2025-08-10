@@ -2,9 +2,10 @@
 """Check current positions on testnet"""
 
 import asyncio
-import os
 
 from dotenv import load_dotenv
+
+from core.config import TradingConfig
 
 # Fix for Windows
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
@@ -14,8 +15,9 @@ load_dotenv()
 
 import ccxt.async_support as ccxt
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
+cfg = TradingConfig.from_env()
+API_KEY = cfg.api_key
+API_SECRET = cfg.api_secret
 
 
 async def check_positions():

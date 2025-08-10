@@ -2,10 +2,11 @@
 """Close test position on testnet"""
 
 import asyncio
-import os
 from datetime import datetime
 
 from dotenv import load_dotenv
+
+from core.config import TradingConfig
 
 # Fix for Windows
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
@@ -16,10 +17,10 @@ load_dotenv()
 import aiohttp
 import ccxt.async_support as ccxt
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+cfg = TradingConfig.from_env()
+API_KEY = cfg.api_key
+API_SECRET = cfg.api_secret
+TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = cfg.get_telegram_credentials()
 
 
 async def send_telegram(message):

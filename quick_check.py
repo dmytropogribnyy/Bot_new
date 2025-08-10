@@ -1,7 +1,8 @@
 import asyncio
-import os
 
 from dotenv import load_dotenv
+
+from core.config import TradingConfig
 
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -12,8 +13,9 @@ import ccxt.async_support as ccxt
 
 
 async def quick_check():
-    API_KEY = os.getenv("BINANCE_API_KEY")
-    API_SECRET = os.getenv("BINANCE_API_SECRET")
+    cfg = TradingConfig.from_env()
+    API_KEY = cfg.api_key
+    API_SECRET = cfg.api_secret
 
     exchange = ccxt.binance(
         {"apiKey": API_KEY, "secret": API_SECRET, "enableRateLimit": True, "options": {"defaultType": "future"}}

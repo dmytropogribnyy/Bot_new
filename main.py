@@ -9,6 +9,27 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
+
+# Load .env early (before config-dependent imports)
+try:
+    from dotenv import load_dotenv
+
+    env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        print(f"Loaded .env from {env_path}")
+    else:
+        print(f"Warning: .env not found at {env_path}")
+        example_path = Path(__file__).parent / ".env.example"
+        if example_path.exists():
+            import shutil
+
+            shutil.copy(example_path, env_path)
+            print("Created .env from .env.example")
+            load_dotenv(dotenv_path=env_path)
+except Exception:
+    pass
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
