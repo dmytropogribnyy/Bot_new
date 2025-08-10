@@ -31,12 +31,18 @@ try:
 except Exception:
     pass
 
+from pathlib import Path
+
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager
 from core.trade_engine_v2 import TradeEngineV2
 from core.unified_logger import UnifiedLogger
 from telegram.telegram_bot import TelegramBot
+
+# FIX для Windows - ДОЛЖНО БЫТЬ ПЕРЕД ВСЕМИ ИМПОРТАМИ!
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 class SimplifiedTradingBot:

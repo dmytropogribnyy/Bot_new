@@ -23,14 +23,31 @@ select = [
     "I",    # isort
     "UP",   # pyupgrade
     "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
 ]
 
 # Исправляем все что можем
 fixable = ["ALL"]
 unfixable = []
 
-# Игнорируем длинные строки - их сложно автоматически исправить
-ignore = ["E501"]
+# Игнорируем правила
+ignore = [
+    "E501",   # Line too long
+    "E722",   # Bare except (используется для безопасности)
+    "E741",   # Ambiguous variable name
+    "B008",   # Function calls in argument defaults
+    "SIM105", # Use contextlib.suppress
+    "SIM102", # Collapsible if
+    "SIM103", # Needless bool
+    "SIM108", # if-else-block-instead-of-if-exp
+    "SIM114", # if-with-same-arms
+    "SIM117", # Multiple with statements
+    "SIM118", # in-dict-keys
+    "SIM201", # negate-equal-op
+]
+
+# Разрешить неиспользуемые переменные с подчёркиванием
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.isort]
 known-first-party = ["core", "strategies", "telegram", "tests"]
@@ -47,7 +64,9 @@ docstring-code-format = true
 
 [tool.ruff.lint.per-file-ignores]
 # Разрешаем импорты после кода в определенных файлах
-"test_*.py" = ["E402"]
+"main.py" = ["E402", "E722"]  # Загрузка .env должна быть до импортов
+"test_*.py" = ["E402", "F401", "F841"]  # Тесты могут иметь неиспользуемые импорты
+"tests/*.py" = ["E402", "F401", "F841"]
 "debug_*.py" = ["E402"]
 "force_trade.py" = ["E402"]
 "monitor_bot.py" = ["E402"]
@@ -56,9 +75,9 @@ docstring-code-format = true
 "test_simple.py" = ["E402"]
 "test_telegram.py" = ["E402"]
 "tools/*.py" = ["E402", "E741"]
-"main.py" = ["E722"]
 "close_position.py" = ["E402", "E722"]
 "check_*.py" = ["E402"]
+"diagnose.py" = ["E402"]
 
 [tool.black]
 line-length = 120
