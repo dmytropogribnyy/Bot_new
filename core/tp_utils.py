@@ -11,13 +11,7 @@ from utils_logging import log
 
 def calculate_tp_levels(entry_price, direction, df=None, regime="neutral", tp1_pct=None, tp2_pct=None, sl_pct=None):
     import numpy as np
-    from common.config_loader import (
-        SL_PERCENT,
-        TP1_PERCENT,
-        TP1_SHARE,
-        TP2_PERCENT,
-        TP2_SHARE,
-    )
+    from common.config_loader import SL_PERCENT, TP1_PERCENT, TP1_SHARE, TP2_PERCENT, TP2_SHARE
 
     direction = direction.upper()
     tp1_pct = TP1_PERCENT if tp1_pct is None else tp1_pct
@@ -377,12 +371,17 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
                 widened_sl = sl_price * (0.997 - retry * 0.001) if side == "buy" else sl_price * (1.003 + retry * 0.001)
                 try:
                     sl_order = safe_call_retry(
-                        lambda: exchange.create_order(
-                            api_symbol,
-                            type="STOP_MARKET",
-                            side="sell" if side == "buy" else "buy",
-                            amount=qty,
-                            params={"stopPrice": round(widened_sl, 6), "reduceOnly": True},
+                        (
+                            lambda api_symbol=api_symbol,
+                            side=side,
+                            qty=qty,
+                            widened_sl=widened_sl: exchange.create_order(
+                                api_symbol,
+                                type="STOP_MARKET",
+                                side="sell" if side == "buy" else "buy",
+                                amount=qty,
+                                params={"stopPrice": round(widened_sl, 6), "reduceOnly": True},
+                            )
                         ),
                         label=f"sl_retry_{symbol}_{retry}",
                     )
@@ -458,9 +457,16 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
             current_position_qty -= qty_i
             try:
                 order = safe_call_retry(
-                    lambda: exchange.create_limit_sell_order(api_symbol, qty_i, price, params={"reduceOnly": True})
-                    if side == "buy"
-                    else exchange.create_limit_buy_order(api_symbol, qty_i, price, params={"reduceOnly": True}),
+                    (
+                        lambda api_symbol=api_symbol,
+                        qty_i=qty_i,
+                        price=price,
+                        side=side: exchange.create_limit_sell_order(
+                            api_symbol, qty_i, price, params={"reduceOnly": True}
+                        )
+                        if side == "buy"
+                        else exchange.create_limit_buy_order(api_symbol, qty_i, price, params={"reduceOnly": True})
+                    ),
                     label=f"tp_{symbol}_{i}",
                 )
                 if order:

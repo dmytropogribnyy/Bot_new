@@ -118,7 +118,7 @@ async def test_dry_run_strategy():
         opportunities = await strategy_manager.scan_for_opportunities()
         print(f"   Found opportunities: {len(opportunities)}")
 
-        for symbol, direction, breakdown in opportunities[:2]:
+        for symbol, direction, _breakdown in opportunities[:2]:
             print(f"     - {symbol}: {direction}")
 
         # Test 5: Runtime status logging

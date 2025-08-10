@@ -1,5 +1,3 @@
-
-
 def ensure_perp_usdc_format(symbol: str) -> str:
     """Ensure ccxt perpetual USDC format like 'BTC/USDC:USDC' when possible."""
     if symbol.endswith(":USDC"):

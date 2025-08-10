@@ -106,7 +106,7 @@ async def test_strategy_integration():
         opportunities = await strategy_manager.scan_for_opportunities()
         print(f"   Found opportunities: {len(opportunities)}")
 
-        for symbol, direction, breakdown in opportunities[:2]:  # Show first 2
+        for symbol, direction, _breakdown in opportunities[:2]:  # Show first 2
             print(f"     - {symbol}: {direction}")
 
         print("\n✅ Strategy integration test completed successfully!")
