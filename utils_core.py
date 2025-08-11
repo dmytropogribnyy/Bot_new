@@ -74,7 +74,7 @@ def ensure_data_directory():
 
 def get_cached_balance():
     """Получает кэшированный баланс (totalMarginBalance)."""
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
 
     with cache_lock:
         # ✅ ДОБАВЛЕНО: Защита от отсутствующих ключей
@@ -101,7 +101,7 @@ def get_cached_balance():
 
 def get_cached_positions():
     """Получает кэшированные позиции (exchange.fetch_positions)."""
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
 
     with cache_lock:
         # ✅ ДОБАВЛЕНО: Защита от отсутствующих ключей
@@ -549,7 +549,7 @@ def get_market_volatility_index() -> float:
         import pandas as pd
         import ta
 
-        from core.binance_api import fetch_ohlcv
+        from core.legacy.binance_api import fetch_ohlcv
 
         # Загружаем последние 50 свечей BTC/USDC (15м)
         raw = fetch_ohlcv("BTC/USDC", timeframe="15m", limit=50)
@@ -582,7 +582,7 @@ def get_total_position_value():
     Returns:
         float: Общая стоимость позиций.
     """
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
 
     try:
         positions = safe_call_retry(exchange.fetch_positions)

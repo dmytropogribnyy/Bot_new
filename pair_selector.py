@@ -18,10 +18,10 @@ from common.config_loader import (
 )
 
 from constants import SIGNAL_FAILURES_FILE, SYMBOLS_FILE
-from core.binance_api import convert_symbol
-from core.exchange_init import exchange
-from core.fail_stats_tracker import FAIL_STATS_FILE, get_symbol_risk_factor
-from core.strategy import fetch_data_multiframe  # убедись, что импорт есть
+from core.legacy.binance_api import convert_symbol
+from core.legacy.exchange_init import exchange
+from core.legacy.fail_stats_tracker import FAIL_STATS_FILE, get_symbol_risk_factor
+from core.legacy.strategy import fetch_data_multiframe  # убедись, что импорт есть
 from telegram.telegram_utils import send_telegram_message
 from utils_core import (
     extract_symbol,

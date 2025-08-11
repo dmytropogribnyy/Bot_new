@@ -17,8 +17,8 @@ from common.config_loader import (
     MICRO_TRADE_TIMEOUT_MINUTES,
 )
 
-from core.binance_api import fetch_ohlcv
-from core.exchange_init import exchange
+from core.legacy.binance_api import fetch_ohlcv
+from core.legacy.exchange_init import exchange
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_cached_balance, load_state, normalize_symbol, safe_call_retry
 from utils_logging import log
@@ -122,7 +122,7 @@ def calculate_risk_amount(balance, symbol=None, atr_percent=None, volume_usdc=No
     Возвращает:
         risk_amount (в USDC), effective_sl (в %)
     """
-    from core.fail_stats_tracker import get_symbol_risk_factor
+    from core.legacy.fail_stats_tracker import get_symbol_risk_factor
     from utils_core import get_runtime_config
     from utils_logging import log
 
@@ -176,7 +176,7 @@ def calculate_position_size(symbol, entry_price, balance, leverage, runtime_conf
     """
     from common.config_loader import get_dynamic_min_notional
 
-    from core.tp_utils import safe_round_and_validate
+    from core.legacy.tp_utils import safe_round_and_validate
     from utils_core import get_runtime_config, get_total_position_value
     from utils_logging import log
 
@@ -438,17 +438,17 @@ def enter_trade(symbol, side, is_reentry=False, breakdown=None, pair_type="unkno
     )
     from common.leverage_config import get_leverage_for_symbol
 
-    from core.binance_api import convert_symbol, create_safe_market_order
-    from core.component_tracker import log_component_data
-    from core.engine_controller import sync_open_positions
-    from core.entry_logger import log_entry
-    from core.exchange_init import exchange
-    from core.fail_stats_tracker import get_symbol_risk_factor
-    from core.position_manager import check_entry_allowed
-    from core.runtime_stats import update_trade_count
-    from core.signal_utils import passes_1plus1
-    from core.strategy import fetch_data_multiframe
-    from core.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
+    from core.legacy.binance_api import convert_symbol, create_safe_market_order
+    from core.legacy.component_tracker import log_component_data
+    from core.legacy.engine_controller import sync_open_positions
+    from core.legacy.entry_logger import log_entry
+    from core.legacy.exchange_init import exchange
+    from core.legacy.fail_stats_tracker import get_symbol_risk_factor
+    from core.legacy.position_manager import check_entry_allowed
+    from core.legacy.runtime_stats import update_trade_count
+    from core.legacy.signal_utils import passes_1plus1
+    from core.legacy.strategy import fetch_data_multiframe
+    from core.legacy.tp_utils import calculate_tp_levels, place_take_profit_and_stop_loss_orders
     from telegram.telegram_utils import send_telegram_message
     from utils_core import (
         api_cache,
@@ -743,9 +743,9 @@ def record_trade_result(symbol, side, entry_price, exit_price, result_type):
 
     import pandas as pd
 
-    from core.component_tracker import log_component_data
-    from core.exchange_init import exchange
-    from core.runtime_state import get_loss_streak, increment_loss_streak, pause_symbol, reset_loss_streak
+    from core.legacy.component_tracker import log_component_data
+    from core.legacy.exchange_init import exchange
+    from core.legacy.runtime_state import get_loss_streak, increment_loss_streak, pause_symbol, reset_loss_streak
     from telegram.telegram_utils import send_telegram_message
     from tp_logger import log_trade_result as csv_log_trade_result
     from utils_core import get_min_net_profit, normalize_symbol
@@ -1007,8 +1007,8 @@ def close_real_trade(symbol: str, reason: str = "manual") -> bool:
     import time
     from pathlib import Path
 
-    from core.exchange_init import exchange
-    from core.trade_engine import save_active_trades, trade_manager
+    from core.legacy.exchange_init import exchange
+    from core.legacy.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import api_cache, cache_lock, normalize_symbol, safe_call_retry
     from utils_logging import log
@@ -1341,8 +1341,8 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
     """
     import time
 
-    from core.exchange_init import exchange
-    from core.tp_utils import safe_round_and_validate
+    from core.legacy.exchange_init import exchange
+    from core.legacy.tp_utils import safe_round_and_validate
     from telegram.telegram_utils import send_telegram_message
     from utils_core import api_cache, cache_lock, get_runtime_config, safe_call_retry, safe_float_conversion
     from utils_logging import log
@@ -1381,7 +1381,7 @@ def monitor_active_position(symbol, side, entry_price, initial_qty, start_time):
                         log("[Monitor] Warning: balance key missing in api_cache", level="WARNING")
 
                 trade_manager.remove_trade(symbol)
-                from core.engine_controller import sync_open_positions
+                from core.legacy.engine_controller import sync_open_positions
 
                 sync_open_positions()
                 return
@@ -1486,7 +1486,7 @@ def handle_panic(stop_event):
     """
     import time
 
-    from core.binance_api import get_open_positions
+    from core.legacy.binance_api import get_open_positions
     from telegram.telegram_utils import send_telegram_message
     from utils_logging import log
 

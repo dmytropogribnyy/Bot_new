@@ -50,6 +50,6 @@ def log_failure(symbol, reasons):
             log(f"Error logging signal failure: {e}", level="ERROR")
 
     # 🔽 Add this line at the very end (outside try-except)
-    from core.fail_stats_tracker import record_failure_reason
+    from core.legacy.fail_stats_tracker import record_failure_reason
 
     record_failure_reason(symbol, reasons)

@@ -4,7 +4,7 @@ import os
 
 import pandas as pd
 
-from core.exchange_init import exchange
+from core.legacy.exchange_init import exchange
 from utils_core import get_runtime_config
 from utils_logging import log
 
@@ -190,7 +190,7 @@ def safe_round_and_validate(symbol: str, raw_qty: float) -> float | None:
     """
     Округляет qty с защитой и проверкой через exchange
     """
-    from core.binance_api import round_step_size
+    from core.legacy.binance_api import round_step_size
     from utils_core import safe_call_retry, safe_float_conversion
     from utils_logging import log
 
@@ -250,10 +250,10 @@ def place_take_profit_and_stop_loss_orders(symbol, side, entry_price, qty, tp_pr
     """
     import time
 
-    from core.binance_api import convert_symbol, get_symbol_info
-    from core.exchange_init import exchange
-    from core.tp_sl_logger import log_tp_sl_event
-    from core.trade_engine import close_real_trade, trade_manager
+    from core.legacy.binance_api import convert_symbol, get_symbol_info
+    from core.legacy.exchange_init import exchange
+    from core.legacy.tp_sl_logger import log_tp_sl_event
+    from core.legacy.trade_engine import close_real_trade, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import safe_call_retry
     from utils_logging import log
@@ -514,7 +514,7 @@ def validate_qty(symbol: str, qty: float) -> float | None:
     - защита от Decimal/float ошибок
     Возвращает: скорректированное qty или None
     """
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
     from utils_core import safe_float_conversion
     from utils_logging import log
 

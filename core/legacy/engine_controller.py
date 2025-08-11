@@ -3,7 +3,7 @@
 import os
 import threading
 
-from core.exchange_init import exchange
+from core.legacy.exchange_init import exchange
 
 last_trade_times = {}
 last_trade_times_lock = threading.Lock()
@@ -24,15 +24,21 @@ def run_trading_cycle(symbols, stop_event):
     from common.config_loader import AUTO_PROFIT_ENABLED, DRY_RUN
     from common.leverage_config import set_leverage_for_symbols
 
-    from core.entry_logger import log_entry
-    from core.notifier import notify_dry_trade
-    from core.position_manager import get_max_positions
+    from core.legacy.entry_logger import log_entry
+    from core.legacy.notifier import notify_dry_trade
+    from core.legacy.position_manager import get_max_positions
+    from core.legacy.risk_utils import check_drawdown_protection
+    from core.legacy.runtime_state import last_trade_times, last_trade_times_lock
+    from core.legacy.runtime_stats import is_hourly_limit_reached, update_trade_count
+    from core.legacy.symbol_processor import process_symbol
+    from core.legacy.trade_engine import (
+        check_auto_profit,
+        close_real_trade,
+        enter_trade,
+        get_position_size,
+        trade_manager,
+    )
     from core.risk_guard import is_symbol_blocked, is_symbol_recently_traded, update_symbol_last_entry
-    from core.risk_utils import check_drawdown_protection
-    from core.runtime_state import last_trade_times, last_trade_times_lock
-    from core.runtime_stats import is_hourly_limit_reached, update_trade_count
-    from core.symbol_processor import process_symbol
-    from core.trade_engine import check_auto_profit, close_real_trade, enter_trade, get_position_size, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import get_cached_balance, get_cached_positions, load_state, normalize_symbol
     from utils_logging import log, notify_error
@@ -169,7 +175,7 @@ def soft_exit_trade(symbol: str, reason: str = "soft_exit"):
     Не вызывает record_trade_result при reason='error'.
     ✅ Подстраховка: exit_price = last_price, если не установлен.
     """
-    from core.trade_engine import close_real_trade, record_trade_result, trade_manager
+    from core.legacy.trade_engine import close_real_trade, record_trade_result, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import normalize_symbol
     from utils_logging import log
@@ -225,8 +231,8 @@ def sync_open_positions():
     from datetime import datetime
     from pathlib import Path
 
-    from core.exchange_init import exchange
-    from core.trade_engine import save_active_trades, trade_manager
+    from core.legacy.exchange_init import exchange
+    from core.legacy.trade_engine import save_active_trades, trade_manager
     from telegram.telegram_utils import send_telegram_message
     from utils_core import api_cache, cache_lock, get_runtime_config, normalize_symbol
     from utils_logging import log

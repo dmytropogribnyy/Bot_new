@@ -44,7 +44,7 @@ except Exception as e:
 
 def set_leverage_for_symbols():
     """Sets leverage for all active symbols."""
-    from core.binance_api import convert_symbol  # Ensure proper formatting
+    from core.legacy.binance_api import convert_symbol  # Ensure proper formatting
 
     success_count = 0
     error_count = 0

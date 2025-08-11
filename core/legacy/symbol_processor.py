@@ -10,11 +10,11 @@ def process_symbol(symbol, balance, last_trade_times, lock):
 
     from common.config_loader import MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
 
-    from core.binance_api import convert_symbol, fetch_ohlcv
-    from core.exchange_init import exchange
-    from core.strategy import should_enter_trade
-    from core.tp_utils import calculate_tp_levels, check_min_profit
-    from core.trade_engine import get_market_regime, get_position_size, open_positions_lock
+    from core.legacy.binance_api import convert_symbol, fetch_ohlcv
+    from core.legacy.exchange_init import exchange
+    from core.legacy.strategy import should_enter_trade
+    from core.legacy.tp_utils import calculate_tp_levels, check_min_profit
+    from core.legacy.trade_engine import get_market_regime, get_position_size, open_positions_lock
     from telegram.telegram_utils import send_telegram_message
     from utils_core import MARGIN_SAFETY_BUFFER, get_min_net_profit, get_runtime_config, normalize_symbol
     from utils_logging import log

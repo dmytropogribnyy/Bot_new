@@ -1,12 +1,13 @@
 # common/leverage_config.py
 from common.config_loader import SYMBOLS_ACTIVE
+
 from utils_core import safe_call_retry
 from utils_logging import log
 
 
 def set_leverage_for_symbols():
     """Устанавливает плечо для активных символов."""
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
 
     for symbol in SYMBOLS_ACTIVE:
         leverage = LEVERAGE_MAP.get(symbol, 5)

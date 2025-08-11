@@ -1,6 +1,6 @@
 from common.config_loader import trade_stats, trade_stats_lock
 
-from core.notifier import notify_deposit, notify_low_balance, notify_milestone, notify_withdrawal
+from core.legacy.notifier import notify_deposit, notify_low_balance, notify_milestone, notify_withdrawal
 from utils_logging import log
 
 

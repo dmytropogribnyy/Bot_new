@@ -1,6 +1,6 @@
 # order_utils.py
-from core.binance_api import convert_symbol, safe_call_retry
-from core.exchange_init import exchange
+from core.legacy.binance_api import convert_symbol, safe_call_retry
+from core.legacy.exchange_init import exchange
 from utils_core import extract_symbol
 from utils_logging import log
 

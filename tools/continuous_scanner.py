@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from constants import INACTIVE_CANDIDATES_FILE, SYMBOLS_FILE
-from core.strategy import fetch_data_multiframe  # ✅ заменили импорт
+from core.legacy.strategy import fetch_data_multiframe  # ✅ заменили импорт
 from pair_selector import fetch_all_symbols
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_runtime_config, load_json_file, normalize_symbol

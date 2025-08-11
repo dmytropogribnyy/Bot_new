@@ -92,7 +92,7 @@ def log_trade_result(
     import os
 
     from constants import TP_LOG_FILE
-    from core.trade_engine import DRY_RUN, logged_trades, logged_trades_lock
+    from core.legacy.trade_engine import DRY_RUN, logged_trades, logged_trades_lock
     from stats import EXPORT_PATH, now_with_timezone
     from utils_core import extract_symbol
     from utils_logging import log

@@ -102,7 +102,7 @@ def set_bot_status(status: str):
 def get_priority_small_balance_pairs():
     """Load priority pairs from file if available, else use defaults."""
     try:
-        from core.priority_evaluator import load_priority_pairs
+        from core.legacy.priority_evaluator import load_priority_pairs
 
         return load_priority_pairs()
     except Exception as e:
@@ -115,7 +115,7 @@ def get_dynamic_min_notional(symbol: str) -> float:
     Возвращает динамический min_notional = max(config.MIN_NOTIONAL_OPEN, min_qty * price * buffer).
     Если info не найдено или структура неполная, возвращает дефолтный floor с логом.
     """
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
     from utils_core import get_runtime_config
     from utils_logging import log
 
@@ -125,14 +125,20 @@ def get_dynamic_min_notional(symbol: str) -> float:
     try:
         info = exchange.markets.get(symbol)
         if not info:
-            log(f"[get_dynamic_min_notional] No market info for {symbol}, using floor {min_notional_floor}", level="WARNING")
+            log(
+                f"[get_dynamic_min_notional] No market info for {symbol}, using floor {min_notional_floor}",
+                level="WARNING",
+            )
             return min_notional_floor
 
         price = info.get("last", 1.0)
         min_qty = info.get("limits", {}).get("amount", {}).get("min", 0.001)
 
         if price <= 0 or min_qty <= 0:
-            log(f"[get_dynamic_min_notional] Invalid price={price} or min_qty={min_qty} for {symbol}, fallback to floor", level="WARNING")
+            log(
+                f"[get_dynamic_min_notional] Invalid price={price} or min_qty={min_qty} for {symbol}, fallback to floor",
+                level="WARNING",
+            )
             return min_notional_floor
 
         dynamic_value = float(price) * float(min_qty) * 1.1
@@ -147,7 +153,10 @@ SYMBOLS_ACTIVE = get_config("SYMBOLS_ACTIVE", "").split(",") if get_config("SYMB
 
 
 raw_fixed_pairs = get_config("FIXED_PAIRS", "").split(",") if get_config("FIXED_PAIRS") else []
-FIXED_PAIRS = [f"{pair.strip()[:-4]}/USDC:USDC" if pair.strip().endswith("USDC") and "/" not in pair.strip() else pair.strip() for pair in raw_fixed_pairs]
+FIXED_PAIRS = [
+    f"{pair.strip()[:-4]}/USDC:USDC" if pair.strip().endswith("USDC") and "/" not in pair.strip() else pair.strip()
+    for pair in raw_fixed_pairs
+]
 
 
 MAX_DYNAMIC_PAIRS = int(get_config("MAX_DYNAMIC_PAIRS", 15))

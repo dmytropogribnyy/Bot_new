@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from core.exchange_init import exchange
+from core.legacy.exchange_init import exchange
 from utils_core import load_json_file, save_json_file
 from utils_logging import log
 
@@ -141,7 +141,7 @@ def check_capital_utilization(symbol, qty, entry_price, threshold=0.8, epsilon=0
     Учитывает активные позиции + текущую заявку.
     Допускает незначительное превышение на уровне `epsilon` (по умолчанию 0.5%).
     """
-    from core.trade_engine import trade_manager
+    from core.legacy.trade_engine import trade_manager
     from utils_core import get_cached_balance
     from utils_logging import log
 

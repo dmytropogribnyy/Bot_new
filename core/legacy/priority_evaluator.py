@@ -2,8 +2,8 @@ import json
 import os
 from datetime import datetime
 
-from core.fail_stats_tracker import get_symbols_failure_count
-from core.tp_utils import get_tp_performance_stats
+from core.legacy.fail_stats_tracker import get_symbols_failure_count
+from core.legacy.tp_utils import get_tp_performance_stats
 from utils_core import extract_symbol
 from utils_logging import log
 
@@ -75,7 +75,7 @@ def gather_symbol_data():
         import json
 
         from constants import SYMBOLS_FILE
-        from core.binance_api import get_ticker_data
+        from core.legacy.binance_api import get_ticker_data
 
         # Load active symbols from dynamic_symbols.json
         try:

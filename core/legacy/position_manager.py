@@ -5,7 +5,7 @@ Controls position limits, size calculations, and validates new position requests
 """
 
 # Import from project modules
-from core.risk_utils import get_max_positions
+from core.legacy.risk_utils import get_max_positions
 from utils_core import extract_symbol
 
 
@@ -18,7 +18,7 @@ def check_entry_allowed(balance):
     """
     from datetime import datetime, timedelta
 
-    from core.trade_engine import trade_manager
+    from core.legacy.trade_engine import trade_manager
     from utils_core import get_cached_positions, get_runtime_config, get_total_position_value
     from utils_logging import log
 
@@ -112,8 +112,8 @@ def can_increase_position(symbol, additional_qty):
         bool: True если можно, False если превышает лимит или нет позиции
     """
     symbol = extract_symbol(symbol)
-    from core.exchange_init import exchange
-    from core.risk_utils import calculate_position_value_limit
+    from core.legacy.exchange_init import exchange
+    from core.legacy.risk_utils import calculate_position_value_limit
     from utils_core import get_cached_balance, safe_call_retry
     from utils_logging import log
 
@@ -164,7 +164,7 @@ def execute_position_increase(symbol, side, additional_qty):
         dict: Результат ордера или None при ошибке
     """
     symbol = extract_symbol(symbol)
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
     from utils_core import safe_call_retry
     from utils_logging import log
 
@@ -199,7 +199,7 @@ def execute_partial_close(symbol, side, reduction_qty):
         dict: Результат ордера или None при ошибке
     """
     symbol = extract_symbol(symbol)
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
     from utils_core import safe_call_retry
     from utils_logging import log
 

@@ -3,7 +3,7 @@ import time
 
 from common.config_loader import MAKER_FEE_RATE, TAKER_FEE_RATE, USE_TESTNET
 
-from core.exchange_init import exchange
+from core.legacy.exchange_init import exchange
 from utils_core import safe_call_retry
 from utils_logging import log
 
@@ -198,14 +198,14 @@ def create_safe_market_order(symbol, side, amount):
     """
     import time
 
-    from core.binance_api import (
+    from core.legacy.binance_api import (
         calculate_commission,
         convert_symbol,
         get_current_price,
         round_step_size,  # ✅ добавлен
         validate_order_size,
     )
-    from core.exchange_init import exchange
+    from core.legacy.exchange_init import exchange
     from telegram.telegram_utils import send_telegram_message
     from utils_core import normalize_symbol
     from utils_logging import log
@@ -350,8 +350,8 @@ def get_open_positions_count():
     """
     Возвращает количество активных позиций (где positionAmt ≠ 0).
     """
-    from core.exchange_init import exchange
-    from core.risk_utils import get_max_positions
+    from core.legacy.exchange_init import exchange
+    from core.legacy.risk_utils import get_max_positions
     from utils_core import safe_call_retry
     from utils_logging import log
 

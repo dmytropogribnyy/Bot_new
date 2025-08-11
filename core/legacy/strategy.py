@@ -7,10 +7,10 @@ from pathlib import Path
 import pandas as pd
 import ta
 
-from core.binance_api import fetch_ohlcv
+from core.legacy.binance_api import fetch_ohlcv
 
 # Импорт из signal_utils
-from core.signal_utils import (
+from core.legacy.signal_utils import (
     detect_ema_crossover,
     detect_volume_spike,
 )
@@ -191,15 +191,15 @@ def should_enter_trade(symbol, last_trade_times, last_trade_times_lock):
     from common.config_loader import DRY_RUN, MIN_NOTIONAL_OPEN, TAKER_FEE_RATE
     from common.leverage_config import get_leverage_for_symbol
 
-    from core.component_tracker import log_component_data
-    from core.engine_controller import sync_open_positions  # Добавлено для desync fix перед qty calc
-    from core.entry_logger import log_entry
-    from core.missed_signal_logger import log_missed_signal
-    from core.position_manager import check_entry_allowed
-    from core.runtime_state import is_symbol_paused, is_trading_globally_paused, pause_all_trading
-    from core.signal_utils import get_signal_breakdown, passes_1plus1
-    from core.tp_utils import calculate_tp_levels, check_min_profit
-    from core.trade_engine import calculate_position_size, calculate_risk_amount
+    from core.legacy.component_tracker import log_component_data
+    from core.legacy.engine_controller import sync_open_positions  # Добавлено для desync fix перед qty calc
+    from core.legacy.entry_logger import log_entry
+    from core.legacy.missed_signal_logger import log_missed_signal
+    from core.legacy.position_manager import check_entry_allowed
+    from core.legacy.runtime_state import is_symbol_paused, is_trading_globally_paused, pause_all_trading
+    from core.legacy.signal_utils import get_signal_breakdown, passes_1plus1
+    from core.legacy.tp_utils import calculate_tp_levels, check_min_profit
+    from core.legacy.trade_engine import calculate_position_size, calculate_risk_amount
     from open_interest_tracker import fetch_open_interest
     from tp_logger import get_today_pnl_from_csv
     from utils_core import get_cached_balance, get_runtime_config, normalize_symbol, safe_call_retry
@@ -444,7 +444,7 @@ def calculate_tp_targets():
     - fallback при отсутствии TP
     - добавлены tp_total_qty и tp_fallback_used
     """
-    from core.trade_engine import trade_manager
+    from core.legacy.trade_engine import trade_manager
     from utils_logging import log
 
     try:
