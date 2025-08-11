@@ -375,11 +375,8 @@ class SimplifiedTradingBot:
             # Calculate total PnL
             total_pnl = sum(pos.get("unrealized_pnl", 0) for pos in positions)
 
-            # Get quote balance: USDT on testnet, USDC on prod
-            if self.config.testnet:
-                balance = await self.exchange.get_usdt_balance()
-            else:
-                balance = await self.exchange.get_usdc_balance()
+            # Get quote balance based on resolved quote coin
+            balance = await self.exchange.get_quote_balance()
 
             status = {
                 "positions": position_count,
@@ -416,11 +413,7 @@ class SimplifiedTradingBot:
             "INFO",
             f"[CONFIG] Mode: {'TESTNET' if self.config.testnet else 'PRODUCTION'}",
         )
-        self.logger.log_event(
-            "MAIN",
-            "INFO",
-            f"[CONFIG] Quote coin: {'USDT' if self.config.testnet else 'USDC'}",
-        )
+        self.logger.log_event("MAIN", "INFO", f"[CONFIG] Quote coin: {self.config.resolved_quote_coin}")
 
         # Announce start to Telegram
         try:

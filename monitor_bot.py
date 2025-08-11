@@ -51,8 +51,11 @@ async def check_bot_status():
 
         # 1. Check balance
         balance = exchange.fetch_balance()
-        usdt_balance = balance["USDT"]["free"] if "USDT" in balance else 0
-        print(f"\n💰 Balance: {usdt_balance:.2f} USDT")
+        from core.balance_utils import free
+
+        q = cfg.resolved_quote_coin
+        q_balance = free(balance, q)
+        print(f"\n💰 Balance: {q_balance:.2f} {q}")
 
         # 2. Check open positions
         positions = exchange.fetch_positions()
@@ -62,7 +65,8 @@ async def check_bot_status():
             print(f"\n📊 Open Positions: {len(open_positions)}")
             for pos in open_positions:
                 print(f"  - {pos['symbol']}: {pos['contracts']} contracts")
-                print(f"    Entry: {pos['markPrice']:.2f}, PnL: {pos['unrealizedPnl']:.2f} USDT")
+                # PnL denomination depends on exchange; keep numeric only to avoid hardcoded coin
+                print(f"    Entry: {pos['markPrice']:.2f}, PnL: {pos['unrealizedPnl']:.2f}")
         else:
             print("\n📊 No open positions")
 
@@ -76,9 +80,10 @@ async def check_bot_status():
             print("\n📝 No open orders")
 
         # 4. Check top markets
-        print("\n🔥 Top USDT Markets (by volume):")
+        print("\n🔥 Top Markets (by volume):")
         tickers = exchange.fetch_tickers()
-        usdt_tickers = {k: v for k, v in tickers.items() if "USDT" in k and ":" in k}
+        q = cfg.resolved_quote_coin
+        usdt_tickers = {k: v for k, v in tickers.items() if f"/{q}:" in k}
         sorted_tickers = sorted(usdt_tickers.items(), key=lambda x: x[1]["quoteVolume"] or 0, reverse=True)
 
         for symbol, ticker in sorted_tickers[:5]:
@@ -103,7 +108,7 @@ async def check_bot_status():
             message = f"""
 📊 <b>Bot Status Report</b>
 ━━━━━━━━━━━━━━━━━━━━
-💰 Balance: {usdt_balance:.2f} USDT
+💰 Balance: {q_balance:.2f} {q}
 📈 Positions: {len(open_positions)}
 📝 Orders: {len(orders)}
 ⏰ Time: {datetime.now().strftime("%H:%M:%S")}

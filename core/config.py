@@ -108,32 +108,9 @@ class TradingConfig(BaseModel):
         description="Leverage mapping for symbols",
     )
 
-    # Trading Symbols
-    usdt_symbols: list = Field(
-        default=[
-            "BTC/USDT:USDT",
-            "ETH/USDT:USDT",
-            "BNB/USDT:USDT",
-            "SOL/USDT:USDT",
-            "DOGE/USDT:USDT",
-        ],
-        description="USDT trading pairs (used on testnet)",
-    )
-    usdc_symbols: list = Field(
-        default=[
-            "BTC/USDC",
-            "ETH/USDC",
-            "XRP/USDC",
-            "ADA/USDC",
-            "SOL/USDC",
-            "BNB/USDC",
-            "LINK/USDC",
-            "ARB/USDC",
-            "DOGE/USDC",
-            "SUI/USDC",
-        ],
-        description="USDC trading pairs",
-    )
+    # Trading Symbols (leave empty by default; fallback is dynamic)
+    usdt_symbols: list = Field(default_factory=list, description="USDT trading pairs (used on testnet)")
+    usdc_symbols: list = Field(default_factory=list, description="USDC trading pairs")
 
     # Advanced Trading Settings
     max_concurrent_positions: int = Field(default=3, description="Maximum concurrent positions")
@@ -392,11 +369,26 @@ class TradingConfig(BaseModel):
         return self.leverage_map.get(symbol_key, self.default_leverage)
 
     def get_active_symbols(self) -> list:
-        """Get active trading symbols"""
+        """Get active trading symbols.
+
+        Returns configured symbols if provided, otherwise dynamic defaults based on resolved quote coin.
+        """
+        try:
+            from core.symbol_utils import default_symbols  # local import to avoid circular
+        except Exception:
+
+            def default_symbols(q):
+                return []  # type: ignore
+
         if self.testnet:
-            return self.usdt_symbols
+            return self.usdt_symbols or default_symbols(self.resolved_quote_coin)
         else:
-            return self.usdc_symbols
+            return self.usdc_symbols or default_symbols(self.resolved_quote_coin)
+
+    @property
+    def resolved_quote_coin(self) -> str:
+        """Auto-resolve quote coin: USDT for testnet, USDC for prod"""
+        return "USDT" if self.testnet else "USDC"
 
     def save_to_file(self, filepath: str = "data/runtime_config.json"):
         """Save current configuration to file"""

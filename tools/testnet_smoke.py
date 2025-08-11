@@ -63,7 +63,9 @@ async def run_smoke() -> dict[str, Any]:
     if env_symbol:
         symbol = env_symbol
     else:
-        symbol = "BTC/USDT:USDT" if cfg.testnet else "BTC/USDC:USDC"
+        from core.symbol_utils import normalize_symbol
+
+        symbol = normalize_symbol(f"BTC/{cfg.resolved_quote_coin}:{cfg.resolved_quote_coin}")
 
     try:
         qty = float(env_str("SMOKE_QTY", "0.001"))

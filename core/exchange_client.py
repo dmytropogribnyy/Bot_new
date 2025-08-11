@@ -10,9 +10,9 @@ from typing import Any
 
 import ccxt.async_support as ccxt
 
+from core.balance_utils import free
 from core.config import TradingConfig
 from core.risk_guard_stage_f import RiskGuardStageF
-from core.symbol_utils import ensure_perp_usdc_format
 from core.unified_logger import UnifiedLogger
 
 
@@ -224,21 +224,30 @@ class OptimizedExchangeClient:
             return self.cached_balance or {}
 
     async def get_usdt_balance(self) -> float:
-        """Get USDT balance specifically"""
+        """Compatibility wrapper: returns balance for current resolved quote coin."""
         try:
             balance = await self.get_balance()
-            return float(balance.get("USDT", {}).get("free", 0))
+            return free(balance, self.config.resolved_quote_coin)
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get USDT balance: {e}")
             return 0.0
 
     async def get_usdc_balance(self) -> float:
-        """Get USDC balance specifically"""
+        """Compatibility wrapper: returns balance for current resolved quote coin."""
         try:
             balance = await self.get_balance()
-            return float(balance.get("USDC", {}).get("free", 0))
+            return free(balance, self.config.resolved_quote_coin)
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get USDC balance: {e}")
+            return 0.0
+
+    async def get_quote_balance(self) -> float:
+        """Return balance for the resolved quote coin (USDT on testnet, USDC on prod)."""
+        try:
+            balance = await self.get_balance()
+            return free(balance, self.config.resolved_quote_coin)
+        except Exception as e:
+            self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get quote balance: {e}")
             return 0.0
 
     async def get_position(self, symbol: str) -> dict[str, Any] | None:
@@ -479,6 +488,7 @@ class OptimizedExchangeClient:
         try:
             markets = await self.get_markets()
             usdc_symbols = []
+            q = self.config.resolved_quote_coin
 
             for symbol, market in markets.items():
                 market_type = market.get("type")
@@ -491,13 +501,22 @@ class OptimizedExchangeClient:
                 if (
                     is_active
                     and is_contract
-                    and (quote == "USDC" or settle == "USDC")
+                    and (quote == q or settle == q)
                     and (market_type in ("swap", "future", None))
                 ):
                     usdc_symbols.append(symbol)
 
-            # Ensure consistent perpetual USDC symbol format
-            return [ensure_perp_usdc_format(s) for s in usdc_symbols]
+            # Ensure consistent perpetual format generically for the resolved quote coin
+            formatted: list[str] = []
+            for s in usdc_symbols:
+                try:
+                    if s.endswith(f"/{q}") and not s.endswith(f":{q}"):
+                        formatted.append(f"{s}:{q}")
+                    else:
+                        formatted.append(s)
+                except Exception:
+                    formatted.append(s)
+            return formatted
 
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get USDC symbols: {e}")
@@ -508,6 +527,7 @@ class OptimizedExchangeClient:
         try:
             markets = await self.get_markets()
             symbols: list[str] = []
+            q = self.config.resolved_quote_coin
             for symbol, market in markets.items():
                 market_type = market.get("type")
                 quote = market.get("quote")
@@ -517,7 +537,7 @@ class OptimizedExchangeClient:
                 if (
                     is_active
                     and is_contract
-                    and (quote == "USDT" or settle == "USDT")
+                    and (quote == q or settle == q)
                     and (market_type in ("swap", "future", None))
                 ):
                     symbols.append(symbol)

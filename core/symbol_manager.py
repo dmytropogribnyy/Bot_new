@@ -6,7 +6,7 @@ import asyncio
 
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
-from core.symbol_utils import ensure_perp_usdc_format, is_usdc_contract_market
+from core.symbol_utils import ensure_perp_usdc_format
 from core.unified_logger import UnifiedLogger
 
 
@@ -19,22 +19,9 @@ class SymbolManager:
         self.logger = logger
 
         # Default perpetual symbols for prod/testnet
-        if config.testnet:
-            self.default_symbols = [
-                "BTC/USDT:USDT",
-                "ETH/USDT:USDT",
-                "BNB/USDT:USDT",
-                "SOL/USDT:USDT",
-                "ADA/USDT:USDT",
-            ]
-        else:
-            self.default_symbols = [
-                "BTC/USDC:USDC",
-                "ETH/USDC:USDC",
-                "SOL/USDC:USDC",
-                "BNB/USDC:USDC",
-                "ADA/USDC:USDC",
-            ]
+        from core.symbol_utils import default_symbols
+
+        self.default_symbols = default_symbols(self.config.resolved_quote_coin)
 
         # Symbol cache
         self.symbols_cache = []
@@ -58,29 +45,23 @@ class SymbolManager:
 
                 for symbol, market in markets.items():
                     # On testnet use USDT-margined perpetuals; in production use USDC perpetuals
-                    if self.config.testnet:
-                        is_contract = market.get("contract", False)
-                        quote = market.get("quote")
-                        settle = market.get("settle")
-                        market_type = market.get("type")
-                        if (
-                            is_contract
-                            and (quote == "USDT" or settle == "USDT")
-                            and (market_type in ("swap", "future", None))
-                        ):
-                            # Binance CCXT already provides format like "BTC/USDT:USDT" for perpetuals
-                            selected_symbols.append(symbol)
-                    else:
-                        # Production: pick USDC perpetuals and normalize format
-                        if is_usdc_contract_market(market):
-                            selected_symbols.append(ensure_perp_usdc_format(symbol))
+                    # Pick perpetuals for the resolved quote coin
+                    q = self.config.resolved_quote_coin
+                    is_contract = market.get("contract", False)
+                    quote = market.get("quote")
+                    settle = market.get("settle")
+                    market_type = market.get("type")
+                    if is_contract and (quote == q or settle == q) and (market_type in ("swap", "future", None)):
+                        # Normalize only for USDC where needed
+                        s = ensure_perp_usdc_format(symbol) if q == "USDC" else symbol
+                        selected_symbols.append(s)
 
                 if selected_symbols:
                     # Keep a manageable top slice
                     self.symbols_cache = selected_symbols[:10]  # Top 10
                     self.last_update = asyncio.get_event_loop().time()
-                    quote = "USDT" if self.config.testnet else "USDC"
-                    self.logger.log_event("SYMBOL", "INFO", f"Loaded {len(self.symbols_cache)} {quote} symbols")
+                    q = self.config.resolved_quote_coin
+                    self.logger.log_event("SYMBOL", "INFO", f"Loaded {len(self.symbols_cache)} {q} symbols")
                     return self.symbols_cache
 
             # Fallback to default symbols

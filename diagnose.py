@@ -37,16 +37,21 @@ async def test_exchange():
 
     # Тест простого запроса
     try:
-        ticker = await exchange.exchange.fetch_ticker("BTC/USDT")
-        print(f"✅ BTC/USDT price: {ticker['last']}")
+        from core.symbol_utils import normalize_symbol
+
+        symbol = normalize_symbol(f"BTC/{config.resolved_quote_coin}:{config.resolved_quote_coin}")
+        ticker = await exchange.exchange.fetch_ticker(symbol)
+        print(f"✅ {symbol} price: {ticker['last']}")
     except Exception as e:
         print(f"❌ Ticker error: {e}")
 
     # Тест баланса
     try:
+        from core.balance_utils import free
+
         balance = await exchange.exchange.fetch_balance()
-        usdt_balance = balance.get("USDT", {}).get("free", 0)
-        print(f"✅ Balance: {usdt_balance} USDT")
+        quote_balance = free(balance, config.resolved_quote_coin)
+        print(f"✅ Balance: {quote_balance} {config.resolved_quote_coin}")
     except Exception as e:
         print(f"❌ Balance error: {e}")
 

@@ -28,8 +28,11 @@ async def quick_check():
 
         # Balance
         balance = await exchange.fetch_balance()
-        usdt = balance["USDT"]["free"] if "USDT" in balance else 0
-        print(f"Balance: {usdt:.2f} USDT")
+        from core.balance_utils import free
+
+        q = cfg.resolved_quote_coin
+        qbal = free(balance, q)
+        print(f"Balance: {qbal:.2f} {q}")
 
         # Positions
         positions = await exchange.fetch_positions()

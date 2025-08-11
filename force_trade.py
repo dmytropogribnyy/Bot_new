@@ -5,7 +5,9 @@ import asyncio
 
 from dotenv import load_dotenv
 
+from core.balance_utils import free
 from core.config import TradingConfig
+from core.symbol_utils import normalize_symbol
 
 # Fix for Windows
 if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
@@ -48,11 +50,12 @@ async def force_test_trade():
 
         # Get balance
         balance = await exchange.fetch_balance()
-        usdt_balance = balance["USDT"]["free"] if "USDT" in balance else 0
-        print(f"\n💰 Available balance: {usdt_balance:.2f} USDT")
+        q = cfg.resolved_quote_coin
+        q_balance = free(balance, q)
+        print(f"\n💰 Available balance: {q_balance:.2f} {q}")
 
         # Choose symbol
-        symbol = "BTC/USDT:USDT"  # Bitcoin perpetual
+        symbol = normalize_symbol(f"BTC/{cfg.resolved_quote_coin}:{cfg.resolved_quote_coin}")
 
         # Get current price
         ticker = await exchange.fetch_ticker(symbol)

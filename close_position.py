@@ -130,8 +130,11 @@ async def close_test_position():
 
         # Final balance check
         balance = await exchange.fetch_balance()
-        usdt_balance = balance["USDT"]["free"] if "USDT" in balance else 0
-        print(f"\n💰 Final Balance: {usdt_balance:.2f} USDT")
+        from core.balance_utils import free
+
+        q = cfg.resolved_quote_coin
+        qbal = free(balance, q)
+        print(f"\n💰 Final Balance: {qbal:.2f} {q}")
 
         print("\n" + "=" * 60)
         print("✅ CLOSE OPERATION COMPLETED!")

@@ -101,9 +101,13 @@ async def check_and_clean_orders():
             print(f"Error checking orders: {e}")
 
         # Final status
+        from core.balance_utils import free
+
+        cfg = TradingConfig.from_env()
         balance = await exchange.fetch_balance()
-        usdt = balance["USDT"]["free"] if "USDT" in balance else 0
-        print(f"\n💰 Balance: {usdt:.2f} USDT")
+        q = cfg.resolved_quote_coin
+        qbal = free(balance, q)
+        print(f"\n💰 Balance: {qbal:.2f} {q}")
 
         print("\n" + "=" * 60)
 

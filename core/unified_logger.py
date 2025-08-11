@@ -3,6 +3,7 @@ import gzip
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sys
 import time
@@ -126,8 +127,14 @@ class ColoredFormatter(logging.Formatter):
         prefix = " ".join(parts)
         message = record.getMessage()
         if self.use_color and COLORAMA_AVAILABLE:
-            message = message.replace("USDT", f"{Fore.CYAN}USDT{Style.RESET_ALL}")
-            message = message.replace("USDC", f"{Fore.CYAN}USDC{Style.RESET_ALL}")
+            # Dynamically highlight the resolved quote coin without hardcoding USDT/USDC
+            try:
+                from core.config import TradingConfig  # lazy import to avoid cycles
+
+                qc = TradingConfig.from_env().resolved_quote_coin
+                message = re.sub(rf"\b{re.escape(qc)}\b", f"{Fore.CYAN}\\g<0>{Style.RESET_ALL}", message)
+            except Exception:
+                pass
             message = message.replace(" OK", f"{Fore.GREEN} OK{Style.RESET_ALL}")
         return f"{color}{prefix}{reset} {message}"
 

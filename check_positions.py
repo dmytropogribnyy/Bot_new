@@ -48,8 +48,11 @@ async def check_positions():
 
         # Get balance
         balance = await exchange.fetch_balance()
-        usdt_balance = balance["USDT"]["free"] if "USDT" in balance else 0
-        print(f"\n💰 Balance: {usdt_balance:.2f} USDT")
+        from core.balance_utils import free
+
+        q = cfg.resolved_quote_coin
+        q_balance = free(balance, q)
+        print(f"\n💰 Balance: {q_balance:.2f} {q}")
 
         # Get all positions
         positions = await exchange.fetch_positions()
