@@ -46,8 +46,8 @@ class TradingConfig(BaseModel):
     default_leverage: int = Field(default=5, description="Default leverage for positions")
 
     # Risk Management
-    stop_loss_percent: float = Field(default=2.0, description="Default stop loss percentage")
-    take_profit_percent: float = Field(default=1.5, description="Default take profit percentage")
+    stop_loss_percent: float = Field(default=1.2, description="Default stop loss percentage")
+    take_profit_percent: float = Field(default=1.8, description="Default take profit percentage")
     max_daily_loss: float = Field(default=50.0, description="Maximum daily loss in USDT")
     max_drawdown_percent: float = Field(default=10.0, description="Maximum drawdown percentage")
 
@@ -141,6 +141,22 @@ class TradingConfig(BaseModel):
     max_hold_minutes: int = Field(default=10, description="Maximum hold time")
     min_profit_threshold: float = Field(default=0.06, description="Minimum profit threshold")
     entry_cooldown_seconds: int = Field(default=300, description="Cooldown between entries on same symbol")
+
+    # Multi-TP levels (optional)
+    tp1_percent: float | None = Field(default=None)
+    tp1_size_fraction: float = Field(default=0.6)
+    tp2_percent: float | None = Field(default=None)
+    tp2_size_fraction: float = Field(default=0.4)
+
+    # Trailing stop (disabled by default)
+    trailing_enabled: bool = Field(default=False)
+    trailing_be_pct: float = Field(default=1.0)
+    trailing_step_pct: float = Field(default=0.5)
+
+    # ATR-based TP/SL (disabled by default)
+    use_atr_based_tp_sl: bool = Field(default=False)
+    atr_multiplier_sl: float = Field(default=1.0)
+    atr_multiplier_tp: float = Field(default=2.0)
 
     # Order Settings
     min_notional_open: float = Field(default=15.0, description="Minimum notional for opening")

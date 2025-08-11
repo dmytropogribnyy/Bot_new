@@ -602,6 +602,93 @@ class OrderManager:
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to check timeouts: {e}")
 
+    async def check_auto_profit(self) -> None:
+        """Check positions for auto-profit closure"""
+        if not self.config.auto_profit_enabled:
+            return
+
+        try:
+            # Use existing positions registry
+            positions = self.active_positions.copy()
+
+            for symbol, position in positions.items():
+                # Get current price
+                ticker = await self.exchange.get_ticker(symbol)
+                if not ticker:
+                    continue
+
+                current_price = ticker.get("last", 0)
+                if not current_price:
+                    continue
+
+                # Calculate PnL%
+                entry_price = position.get("entry_price", 0)
+                side = position.get("side", "").lower()
+
+                if not entry_price or not side:
+                    continue
+
+                if side == "buy":
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                else:
+                    pnl_pct = ((entry_price - current_price) / entry_price) * 100
+
+                # Check time in position
+                timestamp = position.get("timestamp", 0)
+                hold_minutes = (time.time() - timestamp) / 60 if timestamp else 0
+
+                # Auto-close logic
+                should_close = False
+                reason = ""
+
+                # Bonus threshold - immediate close
+                if pnl_pct >= self.config.bonus_profit_threshold:
+                    should_close = True
+                    reason = f"BONUS_PROFIT_{pnl_pct:.1f}%"
+                # Normal threshold after max hold time
+                elif hold_minutes >= self.config.max_hold_minutes and pnl_pct >= self.config.auto_profit_threshold:
+                    should_close = True
+                    reason = f"AUTO_PROFIT_{pnl_pct:.1f}%_after_{hold_minutes:.0f}min"
+
+                if should_close:
+                    self.logger.log_event("AUTO_PROFIT", "INFO", f"Closing {symbol}: {reason}")
+
+                    # Close using existing method
+                    await self.close_position_market(symbol)
+
+        except Exception as e:
+            self.logger.log_event("AUTO_PROFIT", "ERROR", f"Check failed: {e}")
+
+    async def close_position_market(self, symbol: str) -> bool:
+        """Close position at market price"""
+        try:
+            position = self.active_positions.get(symbol)
+            if not position:
+                return False
+
+            side = position.get("side", "").lower()
+            size = position.get("size", 0)
+
+            if not side or not size:
+                return False
+
+            # Opposite side for closing
+            close_side = "sell" if side == "buy" else "buy"
+
+            # Use existing exchange method
+            order = await self.exchange.create_order(
+                symbol=symbol, type="MARKET", side=close_side, amount=abs(size), params={"reduceOnly": True}
+            )
+
+            if order:
+                self.logger.log_event("ORDER_MANAGER", "INFO", f"Market closed {symbol}: {order.get('id')}")
+                return True
+
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to close {symbol}: {e}")
+
+        return False
+
     def get_active_positions(self) -> list[dict]:
         """Get list of active positions"""
         return list(self.active_positions.values())

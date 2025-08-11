@@ -352,6 +352,19 @@ class SimplifiedTradingBot:
                     # Check timeouts
                     await self.order_manager.check_timeouts()
 
+                    # Auto-profit check every 5 seconds
+                    if self.config.auto_profit_enabled:
+                        current_time = time.time()
+                        if not hasattr(self, "_last_auto_profit_check"):
+                            self._last_auto_profit_check = 0
+
+                        if (current_time - self._last_auto_profit_check) >= 5.0:
+                            try:
+                                await self.order_manager.check_auto_profit()
+                            except Exception as e:
+                                self.logger.log_event("MAIN", "DEBUG", f"Auto-profit check error: {e}")
+                            self._last_auto_profit_check = current_time
+
                     # Log runtime status
                     await self._log_runtime_status()
 
