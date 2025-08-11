@@ -21,7 +21,7 @@ import traceback
 from typing import Any
 
 # Project imports
-from core.config import TradingConfig
+from core.config import TradingConfig, env_bool, env_str
 from core.exchange_client import OptimizedExchangeClient
 from core.unified_logger import UnifiedLogger
 
@@ -34,7 +34,7 @@ except Exception:
 
 
 def tg_enabled() -> bool:
-    return os.getenv("TELEGRAM_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+    return env_bool("TELEGRAM_ENABLED", False)
 
 
 def tg_send(msg: str) -> None:
@@ -59,14 +59,14 @@ async def run_smoke() -> dict[str, Any]:
     client = OptimizedExchangeClient(cfg, logger)
 
     # Choose a sensible default symbol per environment if not provided
-    env_symbol = os.getenv("SMOKE_SYMBOL", "")
+    env_symbol = env_str("SMOKE_SYMBOL", "")
     if env_symbol:
         symbol = env_symbol
     else:
         symbol = "BTC/USDT:USDT" if cfg.testnet else "BTC/USDC:USDC"
 
     try:
-        qty = float(os.getenv("SMOKE_QTY", "0.001"))
+        qty = float(env_str("SMOKE_QTY", "0.001"))
     except Exception:
         qty = 0.001
     price = None  # MARKET

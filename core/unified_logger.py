@@ -3,7 +3,6 @@ import gzip
 import hashlib
 import json
 import logging
-import os
 import shutil
 import sys
 import time
@@ -13,6 +12,8 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+
+from core.config import env_bool, env_str
 
 # Optional deps
 try:
@@ -185,13 +186,13 @@ class SmartRotatingHandler(RotatingFileHandler):
         super().doRollover()
         if self.compress:
             for i in range(1, self.backupCount + 1):
-                source = f"{self.baseFilename}.{i}"
-                gz_path = f"{source}.gz"
-                if os.path.exists(source) and not os.path.exists(gz_path):
+                source = Path(f"{self.baseFilename}.{i}")
+                gz_path = Path(f"{self.baseFilename}.{i}.gz")
+                if source.exists() and not gz_path.exists():
                     try:
-                        with open(source, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+                        with source.open("rb") as f_in, gzip.open(str(gz_path), "wb") as f_out:
                             shutil.copyfileobj(f_in, f_out)
-                        os.remove(source)
+                        source.unlink(missing_ok=True)
                     except Exception:
                         pass
         self._check_total_size()
@@ -227,20 +228,20 @@ def setup_logging(
     level_console: str | None = None,
     level_file: str | None = None,
 ) -> logging.Logger:
-    level_console = level_console or os.getenv("LOG_CONSOLE_LEVEL", "INFO")
-    level_file = level_file or os.getenv("LOG_FILE_LEVEL", "INFO")
+    level_console = level_console or env_str("LOG_CONSOLE_LEVEL", "INFO")
+    level_file = level_file or env_str("LOG_FILE_LEVEL", "INFO")
 
-    use_emoji = os.getenv("LOG_EMOJI", "true").lower() == "true" and sys.stdout.isatty()
-    use_rich = os.getenv("LOG_RICH", "true").lower() == "true" and RICH_AVAILABLE and sys.stdout.isatty()
-    use_color = os.getenv("LOG_COLOR", "true").lower() == "true" and sys.stdout.isatty()
+    use_emoji = env_bool("LOG_EMOJI", True) and sys.stdout.isatty()
+    use_rich = env_bool("LOG_RICH", True) and RICH_AVAILABLE and sys.stdout.isatty()
+    use_color = env_bool("LOG_COLOR", True) and sys.stdout.isatty()
 
-    rate_limit_secs = int(os.getenv("LOG_RATE_LIMIT_SECS", "60"))
-    dedup_window_secs = int(os.getenv("LOG_DEDUP_WINDOW_SECS", "60"))
+    rate_limit_secs = int(env_str("LOG_RATE_LIMIT_SECS", "60"))
+    dedup_window_secs = int(env_str("LOG_DEDUP_WINDOW_SECS", "60"))
 
-    max_size_mb = int(os.getenv("LOG_MAX_SIZE_MB", "20"))
-    backup_count = int(os.getenv("LOG_BACKUP_COUNT", "2"))
-    total_limit_mb = int(os.getenv("LOG_TOTAL_LIMIT_MB", "100"))
-    compress = os.getenv("LOG_COMPRESS", "true").lower() == "true"
+    max_size_mb = int(env_str("LOG_MAX_SIZE_MB", "20"))
+    backup_count = int(env_str("LOG_BACKUP_COUNT", "2"))
+    total_limit_mb = int(env_str("LOG_TOTAL_LIMIT_MB", "100"))
+    compress = env_bool("LOG_COMPRESS", True)
 
     Path(log_dir).mkdir(exist_ok=True)
 

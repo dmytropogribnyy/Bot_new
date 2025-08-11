@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,10 +32,8 @@ async def run_smoke(symbol: str, usd: float, leverage: int, side: str) -> int:
     # Initialize unified logger for downstream components
     ulog = UnifiedLogger()
     logger = get_logger(tag="SMOKE")
-    # Resolve testnet from env
-    testnet_flag = str(os.getenv("BINANCE_TESTNET", "true")).strip().lower() == "true"
-    cfg = TradingConfig()
-    cfg.testnet = testnet_flag
+    # Resolve testnet via unified config
+    cfg = TradingConfig.from_env()
     cfg.dry_run = False
 
     ex: OptimizedExchangeClient | None = None

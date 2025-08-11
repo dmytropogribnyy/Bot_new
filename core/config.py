@@ -12,6 +12,25 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+# === Module-level env helpers (Stage B centralization) ===
+def _clean_str(value: str) -> str:
+    value = value.split("#", 1)[0]
+    value = value.split(";", 1)[0]
+    return value.strip()
+
+
+def env_str(key: str, default: str) -> str:
+    val = os.getenv(key)
+    return _clean_str(val) if val is not None else default
+
+
+def env_bool(key: str, default: bool) -> bool:
+    val = os.getenv(key)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("true", "1", "yes", "on")
+
+
 class TradingConfig(BaseModel):
     """Main configuration class for the trading bot"""
 
