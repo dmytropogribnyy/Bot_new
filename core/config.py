@@ -185,6 +185,7 @@ class TradingConfig(BaseModel):
     # === Stage D additions (add at the end) ===
     working_type: Literal["MARK_PRICE", "CONTRACT_PRICE"] = "MARK_PRICE"
     tp_order_style: Literal["limit", "market"] = "limit"
+    mandatory_sl: bool = True
 
     # === Stage F additions (global daily guard) ===
     max_sl_streak: int = Field(default=3, description="Maximum consecutive stop-losses per day before blocking entries")

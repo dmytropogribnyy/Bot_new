@@ -189,7 +189,7 @@ class OrderManager:
     async def sync_positions_from_exchange(self):
         """Sync positions with exchange"""
         try:
-            positions = await self.exchange.get_all_positions()
+            positions = await self.exchange.get_positions()
 
             async with self.position_lock:
                 self.active_positions.clear()
@@ -367,6 +367,36 @@ class OrderManager:
             }
             self.logger.log_event("ORDER_MANAGER", "DEBUG", f"[IDEMP] intent={intent_sl} clientId={cid_sl}")
             sl_order = await self.exchange.create_order(symbol, "STOP_MARKET", close_side, sl_qty_norm, None, params_sl)
+
+            # КРИТИЧНО: Проверка что SL реально установился
+            if sl_price_norm and not sl_order.get("id"):
+                self.logger.log_event("ORDER_MANAGER", "CRITICAL", f"SL FAILED for {symbol} - CLOSING POSITION")
+                # Немедленно закрыть позицию
+                close_order = await self.exchange.create_order(
+                    symbol, "market", close_side, float(quantity), None, {"reduceOnly": True}
+                )
+                return {"success": False, "error": "SL_NOT_SET", "closed": close_order.get("id")}
+
+            # Дополнительная проверка через REST API
+            await asyncio.sleep(1.5)
+            open_orders = await self.exchange.get_open_orders(symbol)
+
+            # Нормализуем проверку типа
+            has_sl = False
+            for o in open_orders:
+                otype = str(o.get("type") or o.get("info", {}).get("type") or "").upper()
+                is_reduce = (o.get("reduceOnly") is True) or (o.get("info", {}).get("reduceOnly") is True)
+                if (("STOP" in otype) or (otype in {"STOP", "STOP_MARKET"})) and is_reduce:
+                    has_sl = True
+                    break
+
+            if sl_price_norm and not has_sl:
+                self.logger.log_event("ORDER_MANAGER", "CRITICAL", f"SL NOT FOUND on exchange for {symbol}")
+                # Экстренное закрытие
+                await self.exchange.create_order(
+                    symbol, "market", close_side, float(quantity), None, {"reduceOnly": True}
+                )
+                return {"success": False, "error": "SL_VERIFICATION_FAILED"}
 
             # Place take profit orders
             tp_orders = []
@@ -841,6 +871,44 @@ class OrderManager:
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to shutdown OrderManager: {e}")
+
+    async def sync_with_exchange(self):
+        """Синхронизация локального состояния с биржей каждые 30 сек"""
+        try:
+            # Получаем реальные позиции с биржи
+            positions = await self.exchange.get_positions()
+            exchange_positions = {p["symbol"]: p for p in positions if float(p.get("contracts", p.get("size", 0))) > 0}
+
+            # Проверяем каждую позицию на наличие SL
+            for symbol, pos in exchange_positions.items():
+                open_orders = await self.exchange.get_open_orders(symbol)
+
+                # Нормализованная проверка SL
+                has_sl = False
+                for o in open_orders:
+                    otype = str(o.get("type") or o.get("info", {}).get("type") or "").upper()
+                    is_reduce = (o.get("reduceOnly") is True) or (o.get("info", {}).get("reduceOnly") is True)
+                    if (("STOP" in otype) or (otype in {"STOP", "STOP_MARKET"})) and is_reduce:
+                        has_sl = True
+                        break
+
+                if not has_sl:
+                    self.logger.log_event("SYNC", "CRITICAL", f"Position {symbol} WITHOUT SL - closing")
+                    # Закрываем позицию без SL
+                    side = "sell" if pos.get("side") == "long" else "buy"
+                    qty = float(pos.get("contracts", pos.get("size", 0)))
+                    await self.exchange.create_order(symbol, "market", side, qty, None, {"reduceOnly": True})
+
+            # Убираем висячие ордера без позиций
+            all_orders = await self.exchange.get_open_orders()
+            for order in all_orders:
+                is_reduce = (order.get("reduceOnly") is True) or (order.get("info", {}).get("reduceOnly") is True)
+                if is_reduce and order["symbol"] not in exchange_positions:
+                    await self.exchange.cancel_order(order["id"], order["symbol"])
+                    self.logger.log_event("SYNC", "INFO", f"Cancelled orphan order {order['id']}")
+
+        except Exception as e:
+            self.logger.log_event("SYNC", "ERROR", f"Sync failed: {e}")
 
 
 # Helper: cleanup stray reduceOnly orders by prefix when no position

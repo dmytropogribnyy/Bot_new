@@ -294,6 +294,10 @@ class OptimizedExchangeClient:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get all positions: {e}")
             return []
 
+    async def get_positions(self) -> list[dict[str, Any]]:
+        """Compatibility alias for get_all_positions (preferred name)."""
+        return await self.get_all_positions()
+
     async def create_order(
         self,
         symbol: str,

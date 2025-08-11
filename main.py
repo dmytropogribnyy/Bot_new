@@ -109,11 +109,10 @@ class SimplifiedTradingBot:
             if not self.telegram_bot:
                 self.logger.log_event("MAIN", "WARNING", "⚠️ TelegramBot not configured")
 
-            # Start WebSocket streams (OPTIONAL)
+            # Start WebSocket streams with fallback
             if not self.config.dry_run and self.config.enable_websocket:
                 try:
-                    from core.symbol_utils import get_canonical_symbols
-                    from core.ws_client import MarketDataStream, UserDataStreamManager
+                    from core.ws_client import UserDataStreamManager
 
                     # URLs based on environment
                     if self.config.testnet:
@@ -126,7 +125,6 @@ class SimplifiedTradingBot:
                         api_base = "https://dapi.binance.com"
                         ws_base = "wss://dstream.binance.com:9443"
 
-                    # User data stream
                     self.user_stream = UserDataStreamManager(
                         api_base=api_base,
                         ws_url=ws_base,
@@ -135,24 +133,21 @@ class SimplifiedTradingBot:
                         resolved_quote_coin=self.config.resolved_quote_coin,
                     )
                     await self.user_stream.start()
-
-                    # Market data stream
-                    symbols = get_canonical_symbols(self.config.resolved_quote_coin)
-                    self.market_stream = MarketDataStream(
-                        ws_url=ws_base,
-                        symbols=symbols[:10],
-                        on_price_update=self.order_manager.update_price_cache,
-                        resolved_quote_coin=self.config.resolved_quote_coin,
-                        testnet=self.config.testnet,
-                    )
-                    await self.market_stream.start()
-
-                    self.logger.log_event("MAIN", "INFO", "✅ WebSocket streams started")
-
+                    self.logger.log_event("MAIN", "INFO", "✅ WebSocket connected")
                 except Exception as e:
-                    self.logger.log_event("MAIN", "WARNING", f"WebSocket disabled: {e}")
-            else:
-                self.logger.log_event("MAIN", "INFO", "📡 WebSocket disabled, using REST polling")
+                    self.logger.log_event("MAIN", "WARNING", f"⚠️ WebSocket failed: {e}, using REST polling")
+                    self.config.enable_websocket = False
+                    # Запускаем REST polling вместо WS
+                    if not hasattr(self, "tasks"):
+                        self.tasks = []
+                    self.tasks.append(asyncio.create_task(self._rest_polling()))
+
+            # Инициализируем tasks если нет
+            if not hasattr(self, "tasks"):
+                self.tasks = []
+
+            # Запускаем синхронизацию независимо от WS
+            self.tasks.append(asyncio.create_task(self._sync_loop()))
 
             self.running = True
             self.logger.log_event("MAIN", "INFO", "✅ All components initialized")
@@ -618,6 +613,25 @@ class SimplifiedTradingBot:
                 )
             except Exception:
                 pass
+
+    async def _rest_polling(self):
+        """Fallback REST polling при отказе WebSocket"""
+        while self.running:
+            try:
+                await self.order_manager.sync_with_exchange()
+                await asyncio.sleep(5)
+            except Exception as e:
+                self.logger.log_event("REST_POLL", "ERROR", str(e))
+                await asyncio.sleep(10)
+
+    async def _sync_loop(self):
+        """Регулярная синхронизация с биржей"""
+        while self.running:
+            await asyncio.sleep(30)
+            try:
+                await self.order_manager.sync_with_exchange()
+            except Exception as e:
+                self.logger.log_event("SYNC", "ERROR", str(e))
 
 
 async def main():
