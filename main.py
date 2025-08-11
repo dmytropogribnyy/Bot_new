@@ -109,6 +109,51 @@ class SimplifiedTradingBot:
             if not self.telegram_bot:
                 self.logger.log_event("MAIN", "WARNING", "⚠️ TelegramBot not configured")
 
+            # Start WebSocket streams (OPTIONAL)
+            if not self.config.dry_run and self.config.enable_websocket:
+                try:
+                    from core.symbol_utils import get_canonical_symbols
+                    from core.ws_client import MarketDataStream, UserDataStreamManager
+
+                    # URLs based on environment
+                    if self.config.testnet:
+                        api_base = "https://testnet.binancefuture.com"
+                        ws_base = "wss://stream.binancefuture.com"
+                    elif self.config.resolved_quote_coin == "USDT":
+                        api_base = "https://fapi.binance.com"
+                        ws_base = "wss://fstream.binance.com:9443"
+                    else:
+                        api_base = "https://dapi.binance.com"
+                        ws_base = "wss://dstream.binance.com:9443"
+
+                    # User data stream
+                    self.user_stream = UserDataStreamManager(
+                        api_base=api_base,
+                        ws_url=ws_base,
+                        api_key=self.config.api_key,
+                        on_event=self.order_manager.handle_ws_event,
+                        resolved_quote_coin=self.config.resolved_quote_coin,
+                    )
+                    await self.user_stream.start()
+
+                    # Market data stream
+                    symbols = get_canonical_symbols(self.config.resolved_quote_coin)
+                    self.market_stream = MarketDataStream(
+                        ws_url=ws_base,
+                        symbols=symbols[:10],
+                        on_price_update=self.order_manager.update_price_cache,
+                        resolved_quote_coin=self.config.resolved_quote_coin,
+                        testnet=self.config.testnet,
+                    )
+                    await self.market_stream.start()
+
+                    self.logger.log_event("MAIN", "INFO", "✅ WebSocket streams started")
+
+                except Exception as e:
+                    self.logger.log_event("MAIN", "WARNING", f"WebSocket disabled: {e}")
+            else:
+                self.logger.log_event("MAIN", "INFO", "📡 WebSocket disabled, using REST polling")
+
             self.running = True
             self.logger.log_event("MAIN", "INFO", "✅ All components initialized")
 
@@ -525,6 +570,20 @@ class SimplifiedTradingBot:
                     await self.telegram_bot.send_message(f"🛑 Shutting down: {reason}")
             except Exception:
                 pass
+
+            # Stop WebSocket streams
+            if hasattr(self, "user_stream"):
+                try:
+                    await self.user_stream.stop()
+                    self.logger.log_event("MAIN", "INFO", "User data stream stopped")
+                except Exception:
+                    pass
+            if hasattr(self, "market_stream"):
+                try:
+                    await self.market_stream.stop()
+                    self.logger.log_event("MAIN", "INFO", "Market data stream stopped")
+                except Exception:
+                    pass
 
             # Best-effort emergency close positions before resource teardown
             try:

@@ -689,6 +689,44 @@ class OrderManager:
 
         return False
 
+    def handle_ws_event(self, event: dict) -> None:
+        """Handle WebSocket user data events"""
+        event_type = event.get("e", "unknown")
+
+        if event_type == "ORDER_TRADE_UPDATE":
+            order = event.get("o", {})
+            status = order.get("X")
+            if status == "FILLED":
+                self.logger.log_event("WS", "INFO", "Order filled via WS")
+
+        elif event_type == "ACCOUNT_UPDATE":
+            # Update positions from WS
+            positions = event.get("a", {}).get("P", [])
+            for pos in positions:
+                symbol = pos.get("s")
+                if symbol:
+                    # Convert to ccxt format
+                    quote = self.config.resolved_quote_coin
+                    base = symbol[: -len(quote)]
+                    ccxt_symbol = f"{base}/{quote}:{quote}"
+
+                    position_amt = float(pos.get("pa", 0))
+                    if abs(position_amt) > 0.001:
+                        self.active_positions[ccxt_symbol] = {
+                            "size": position_amt,
+                            "entry_price": float(pos.get("ep", 0)),
+                            "unrealized_pnl": float(pos.get("up", 0)),
+                            "side": "buy" if position_amt > 0 else "sell",
+                            "timestamp": time.time(),
+                        }
+
+    def update_price_cache(self, symbol: str, price: float) -> None:
+        """Update price cache from WebSocket"""
+        if not hasattr(self, "ws_price_cache"):
+            self.ws_price_cache = {}
+        self.ws_price_cache[symbol] = {"price": price, "timestamp": time.time()}
+        self.ws_connected = True
+
     def get_active_positions(self) -> list[dict]:
         """Get list of active positions"""
         return list(self.active_positions.values())

@@ -6,8 +6,8 @@ from core.order_manager import OrderManager
 
 
 @pytest.mark.asyncio
-async def test_auto_profit_triggers():
-    """Test auto-profit triggers at threshold"""
+async def test_auto_profit_bonus_threshold():
+    """Test auto-profit triggers at bonus threshold"""
     config = TradingConfig()
     config.auto_profit_enabled = True
     config.auto_profit_threshold = 0.5
@@ -21,11 +21,10 @@ async def test_auto_profit_triggers():
     # Mock position with 2.5% profit
     manager.active_positions = {"BTC/USDT:USDT": {"entry_price": 50000, "side": "buy", "size": 0.001, "timestamp": 0}}
 
-    # Mock ticker with 2.5% gain
+    # Mock price with 2.5% gain
     mock_exchange.get_ticker = AsyncMock(return_value={"last": 51250})
     manager.close_position_market = AsyncMock(return_value=True)
 
-    # Run check
     await manager.check_auto_profit()
 
     # Should trigger bonus profit close
@@ -48,3 +47,11 @@ async def test_auto_profit_disabled():
 
     # Should not access exchange
     mock_exchange.get_ticker.assert_not_called()
+
+
+def test_risk_reward_ratio():
+    """Test R:R ratio is correct"""
+    config = TradingConfig()
+    ratio = config.take_profit_percent / config.stop_loss_percent
+    assert ratio >= 1.5, f"R:R ratio {ratio:.2f} is less than 1.5"
+    print(f"✅ R:R ratio: {ratio:.2f}:1")

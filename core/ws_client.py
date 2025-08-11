@@ -13,7 +13,14 @@ from typing import Any
 import aiohttp
 
 
-async def get_listen_key(http: aiohttp.ClientSession, api_base: str, headers: dict[str, str]) -> str:
+def get_endpoint_prefix(resolved_quote_coin: str) -> str:
+    """Get API endpoint prefix based on quote coin"""
+    return "/fapi" if resolved_quote_coin == "USDT" else "/dapi"
+
+
+async def get_listen_key(
+    http: aiohttp.ClientSession, api_base: str, headers: dict[str, str], resolved_quote_coin: str = "USDT"
+) -> str:
     """
     Get a listen key for User Data Stream.
 
@@ -21,6 +28,7 @@ async def get_listen_key(http: aiohttp.ClientSession, api_base: str, headers: di
         http: aiohttp ClientSession instance
         api_base: API base URL (e.g., "https://fapi.binance.com")
         headers: HTTP headers including API key
+        resolved_quote_coin: Quote coin (USDT or USDC)
 
     Returns:
         listenKey string
@@ -28,7 +36,8 @@ async def get_listen_key(http: aiohttp.ClientSession, api_base: str, headers: di
     Raises:
         Exception: If request fails
     """
-    url = f"{api_base}/fapi/v1/listenKey"
+    prefix = get_endpoint_prefix(resolved_quote_coin)
+    url = f"{api_base}{prefix}/v1/listenKey"
 
     async with http.post(url, headers=headers) as response:
         if response.status != 200:
@@ -45,7 +54,13 @@ async def get_listen_key(http: aiohttp.ClientSession, api_base: str, headers: di
         return listen_key
 
 
-async def keepalive(http: aiohttp.ClientSession, api_base: str, headers: dict[str, str], listen_key: str) -> None:
+async def keepalive(
+    http: aiohttp.ClientSession,
+    api_base: str,
+    headers: dict[str, str],
+    listen_key: str,
+    resolved_quote_coin: str = "USDT",
+) -> None:
     """
     Keepalive a listen key to prevent it from expiring.
 
@@ -54,11 +69,13 @@ async def keepalive(http: aiohttp.ClientSession, api_base: str, headers: dict[st
         api_base: API base URL
         headers: HTTP headers including API key
         listen_key: The listen key to keep alive
+        resolved_quote_coin: Quote coin (USDT or USDC)
 
     Raises:
         Exception: If request fails
     """
-    url = f"{api_base}/fapi/v1/listenKey"
+    prefix = get_endpoint_prefix(resolved_quote_coin)
+    url = f"{api_base}{prefix}/v1/listenKey"
     params = {"listenKey": listen_key}
 
     async with http.put(url, headers=headers, params=params) as response:
@@ -147,6 +164,7 @@ class UserDataStreamManager:
         on_event: Callable[[dict[str, Any]], None],
         ws_reconnect_interval: int = 5,
         ws_heartbeat_interval: int = 30,
+        resolved_quote_coin: str = "USDT",
     ):
         """
         Initialize UserDataStreamManager.
@@ -158,6 +176,7 @@ class UserDataStreamManager:
             on_event: Event handler callback
             ws_reconnect_interval: Reconnect interval
             ws_heartbeat_interval: Heartbeat interval
+            resolved_quote_coin: Quote coin (USDT or USDC)
         """
         self.api_base = api_base
         self.ws_url = ws_url
@@ -165,6 +184,7 @@ class UserDataStreamManager:
         self.on_event = on_event
         self.ws_reconnect_interval = ws_reconnect_interval
         self.ws_heartbeat_interval = ws_heartbeat_interval
+        self.resolved_quote_coin = resolved_quote_coin
 
         self.listen_key = None
         self.http_session = None
@@ -180,7 +200,7 @@ class UserDataStreamManager:
 
         try:
             # Get listen key
-            self.listen_key = await get_listen_key(self.http_session, self.api_base, headers)
+            self.listen_key = await get_listen_key(self.http_session, self.api_base, headers, self.resolved_quote_coin)
 
             # Start keepalive task (every 30 minutes)
             self.keepalive_task = asyncio.create_task(self._keepalive_loop(headers))
@@ -206,7 +226,9 @@ class UserDataStreamManager:
                 await asyncio.sleep(30 * 60)  # 30 minutes
 
                 if self.listen_key and self.http_session:
-                    await keepalive(self.http_session, self.api_base, headers, self.listen_key)
+                    await keepalive(
+                        self.http_session, self.api_base, headers, self.listen_key, self.resolved_quote_coin
+                    )
 
             except asyncio.CancelledError:
                 break
@@ -252,3 +274,74 @@ def log_event_handler(event: dict[str, Any]) -> None:
 
     else:
         logging.debug(f"Unhandled event type: {event_type}")
+
+
+class MarketDataStream:
+    """Manager for market data streams (prices)"""
+
+    def __init__(
+        self, ws_url: str, symbols: list[str], on_price_update, resolved_quote_coin: str = "USDT", testnet: bool = False
+    ):
+        self.symbols = symbols[:10]  # Limit 10
+        self.on_price_update = on_price_update
+        self.resolved_quote_coin = resolved_quote_coin
+        self.testnet = testnet
+        self.stream_task = None
+
+    def _get_stream_url(self) -> str:
+        """Build WebSocket URL"""
+        from core.symbol_utils import to_binance_symbol
+
+        streams = []
+        for symbol in self.symbols:
+            binance_sym = to_binance_symbol(symbol).lower()
+            streams.append(f"{binance_sym}@markPrice@1s")
+
+        stream_param = "/".join(streams)
+
+        if self.testnet:
+            base = "wss://stream.binancefuture.com"
+        elif self.resolved_quote_coin == "USDT":
+            base = "wss://fstream.binance.com:9443"
+        else:
+            base = "wss://dstream.binance.com:9443"
+
+        return f"{base}/stream?streams={stream_param}"
+
+    async def start(self) -> None:
+        """Start market data stream"""
+        url = self._get_stream_url()
+        self.stream_task = asyncio.create_task(self._stream_loop(url))
+        logging.info(f"Market stream started for {len(self.symbols)} symbols")
+
+    async def _stream_loop(self, url: str) -> None:
+        """Streaming loop"""
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(url, heartbeat=30, autoping=True) as ws:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                data = json.loads(msg.data)
+                                stream_data = data.get("data", {})
+
+                                if stream_data.get("e") == "markPriceUpdate":
+                                    symbol = stream_data.get("s")
+                                    price = float(stream_data.get("p", 0))
+
+                                    if symbol and price:
+                                        # Convert to ccxt format
+                                        quote = self.resolved_quote_coin
+                                        base = symbol[: -len(quote)]
+                                        ccxt_symbol = f"{base}/{quote}:{quote}"
+                                        self.on_price_update(ccxt_symbol, price)
+
+                            elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                                break
+            except Exception as e:
+                logging.error(f"Market WS error: {e}")
+            await asyncio.sleep(5)
+
+    async def stop(self) -> None:
+        if self.stream_task:
+            self.stream_task.cancel()

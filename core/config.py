@@ -153,6 +153,9 @@ class TradingConfig(BaseModel):
     trailing_be_pct: float = Field(default=1.0)
     trailing_step_pct: float = Field(default=0.5)
 
+    # WebSocket Settings (disabled by default)
+    enable_websocket: bool = Field(default=False, description="Enable WebSocket streams")
+
     # ATR-based TP/SL (disabled by default)
     use_atr_based_tp_sl: bool = Field(default=False)
     atr_multiplier_sl: float = Field(default=1.0)
