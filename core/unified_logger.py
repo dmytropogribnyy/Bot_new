@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -142,7 +142,7 @@ class ColoredFormatter(logging.Formatter):
 class JSONLFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_obj: dict[str, Any] = {
-            "ts": datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "level": record.levelname,
             "name": record.name,
             "tag": getattr(record, "tag", "SYSTEM"),

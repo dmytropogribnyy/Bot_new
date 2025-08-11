@@ -289,9 +289,8 @@ class TradingConfig(BaseModel):
             ws_heartbeat_interval=env_int("WS_HEARTBEAT_INTERVAL", getattr(cls, "ws_heartbeat_interval", 30)),
         )
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # Pydantic v2 style config can be supplied via model_config if needed.
+    # We load .env manually in __init__, so class-based Config is not required.
 
     def __init__(self, **data):
         # Load .env file manually
@@ -414,7 +413,7 @@ class TradingConfig(BaseModel):
         try:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self.dict(), f, indent=2, default=str)
+                json.dump(self.model_dump(), f, indent=2, default=str)
             print(f"Configuration saved to {filepath}")
         except Exception as e:
             print(f"Failed to save configuration: {e}")
