@@ -4,14 +4,20 @@ import importlib
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import Lock
 
 from constants import ENTRY_LOG_FILE, STATE_FILE
 from core.config import TradingConfig
-from utils_logging import log
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("UTILS", level, str(message))
 
 
 def send_telegram_message(*args, **kwargs):
@@ -254,7 +260,7 @@ def get_runtime_config() -> dict:
     """
     try:
         cfg = TradingConfig.from_env()
-        return cfg.dict()
+        return cfg.model_dump()
     except Exception as e:
         log(f"[Stage B] TradingConfig.from_env failed, fallback to file: {e}", level="WARNING")
         if RUNTIME_CONFIG_FILE.exists():
@@ -289,7 +295,7 @@ def update_runtime_config(new_values: dict):
                 history = json.load(f)
         else:
             history = []
-        history.append({"timestamp": datetime.utcnow().isoformat(), "updates": new_values})
+        history.append({"timestamp": datetime.now(timezone.utc).isoformat(), "updates": new_values})
         with open(history_path, "w") as f:
             json.dump(history[-100:], f, indent=2)
     except Exception as e:
@@ -481,7 +487,7 @@ def is_optimal_trading_hour(strict: bool = True) -> bool:
 
     Возвращает True, если текущий UTC-час разрешён.
     """
-    now_utc_hour = datetime.utcnow().hour
+    now_utc_hour = datetime.now(timezone.utc).hour
     config = get_runtime_config()
 
     allowed_hours = config.get("monitoring_hours_utc", list(range(24)))

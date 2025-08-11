@@ -34,7 +34,13 @@ from utils_core import (
     safe_call_retry,
     save_json_file,
 )
-from utils_logging import log  # или ваш метод логирования
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("PAIR_SEL", level, message)
 
 BASE_UPDATE_INTERVAL = 60 * 15  # 15 минут
 symbols_file_lock = Lock()
@@ -226,8 +232,6 @@ def calculate_correlation(price_data):
     """
     import numpy as np
     import pandas as pd
-
-    from utils_logging import log
 
     if not price_data:
         log("[CorrMatrix] Empty price_data input", level="WARNING")
@@ -470,8 +474,6 @@ def save_symbols_file(symbols_list):
     import json
     import os
 
-    from utils_logging import log
-
     try:
         if not symbols_list:
             log("⚠️ Attempted to save empty symbols list!", level="WARNING")
@@ -561,8 +563,6 @@ def get_update_interval():
     final_interval = max(base_interval, int(base_interval * account_factor * hour_factor * volatility_factor))
 
     # 📋 Лог всех расчётов
-    from utils_logging import log
-
     log(
         f"[UpdateInterval] balance={balance:.2f}, account_factor={account_factor}, "
         f"hour_factor={hour_factor}, vol={market_volatility:.2f}, vol_factor={volatility_factor}, "
@@ -583,7 +583,6 @@ def track_missed_opportunities():
     from datetime import datetime
 
     from pair_selector import fetch_all_symbols  # или список конкретных символов
-    from utils_logging import log
 
     symbols = fetch_all_symbols()
 

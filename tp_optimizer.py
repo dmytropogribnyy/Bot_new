@@ -5,7 +5,31 @@ from common.config_loader import CONFIG_FILE, EXPORT_PATH
 
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
 from utils_core import get_cached_balance, get_runtime_config
-from utils_logging import backup_config, log
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("TP_OPT", level, message)
+
+
+def backup_config(path: str = "data/runtime_config.json") -> None:
+    try:
+        import shutil
+        from datetime import datetime, timezone
+
+        if not os.path.exists(path):
+            log(f"Config file not found for backup: {path}", level="WARNING")
+            return
+        os.makedirs("data/backups", exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
+        dst = os.path.join("data/backups", f"runtime_config_{ts}.json")
+        shutil.copy(path, dst)
+        log(f"Backed up config to {dst}", level="INFO")
+    except Exception as e:
+        log(f"Backup failed: {e}", level="ERROR")
+
 
 CONFIG_PATH = CONFIG_FILE
 

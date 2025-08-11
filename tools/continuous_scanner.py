@@ -12,7 +12,13 @@ from core.legacy.strategy import fetch_data_multiframe  # ✅ заменили �
 from pair_selector import fetch_all_symbols
 from telegram.telegram_utils import send_telegram_message
 from utils_core import get_runtime_config, load_json_file, normalize_symbol
-from utils_logging import log
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("SCANNER", level, message)
 
 
 def continuous_scan():

@@ -3,7 +3,14 @@ import os
 import threading
 import time
 
-from utils_logging import log
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("MISSED", level, message)
+
 
 CACHE_LOCK = threading.Lock()
 MAX_ENTRIES = 100
