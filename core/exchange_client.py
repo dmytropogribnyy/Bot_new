@@ -63,6 +63,14 @@ class OptimizedExchangeClient:
             # if self.config.testnet - ccxt will use set_sandbox_mode instead
 
             self.exchange = ccxt.binance(exchange_config)
+            # Suppress ccxt warning about fetchOpenOrders without symbol; we always prefer symbol, but
+            # some compatibility paths may still call it without one. This avoids noisy logs/Telegram.
+            try:
+                opts = dict(getattr(self.exchange, "options", {}) or {})
+                opts["warnOnFetchOpenOrdersWithoutSymbol"] = False
+                self.exchange.options = opts
+            except Exception:
+                pass
 
             # Enable testnet mode if configured
             if self.config.testnet:
@@ -86,6 +94,38 @@ class OptimizedExchangeClient:
 
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to initialize exchange: {e}")
+            raise
+
+    async def assert_futures_perms(self) -> None:
+        """Fail-fast check that API key has futures trading permissions using unified CCXT methods.
+
+        Avoids exchange-specific private endpoints to prevent version/path mismatches.
+        """
+        try:
+            # In dry-run or without keys, do not block startup
+            if self.config.dry_run or not (self.config.api_key and self.config.api_secret):
+                self.logger.log_event("EXCHANGE", "INFO", "[PERMS] Skipped in dry-run or without API keys")
+                return
+
+            # Try a futures-only call; if futures are not enabled, this will fail
+            try:
+                try:
+                    await self.exchange.fetch_positions([])
+                except TypeError:
+                    await self.exchange.fetch_positions()
+            except Exception as inner:
+                raise RuntimeError("Futures trading not enabled for this API key") from inner
+
+            # Optional: fetch balance to surface permission issues on some setups
+            try:
+                await self.exchange.fetch_balance()
+            except Exception:
+                # Not fatal for permission flag if positions fetch succeeded
+                pass
+
+            self.logger.log_event("EXCHANGE", "INFO", "[PERMS] Futures trading permissions OK")
+        except Exception as e:
+            self.logger.log_event("EXCHANGE", "ERROR", f"[PERMS] {e}")
             raise
 
     async def _test_connection(self):
@@ -370,11 +410,30 @@ class OptimizedExchangeClient:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get order {order_id}: {e}")
             return None
 
-    async def get_open_orders(self, symbol: str = None) -> list[dict[str, Any]]:
-        """Get open orders"""
+    async def get_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Get open orders.
+        Prefer passing a symbol to avoid strict Binance rate limits.
+        """
         try:
             await self._rate_limit()
-            return await self.exchange.fetch_open_orders(symbol)
+            if symbol:
+                return await self.exchange.fetch_open_orders(symbol)
+            # Fallback: fetch per symbol when not provided, to avoid ccxt warning and rate penalties
+            try:
+                markets = await self.get_markets()
+                symbols = [s for s, m in markets.items() if m.get("active", True)]
+            except Exception:
+                symbols = []
+            results: list[dict[str, Any]] = []
+            for s in symbols[:50]:  # guard upper bound
+                try:
+                    await self._rate_limit()
+                    orders = await self.exchange.fetch_open_orders(s)
+                    if orders:
+                        results.extend(orders)
+                except Exception:
+                    continue
+            return results
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get open orders: {e}")
             return []
@@ -382,8 +441,12 @@ class OptimizedExchangeClient:
     async def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         """Get ticker for a symbol"""
         try:
+            # Avoid REST calls during shutdown
+            raw_ex = getattr(self, "exchange", None)
+            if not raw_ex:
+                return None
             await self._rate_limit()
-            return await self.exchange.fetch_ticker(symbol)
+            return await raw_ex.fetch_ticker(symbol)
         except Exception as e:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to get ticker for {symbol}: {e}")
             return None

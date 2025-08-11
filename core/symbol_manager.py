@@ -57,9 +57,23 @@ class SymbolManager:
                 selected_symbols: list[str] = []
 
                 for symbol, market in markets.items():
-                    # Always select USDC-settled contract markets
-                    if is_usdc_contract_market(market):
-                        selected_symbols.append(ensure_perp_usdc_format(symbol))
+                    # On testnet use USDT-margined perpetuals; in production use USDC perpetuals
+                    if self.config.testnet:
+                        is_contract = market.get("contract", False)
+                        quote = market.get("quote")
+                        settle = market.get("settle")
+                        market_type = market.get("type")
+                        if (
+                            is_contract
+                            and (quote == "USDT" or settle == "USDT")
+                            and (market_type in ("swap", "future", None))
+                        ):
+                            # Binance CCXT already provides format like "BTC/USDT:USDT" for perpetuals
+                            selected_symbols.append(symbol)
+                    else:
+                        # Production: pick USDC perpetuals and normalize format
+                        if is_usdc_contract_market(market):
+                            selected_symbols.append(ensure_perp_usdc_format(symbol))
 
                 if selected_symbols:
                     # Keep a manageable top slice

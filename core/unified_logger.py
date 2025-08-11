@@ -1,423 +1,403 @@
 #!/usr/bin/env python3
-"""
-Unified Logger for BinanceBot v2.1
-Simplified version based on v2 structure
-"""
-
-import asyncio
+import gzip
+import hashlib
 import json
 import logging
-import sqlite3
-import threading
-from datetime import datetime, timedelta
+import os
+import shutil
+import sys
+import time
+import uuid
+from contextlib import contextmanager
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-from core.config import TradingConfig
+# Optional deps
+try:
+    from rich.console import Console  # type: ignore[import-not-found]
+    from rich.logging import RichHandler  # type: ignore[import-not-found]
+
+    RICH_AVAILABLE = True
+except Exception:
+    RICH_AVAILABLE = False
+
+try:
+    from colorama import Back, Fore, Style, init as colorama_init
+
+    colorama_init(autoreset=True)
+    COLORAMA_AVAILABLE = True
+except Exception:
+    COLORAMA_AVAILABLE = False
 
 
-class LogLevel:
-    """Log levels for different channels"""
+# ============= Filters =============
+class DuplicateFilter(logging.Filter):
+    def __init__(self, window_secs: int = 60):
+        super().__init__()
+        self.window_secs = window_secs
+        self.cache: dict[str, tuple[int, float]] = {}
 
-    TERMINAL = "TERMINAL"  # Console - important events only
-    FILE = "FILE"  # File - detailed information
-    DATABASE = "DATABASE"  # SQLite - key events only
-    TELEGRAM = "TELEGRAM"  # Telegram - alerts and important notifications
-
-
-class UnifiedLogger:
-    def __init__(self, config: TradingConfig):
-        self.config = config
-        self.db_path = Path(config.db_path)
-        self.lock = threading.Lock()
-        self.telegram = None
-
-        # Logging settings from config
-        self.max_log_size_mb = config.max_log_size_mb
-        self.log_retention_days = config.log_retention_days
-        self.log_level = config.log_level.upper()
-
-        # Rate limiting to prevent spam
-        self.log_rate_limit = {}  # {component: last_log_time}
-        self.min_log_interval = 60  # Minimum interval between logs in seconds
-
-        # Verbosity settings
-        self.verbosity_settings = {
-            "CLEAN": {
-                "terminal_interval": 300,  # 5 minutes
-                "telegram_interval": 600,  # 10 minutes
-                "show_ws_updates": False,
-                "show_ping_pong": False,
-            },
-            "VERBOSE": {
-                "terminal_interval": 60,  # 1 minute
-                "telegram_interval": 300,  # 5 minutes
-                "show_ws_updates": True,
-                "show_ping_pong": False,
-            },
-            "DEBUG": {
-                "terminal_interval": 10,  # 10 seconds
-                "telegram_interval": 60,  # 1 minute
-                "show_ws_updates": True,
-                "show_ping_pong": True,
-            },
-        }
-
-        self.current_verbosity = self.verbosity_settings.get(self.log_level, self.verbosity_settings["CLEAN"])
-
-        # Create directories if they don't exist
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        Path("logs").mkdir(exist_ok=True)
-
-        # Setup logging
-        self._setup_file_logging()
-        self._init_db()
-        self._setup_console_logging()
-        self._cleanup_old_logs()
-
-    def _setup_file_logging(self):
-        """Setup file logging with improved structure"""
-        self.file_logger = logging.getLogger("binance_bot")
-        self.file_logger.setLevel(logging.INFO)
-
-        # Create formatter with improved structure
-        formatter = logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)-15s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
-
-        # File handler with rotation
-        file_handler = logging.FileHandler("logs/main.log", encoding="utf-8")
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(logging.INFO)
-
-        self.file_logger.addHandler(file_handler)
-        self.file_logger.propagate = False
-
-    def _setup_console_logging(self):
-        """Setup console logging"""
-        self.console_logger = logging.getLogger("binance_bot_console")
-        self.console_logger.setLevel(logging.INFO)
-
-        formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S")
-
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        console_handler.setLevel(logging.INFO)
-
-        self.console_logger.addHandler(console_handler)
-        self.console_logger.propagate = False
-
-    def _init_db(self):
-        """Initialize SQLite database for logging"""
-        try:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-
-                # Create logs table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT NOT NULL,
-                        level TEXT NOT NULL,
-                        component TEXT NOT NULL,
-                        message TEXT NOT NULL,
-                        details TEXT,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-
-                # Create trades table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS trades (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        symbol TEXT NOT NULL,
-                        side TEXT NOT NULL,
-                        quantity REAL NOT NULL,
-                        price REAL NOT NULL,
-                        pnl REAL DEFAULT 0,
-                        win BOOLEAN DEFAULT FALSE,
-                        reason TEXT,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-
-                # Create runtime_status table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS runtime_status (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        status TEXT NOT NULL,
-                        details TEXT,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-
-                conn.commit()
-
-        except Exception as e:
-            print(f"Failed to initialize database: {e}")
-
-    def _cleanup_old_logs(self):
-        """Clean up old log files"""
-        try:
-            log_dir = Path("logs")
-            if not log_dir.exists():
-                return
-
-            cutoff_date = datetime.now() - timedelta(days=self.log_retention_days)
-
-            for log_file in log_dir.glob("*.log"):
-                if log_file.stat().st_mtime < cutoff_date.timestamp():
-                    log_file.unlink()
-
-        except Exception as e:
-            print(f"Failed to cleanup old logs: {e}")
-
-    def _rotate_logs(self):
-        """Rotate log files if they exceed size limit"""
-        try:
-            log_file = Path("logs/main.log")
-            if log_file.exists() and log_file.stat().st_size > self.max_log_size_mb * 1024 * 1024:
-                # Create backup
-                backup_name = f"logs/main_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-                log_file.rename(backup_name)
-
-                # Create new log file
-                log_file.touch()
-
-        except Exception as e:
-            print(f"Failed to rotate logs: {e}")
-
-    def _should_log(self, component: str, level: str) -> bool:
-        """Check if we should log this message based on rate limiting"""
-        current_time = datetime.now()
-
-        # Check rate limiting
-        if component in self.log_rate_limit:
-            last_time = self.log_rate_limit[component]
-            if (current_time - last_time).total_seconds() < self.min_log_interval:
-                return False
-
-        self.log_rate_limit[component] = current_time
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg_hash = hashlib.md5(record.getMessage().encode()).hexdigest()
+        current_time = time.time()
+        self.cache = {k: v for k, v in self.cache.items() if current_time - v[1] < self.window_secs}
+        if msg_hash in self.cache:
+            count, first_time = self.cache[msg_hash]
+            self.cache[msg_hash] = (count + 1, first_time)
+            if count % 10 == 0:
+                record.msg = f"{record.msg} [repeated {count}x in {self.window_secs}s]"
+                return True
+            return False
+        self.cache[msg_hash] = (1, current_time)
         return True
 
-    def log_event(self, component: str, level: str, message: str, details: Any = None, channels: list = None):
-        """Log an event to specified channels"""
-        if not self._should_log(component, level):
-            return
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+class RateLimitFilter(logging.Filter):
+    def __init__(self, keys: list[str] | None = None, window_secs: int = 60):
+        super().__init__()
+        self.keys = keys or [
+            "Telegram bot initialized",
+            "Emergency shutdown flag",
+            "fetching open orders without specifying a symbol",
+        ]
+        self.window_secs = window_secs
+        self.last_seen: dict[str, float] = {}
 
-        # Default channels
-        if channels is None:
-            channels = ["terminal", "file"]
-            if level in ["ERROR", "CRITICAL"]:
-                channels.append("telegram")
-            if level in ["INFO", "WARNING", "ERROR", "CRITICAL"]:
-                channels.append("database")
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for key in self.keys:
+            if key in msg:
+                current_time = time.time()
+                last = self.last_seen.get(key)
+                if last and current_time - last < self.window_secs:
+                    return False
+                self.last_seen[key] = current_time
+                break
+        return True
 
-        # Format message
-        formatted_message = f"[{component}] {message}"
-        if details:
-            if isinstance(details, dict):
-                details_str = json.dumps(details, indent=2)
-            else:
-                details_str = str(details)
-            formatted_message += f"\nDetails: {details_str}"
 
-        # Log to different channels
-        if "terminal" in channels and self.config.log_to_console:
-            self._log_to_console(level, formatted_message)
+class OncePerRunFilter(logging.Filter):
+    def __init__(self, messages: list[str] | None = None):
+        super().__init__()
+        self.messages = set(messages or ["Telegram bot initialized"])
+        self.seen: set[str] = set()
 
-        if "file" in channels and self.config.log_to_file:
-            self._log_to_file(level, formatted_message)
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for key in self.messages:
+            if key in msg:
+                if msg in self.seen:
+                    return False
+                self.seen.add(msg)
+                break
+        return True
 
-        if "database" in channels:
-            self._log_to_database(timestamp, level, component, message, details)
 
-        if "telegram" in channels and self.config.log_to_telegram and self.telegram:
-            self._log_to_telegram(level, formatted_message)
+# ============= Formatters =============
+class ColoredFormatter(logging.Formatter):
+    COLORS = {
+        "DEBUG": Fore.CYAN if COLORAMA_AVAILABLE else "",
+        "INFO": Fore.GREEN if COLORAMA_AVAILABLE else "",
+        "WARNING": Fore.YELLOW if COLORAMA_AVAILABLE else "",
+        "ERROR": (Fore.RED + Style.BRIGHT) if COLORAMA_AVAILABLE else "",
+        "CRITICAL": (Back.RED + Fore.WHITE + Style.BRIGHT) if COLORAMA_AVAILABLE else "",
+    }
+    EMOJIS = {"DEBUG": "🔍", "INFO": "✅", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🔥"}
 
-    def _log_to_console(self, level: str, message: str):
-        """Log to console"""
-        try:
-            if level == "DEBUG":
-                self.console_logger.debug(message)
-            elif level == "INFO":
-                self.console_logger.info(message)
-            elif level == "WARNING":
-                self.console_logger.warning(message)
-            elif level == "ERROR":
-                self.console_logger.error(message)
-            elif level == "CRITICAL":
-                self.console_logger.critical(message)
-        except Exception as e:
-            print(f"Console logging error: {e}")
+    def __init__(self, use_emoji: bool = True, use_color: bool = True):
+        super().__init__()
+        self.use_emoji = use_emoji
+        self.use_color = use_color
 
-    def _log_to_file(self, level: str, message: str):
-        """Log to file"""
-        try:
-            if level == "DEBUG":
-                self.file_logger.debug(message)
-            elif level == "INFO":
-                self.file_logger.info(message)
-            elif level == "WARNING":
-                self.file_logger.warning(message)
-            elif level == "ERROR":
-                self.file_logger.error(message)
-            elif level == "CRITICAL":
-                self.file_logger.critical(message)
-        except Exception as e:
-            print(f"File logging error: {e}")
+    def format(self, record: logging.LogRecord) -> str:
+        levelname = record.levelname
+        color = self.COLORS.get(levelname, "") if self.use_color else ""
+        emoji = self.EMOJIS.get(levelname, "") if self.use_emoji else ""
+        reset = Style.RESET_ALL if (COLORAMA_AVAILABLE and self.use_color) else ""
+        time_str = self.formatTime(record, "%H:%M:%S")
+        tag = getattr(record, "tag", "SYSTEM")
+        parts: list[str] = [time_str]
+        if emoji:
+            parts.append(emoji)
+        parts.append(f"[{tag:^10}]")
+        prefix = " ".join(parts)
+        message = record.getMessage()
+        if self.use_color and COLORAMA_AVAILABLE:
+            message = message.replace("USDT", f"{Fore.CYAN}USDT{Style.RESET_ALL}")
+            message = message.replace("USDC", f"{Fore.CYAN}USDC{Style.RESET_ALL}")
+            message = message.replace(" OK", f"{Fore.GREEN} OK{Style.RESET_ALL}")
+        return f"{color}{prefix}{reset} {message}"
 
-    def _log_to_database(self, timestamp: str, level: str, component: str, message: str, details: Any = None):
-        """Log to SQLite database"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO logs (timestamp, level, component, message, details)
-                    VALUES (?, ?, ?, ?, ?)
-                """,
-                    (timestamp, level, component, message, json.dumps(details) if details else None),
-                )
-                conn.commit()
-        except Exception as e:
-            print(f"Database logging error: {e}")
 
-    def _log_to_telegram(self, level: str, message: str):
-        """Log to Telegram"""
-        if self.telegram:
+class JSONLFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        log_obj: dict[str, Any] = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "name": record.name,
+            "tag": getattr(record, "tag", "SYSTEM"),
+            "msg": record.getMessage(),
+        }
+        for key, value in record.__dict__.items():
+            if key not in {
+                "name",
+                "msg",
+                "args",
+                "created",
+                "filename",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "getMessage",
+                "tag",
+                "exc_info",
+                "exc_text",
+            }:
+                try:
+                    json.dumps(value)
+                    log_obj[key] = value
+                except Exception:
+                    log_obj[key] = str(value)
+        if record.exc_info:
+            log_obj["exc"] = self.formatException(record.exc_info)
+        return json.dumps(log_obj, ensure_ascii=False)
+
+
+# ============= Smart handler with compression and total limit =============
+class SmartRotatingHandler(RotatingFileHandler):
+    def __init__(
+        self,
+        filename: str,
+        maxBytes: int = 20 * 1024 * 1024,
+        backupCount: int = 2,
+        totalLimitMB: int = 100,
+        compress: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(filename, maxBytes=maxBytes, backupCount=backupCount, **kwargs)
+        self.totalLimitMB = totalLimitMB
+        self.compress = compress
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        if self.compress:
+            for i in range(1, self.backupCount + 1):
+                source = f"{self.baseFilename}.{i}"
+                gz_path = f"{source}.gz"
+                if os.path.exists(source) and not os.path.exists(gz_path):
+                    try:
+                        with open(source, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+                        os.remove(source)
+                    except Exception:
+                        pass
+        self._check_total_size()
+
+    def _check_total_size(self) -> None:
+        log_dir = Path(self.baseFilename).parent
+        total_size = 0
+        files: list[tuple[Path, float, int]] = []
+        for pattern in ("*.log*", "*.jsonl*"):
+            for file in log_dir.glob(pattern):
+                if file.is_file():
+                    try:
+                        size = file.stat().st_size
+                        total_size += size
+                        files.append((file, file.stat().st_mtime, size))
+                    except Exception:
+                        continue
+        files.sort(key=lambda x: x[1])
+        limit_bytes = self.totalLimitMB * 1024 * 1024
+        while total_size > limit_bytes and files:
+            oldest = files.pop(0)
             try:
-                # Truncate long messages
-                if len(message) > 4000:
-                    message = message[:4000] + "..."
+                oldest[0].unlink()
+                total_size -= oldest[2]
+            except Exception:
+                pass
 
-                asyncio.create_task(self.telegram.send_message(message))
-            except Exception as e:
-                print(f"Telegram logging error: {e}")
 
-    def log_trade(
-        self, symbol: str, side: str, qty: float, price: float, reason: str, pnl: float = 0, win: bool = False
-    ):
-        """Log a trade event"""
+# ============= Setup function =============
+def setup_logging(
+    app_name: str = "binance_bot",
+    log_dir: str = "logs",
+    level_console: str | None = None,
+    level_file: str | None = None,
+) -> logging.Logger:
+    level_console = level_console or os.getenv("LOG_CONSOLE_LEVEL", "INFO")
+    level_file = level_file or os.getenv("LOG_FILE_LEVEL", "INFO")
+
+    use_emoji = os.getenv("LOG_EMOJI", "true").lower() == "true" and sys.stdout.isatty()
+    use_rich = os.getenv("LOG_RICH", "true").lower() == "true" and RICH_AVAILABLE and sys.stdout.isatty()
+    use_color = os.getenv("LOG_COLOR", "true").lower() == "true" and sys.stdout.isatty()
+
+    rate_limit_secs = int(os.getenv("LOG_RATE_LIMIT_SECS", "60"))
+    dedup_window_secs = int(os.getenv("LOG_DEDUP_WINDOW_SECS", "60"))
+
+    max_size_mb = int(os.getenv("LOG_MAX_SIZE_MB", "20"))
+    backup_count = int(os.getenv("LOG_BACKUP_COUNT", "2"))
+    total_limit_mb = int(os.getenv("LOG_TOTAL_LIMIT_MB", "100"))
+    compress = os.getenv("LOG_COMPRESS", "true").lower() == "true"
+
+    Path(log_dir).mkdir(exist_ok=True)
+
+    logger = logging.getLogger(app_name)
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()
+
+    # Console
+    if use_rich:
+        console_handler = RichHandler(
+            rich_tracebacks=False,
+            show_path=False,
+            markup=True,
+            log_time_format="%H:%M:%S",
+            console=Console(force_terminal=True),
+        )
+    else:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(ColoredFormatter(use_emoji=use_emoji, use_color=use_color))
+    console_handler.setLevel(getattr(logging, level_console.upper(), logging.INFO))
+    console_handler.addFilter(DuplicateFilter(dedup_window_secs))
+    console_handler.addFilter(RateLimitFilter(window_secs=rate_limit_secs))
+    console_handler.addFilter(OncePerRunFilter())
+    logger.addHandler(console_handler)
+
+    # Readable file
+    readable_handler = SmartRotatingHandler(
+        f"{log_dir}/main.log",
+        maxBytes=max_size_mb * 1024 * 1024,
+        backupCount=backup_count,
+        totalLimitMB=max(1, total_limit_mb // 2),
+        compress=compress,
+        encoding="utf-8",
+    )
+    readable_format = "%(asctime)s | %(levelname)-7s | [%(tag)-10s] %(message)s"
+    readable_handler.setFormatter(logging.Formatter(readable_format, datefmt="%Y-%m-%d %H:%M:%S"))
+    readable_handler.setLevel(getattr(logging, level_file.upper(), logging.INFO))
+    logger.addHandler(readable_handler)
+
+    # JSONL file
+    jsonl_handler = SmartRotatingHandler(
+        f"{log_dir}/main.jsonl",
+        maxBytes=max_size_mb * 1024 * 1024,
+        backupCount=backup_count,
+        totalLimitMB=max(1, total_limit_mb // 2),
+        compress=compress,
+        encoding="utf-8",
+    )
+    jsonl_handler.setFormatter(JSONLFormatter())
+    jsonl_handler.setLevel(getattr(logging, level_file.upper(), logging.INFO))
+    logger.addHandler(jsonl_handler)
+
+    # Reduce noise
+    for noisy in ("telegram", "ccxt", "asyncio", "urllib3"):
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO trades (symbol, side, quantity, price, pnl, win, reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (symbol, side, qty, price, pnl, win, reason),
-                )
-                conn.commit()
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+        except Exception:
+            pass
 
-            # Also log as event
-            self.log_event(
-                "TRADE",
-                "INFO",
-                f"Trade: {symbol} {side} {qty} @ {price} | PnL: {pnl} | Win: {win}",
-                {"reason": reason, "pnl": pnl, "win": win},
-            )
+    return logger
 
-        except Exception as e:
-            print(f"Trade logging error: {e}")
 
-    def log_runtime_status(self, status: str, details: dict[str, Any] = None):
-        """Log runtime status"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO runtime_status (status, details)
-                    VALUES (?, ?)
-                """,
-                    (status, json.dumps(details) if details else None),
-                )
-                conn.commit()
+# ============= Helpers =============
+def get_logger(name: str | None = None, tag: str | None = None) -> logging.LoggerAdapter:
+    base = logging.getLogger(name or "binance_bot")
+    if tag:
+        return logging.LoggerAdapter(base, {"tag": tag})
+    return logging.LoggerAdapter(base, {"tag": "SYSTEM"})
 
-            self.log_event("RUNTIME", "INFO", f"Status: {status}", details)
 
-        except Exception as e:
-            print(f"Runtime status logging error: {e}")
+def set_tag(logger_obj: logging.LoggerAdapter, tag: str) -> None:
+    if hasattr(logger_obj, "extra"):
+        logger_obj.extra["tag"] = tag
 
-    def attach_telegram(self, telegram_bot):
-        """Attach Telegram bot for logging"""
+
+# ============= Session banners =============
+def print_session_banner_start(logger_obj: logging.LoggerAdapter | logging.Logger, run_id: str, mode: str) -> None:
+    time_str = datetime.now().strftime("%H:%M:%S")
+    banner = f"{'─' * 10} START [{run_id}] mode={mode} time={time_str} {'─' * 10}"
+    underline = "_" * len(banner)
+    emit = logger_obj.info if hasattr(logger_obj, "info") else print
+    emit(banner)
+    emit(underline)
+    emit("")
+
+
+def print_session_banner_end(
+    logger_obj: logging.LoggerAdapter | logging.Logger, run_id: str, status: str, elapsed_sec: float
+) -> None:
+    mins, secs = divmod(int(elapsed_sec), 60)
+    hours, mins = divmod(mins, 60)
+    elapsed_str = f"{hours:02d}:{mins:02d}:{secs:02d}"
+    banner = f"{'─' * 10} END [{run_id}] status={status} elapsed={elapsed_str} {'─' * 10}"
+    underline = "_" * len(banner)
+    emit = logger_obj.info if hasattr(logger_obj, "info") else print
+    emit(banner)
+    emit(underline)
+    emit("")
+
+
+# ============= Section context =============
+@contextmanager
+def section(logger_obj: logging.LoggerAdapter | logging.Logger, tag: str, title: str):
+    start_time = time.perf_counter()
+    sec_logger = get_logger(getattr(logger_obj, "name", None), tag)
+    sec_logger.info(f"► {title} — start")
+    try:
+        yield sec_logger
+    finally:
+        elapsed = time.perf_counter() - start_time
+        sec_logger.info(f"✓ {title} — done ({elapsed:.3f}s)")
+
+
+# ============= Health test =============
+def health() -> None:
+    logger_obj = get_logger(tag="HEALTH")
+    logger_obj.debug("Debug message")
+    logger_obj.info("Info message")
+    logger_obj.warning("Warning message")
+    logger_obj.error("Error message")
+
+
+# ============= Backward-compatible adapter =============
+class UnifiedLogger:
+    def __init__(self, config: Any | None = None):
+        self.config = config
+        self._base_logger = setup_logging(app_name="binance_bot", log_dir="logs")
+        self._logger_adapter = get_logger("binance_bot")
+        self._run_id = uuid.uuid4().hex[:8]
+        self.telegram = None
+
+    def attach_telegram(self, telegram_bot: Any) -> None:
         self.telegram = telegram_bot
 
-    def get_recent_logs(self, hours: int = 24) -> list:
-        """Get recent logs from database"""
+    def log_event(self, component: str, level: str, message: str, details: Any = None, channels: list | None = None):
+        level_num = getattr(logging, (level or "INFO").upper(), logging.INFO)
+        extras = {"tag": component}
+        if details is not None:
+            extras["details"] = details
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(f"""
-                    SELECT timestamp, level, component, message, details
-                    FROM logs
-                    WHERE timestamp >= datetime('now', '-{hours} hours')
-                    ORDER BY timestamp DESC
-                    LIMIT 100
-                """)
-
-                return cursor.fetchall()
-        except Exception as e:
-            print(f"Failed to get recent logs: {e}")
-            return []
-
-    def get_trade_summary(self, hours: int = 24) -> dict[str, Any]:
-        """Get trade summary from database"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-
-                # Get total trades
-                cursor.execute(f"""
-                    SELECT COUNT(*), SUM(CASE WHEN win THEN 1 ELSE 0 END), SUM(pnl)
-                    FROM trades
-                    WHERE timestamp >= datetime('now', '-{hours} hours')
-                """)
-
-                total, wins, total_pnl = cursor.fetchone()
-
-                if total is None:
-                    return {"total": 0, "wins": 0, "win_rate": 0, "total_pnl": 0}
-
-                win_rate = (wins / total * 100) if total > 0 else 0
-
-                return {
-                    "total": total,
-                    "wins": wins,
-                    "win_rate": round(win_rate, 2),
-                    "total_pnl": round(total_pnl or 0, 2),
-                }
-
-        except Exception as e:
-            print(f"Failed to get trade summary: {e}")
-            return {"total": 0, "wins": 0, "win_rate": 0, "total_pnl": 0}
-
-    def send_alert(self, message: str, level: str = "INFO", details: Any = None):
-        """Send alert to Telegram"""
-        if self.telegram and self.config.log_to_telegram:
+            self._base_logger.log(level_num, message, extra=extras)
+        except Exception:
+            self._base_logger.log(level_num, f"[{component}] {message}")
+        if self.telegram and level_num >= logging.ERROR:
             try:
-                alert_message = f"🚨 ALERT [{level}]: {message}"
-                if details:
-                    alert_message += f"\nDetails: {json.dumps(details, indent=2)}"
+                txt = f"[{component}] {message}"
+                if details is not None:
+                    txt += f"\n{json.dumps(details, ensure_ascii=False) if isinstance(details, dict) else str(details)}"
+                import asyncio
 
-                asyncio.create_task(self.telegram.send_message(alert_message))
-            except Exception as e:
-                print(f"Failed to send alert: {e}")
+                asyncio.create_task(self.telegram.send_message(txt))
+            except Exception:
+                pass
 
-    def send_message(self, message: str, level: str = "INFO", details: Any = None):
-        """Send message to Telegram"""
-        if self.telegram and self.config.log_to_telegram:
-            try:
-                formatted_message = f"[{level}] {message}"
-                if details:
-                    formatted_message += f"\nDetails: {json.dumps(details, indent=2)}"
+    def log_runtime_status(self, status: str, details: dict[str, Any] | None = None) -> None:
+        self.log_event("RUNTIME", "INFO", f"Status: {status}", details)
 
-                asyncio.create_task(self.telegram.send_message(formatted_message))
-            except Exception as e:
-                print(f"Failed to send message: {e}")
+    @property
+    def logger(self) -> logging.LoggerAdapter:
+        return self._logger_adapter

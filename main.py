@@ -41,7 +41,11 @@ from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager
 from core.trade_engine_v2 import TradeEngineV2
-from core.unified_logger import UnifiedLogger
+from core.unified_logger import (
+    UnifiedLogger,
+    print_session_banner_end,
+    print_session_banner_start,
+)
 from telegram.telegram_bot import TelegramBot
 
 
@@ -80,6 +84,21 @@ class SimplifiedTradingBot:
             self.logger.log_event("MAIN", "DEBUG", "🔧 Initializing Exchange...")
             await self.exchange.initialize()
             self.logger.log_event("MAIN", "DEBUG", "✅ Exchange initialized")
+
+            # Fail-fast futures permissions check (Stage A4)
+            # Fail-fast futures permissions check (Stage A4)
+            try:
+                await self.exchange.assert_futures_perms()
+            except Exception:
+                # Ensure resources are released on hard-fail
+                try:
+                    await self.exchange.close()
+                except Exception:
+                    pass
+                raise
+            else:
+                # Duplicate success marker at MAIN level for visibility in logs
+                self.logger.log_event("MAIN", "INFO", "[PERMS] Futures trading permissions OK")
 
             self.logger.log_event("MAIN", "DEBUG", "🔧 Initializing OrderManager...")
             await self.order_manager.initialize()
@@ -377,13 +396,31 @@ class SimplifiedTradingBot:
     async def run(self):
         """Main run method with graceful shutdown and signal handling."""
         self.start_time = time.time()
+        try:
+            print_session_banner_start(
+                self.logger.logger,
+                run_id=getattr(self, "run_id", "run"),
+                mode=("TESTNET" if self.config.testnet else "PROD"),
+            )
+        except Exception:
+            pass
 
         # Initialize components
         await self.initialize()
 
-        # Log startup summary
+        # Log startup summary + explicit mode and quote coin
         config_summary = self.config.get_summary()
         self.logger.log_event("MAIN", "INFO", "📊 Configuration summary", config_summary)
+        self.logger.log_event(
+            "MAIN",
+            "INFO",
+            f"[CONFIG] Mode: {'TESTNET' if self.config.testnet else 'PRODUCTION'}",
+        )
+        self.logger.log_event(
+            "MAIN",
+            "INFO",
+            f"[CONFIG] Quote coin: {'USDT' if self.config.testnet else 'USDC'}",
+        )
 
         # Announce start to Telegram
         try:
@@ -462,6 +499,19 @@ class SimplifiedTradingBot:
             self.running = False
             self._stop.set()
 
+            # Cancel trade loop early to prevent new REST calls during shutdown
+            try:
+                trade_tasks = [t for t in list(self.tasks) if t and not t.done() and t.get_name() == "trade_loop"]
+                for t in trade_tasks:
+                    t.cancel()
+                if trade_tasks:
+                    try:
+                        await asyncio.wait(trade_tasks, timeout=1.5)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # Notify Telegram about shutdown reason (before tearing down Telegram)
             try:
                 if self.telegram_bot:
@@ -494,6 +544,13 @@ class SimplifiedTradingBot:
                 self.logger.log_event("SHUTDOWN", "INFO", "Shutdown complete")
                 # Bypass rate limit by using a separate component key for the final line
                 self.logger.log_event("SHUTDOWN_DONE", "INFO", "Shutdown complete")
+            except Exception:
+                pass
+            try:
+                elapsed = time.time() - self.start_time
+                print_session_banner_end(
+                    self.logger.logger, run_id=getattr(self, "run_id", "run"), status="OK", elapsed_sec=elapsed
+                )
             except Exception:
                 pass
 

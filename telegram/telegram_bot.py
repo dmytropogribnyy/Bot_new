@@ -105,9 +105,11 @@ class TelegramBot:
         """Process incoming updates"""
         try:
             url = f"{self.base_url}/getUpdates"
-            params = {"offset": self.last_update_id + 1, "timeout": 30}
+            # Use shorter long-poll to keep shutdown responsive
+            params = {"offset": self.last_update_id + 1, "timeout": 10}
 
-            response = requests.get(url, params=params, timeout=30)
+            # Run blocking requests in a thread to avoid blocking the event loop
+            response = await asyncio.to_thread(requests.get, url, params=params, timeout=15)
             if response.status_code == 200:
                 data = response.json()
 
@@ -118,6 +120,9 @@ class TelegramBot:
                         await self._handle_update(update)
                         self.last_update_id = update["update_id"]
 
+        except asyncio.CancelledError:
+            # Task cancelled due to shutdown
+            raise
         except Exception as e:
             self.logger.log_event("TELEGRAM", "ERROR", f"Failed to process updates: {e}")
 
@@ -252,7 +257,8 @@ class TelegramBot:
             url = f"{self.base_url}/sendMessage"
             data = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
 
-            response = requests.post(url, json=data, timeout=30)
+            # Run blocking requests in a thread to keep event loop responsive
+            response = await asyncio.to_thread(requests.post, url, json=data, timeout=15)
             if response.status_code != 200:
                 self.logger.log_event("TELEGRAM", "ERROR", f"Failed to send message: {response.status_code}")
                 return False

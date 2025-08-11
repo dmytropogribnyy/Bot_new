@@ -716,3 +716,48 @@ class OrderManager:
 
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to shutdown OrderManager: {e}")
+
+
+# Helper: cleanup stray reduceOnly orders by prefix when no position
+async def cleanup_stray_orders(exchange_client: OptimizedExchangeClient, symbol: str, prefix: str) -> dict[str, int]:
+    """Cancel reduceOnly orders for a symbol that are tagged with clientOrderId starting with prefix,
+    only when there is no open position. Returns stats dict.
+    """
+    cancelled = 0
+    kept = 0
+    try:
+        try:
+            pos = await exchange_client.get_position(symbol)
+        except Exception:
+            pos = None
+        has_pos = False
+        try:
+            size_val = float((pos or {}).get("contracts", (pos or {}).get("size", 0)) or 0)
+            has_pos = abs(size_val) > 0
+        except Exception:
+            has_pos = False
+
+        orders = []
+        try:
+            orders = await exchange_client.get_open_orders(symbol)
+        except Exception:
+            orders = []
+
+        for order in orders or []:
+            try:
+                info = order.get("info", {}) or {}
+                ro = bool(order.get("reduceOnly") is True or info.get("reduceOnly") is True)
+                coid = order.get("clientOrderId") or info.get("clientOrderId") or ""
+                if ro and (prefix and str(coid).startswith(prefix)) and not has_pos:
+                    try:
+                        await exchange_client.cancel_order(order["id"], symbol)
+                        cancelled += 1
+                    except Exception:
+                        kept += 1
+                else:
+                    kept += 1
+            except Exception:
+                kept += 1
+    except Exception:
+        pass
+    return {"cancelled": cancelled, "kept": kept}

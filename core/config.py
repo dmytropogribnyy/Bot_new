@@ -90,7 +90,16 @@ class TradingConfig(BaseModel):
     )
 
     # Trading Symbols
-    usdt_symbols: list = Field(default=["BTC/USDT"], description="USDT trading pairs")
+    usdt_symbols: list = Field(
+        default=[
+            "BTC/USDT:USDT",
+            "ETH/USDT:USDT",
+            "BNB/USDT:USDT",
+            "SOL/USDT:USDT",
+            "DOGE/USDT:USDT",
+        ],
+        description="USDT trading pairs (used on testnet)",
+    )
     usdc_symbols: list = Field(
         default=[
             "BTC/USDC",

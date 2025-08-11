@@ -15,6 +15,8 @@ pyyaml>=6.0
 
 # Optional: For enhanced logging
 python-dotenv>=1.0.0
+rich>=13.0.0
+colorama>=0.4.6
 
 # Development dependencies (optional)
 pytest>=7.0.0
