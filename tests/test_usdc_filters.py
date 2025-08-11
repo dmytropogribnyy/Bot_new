@@ -72,6 +72,9 @@ async def test_symbol_manager_uses_usdc_contracts_only():
     from core.symbol_manager import SymbolManager
 
     config = TradingConfig()
+    # Explicitly test PRODUCTION branch (USDC perpetuals)
+    config.testnet = False
+
     logger = FakeLogger()
     client = OptimizedExchangeClient(config, logger)
     client.is_initialized = True
