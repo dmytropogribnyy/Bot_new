@@ -1,10 +1,17 @@
 import json
 import os
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 
 from utils_core import extract_symbol
-from utils_logging import log
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("DEBUG_TOOLS", level, message)
+
 
 OUTPUT_FILE = "data/debug_monitoring_summary.json"
 SYMBOLS_FILE = "data/valid_usdc_symbols.json"
@@ -151,7 +158,7 @@ def run_monitor():
 
     os.makedirs("data", exist_ok=True)
     summary_data = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "symbols_count": total,
         "results": summary,
     }
@@ -161,7 +168,7 @@ def run_monitor():
     # === Write tuning log ===
     reason_counts = dict(Counter(filter_reasons))
     tuning_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "total_symbols": total,
         "filtered_symbols": filtered_count,
         "passed_symbols": total - filtered_count,

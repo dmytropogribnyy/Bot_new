@@ -12,7 +12,14 @@ from common.config_loader import (
 
 from constants import IP_STATUS_FILE
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_logging import log
+from core.unified_logger import UnifiedLogger
+
+_ULOG = UnifiedLogger()
+
+
+def log(message: str, level: str = "INFO") -> None:
+    _ULOG.log_event("IP_MON", level, message)
+
 
 router_reboot_mode = {"enabled": False, "expires_at": None}
 last_ip_check_time = None
