@@ -127,14 +127,13 @@ class SimplifiedTradingBot:
 
                     # URLs based on environment
                     if self.config.testnet:
+                        # Testnet (USDⓈ-M): use binancefuture.com with /fapi paths
                         api_base = "https://testnet.binancefuture.com"
                         ws_base = "wss://stream.binancefuture.com"
-                    elif self.config.resolved_quote_coin == "USDT":
+                    else:
+                        # Production: USDⓈ-M (USDT and USDC) use fapi/fstream
                         api_base = "https://fapi.binance.com"
                         ws_base = "wss://fstream.binance.com:9443"
-                    else:
-                        api_base = "https://dapi.binance.com"
-                        ws_base = "wss://dstream.binance.com:9443"
 
                     self.user_stream = UserDataStreamManager(
                         api_base=api_base,

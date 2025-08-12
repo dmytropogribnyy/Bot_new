@@ -27,7 +27,7 @@ async def main():
     print(f"TP Style: {cfg.tp_order_style}")
     print(f"Working Type: {cfg.working_type}")
     print(f"Max Positions: {cfg.max_positions}")
-    print(f"Stop Loss: {cfg.sl_percent}%")
+    print(f"Stop Loss: {cfg.stop_loss_percent}%")
     print(f"Take Profit: {cfg.take_profit_percent}%")
     print(f"WebSocket: {'Enabled' if cfg.enable_websocket else 'Disabled'}")
     print("=" * 50)

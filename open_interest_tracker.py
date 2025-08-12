@@ -8,7 +8,8 @@ CACHE_TTL = 300  # 5 минут
 
 def fetch_open_interest(symbol):
     """
-    Fetch current open interest for a symbol from Binance USDC Futures.
+    Fetch current open interest for a symbol from Binance USDⓈ-M Futures (fapi).
+    USDT/USDC contracts trade on USDⓈ-M (fapi), not COIN-M.
     Symbol must be in format 'BTC/USDC'.
     """
     binance_symbol = symbol.replace("/", "").upper()  # BTC/USDC → BTCUSDC

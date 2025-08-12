@@ -126,11 +126,11 @@ class TradingConfig(BaseModel):
     macd_strength_override: float = Field(default=0.5, description="MACD strength override")
     rsi_strength_override: float = Field(default=4.0, description="RSI strength override")
 
-    # TP/SL Settings
-    step_tp_levels: list = Field(default=[0.004, 0.008, 0.012], description="Step TP levels")
-    step_tp_sizes: list = Field(default=[0.5, 0.3, 0.2], description="Step TP sizes")
+    # TP/SL Settings (legacy keys retained for backward-compat but deprecated)
+    step_tp_levels: list = Field(default=[0.004, 0.008, 0.012], description="[DEPRECATED] Step TP levels")
+    step_tp_sizes: list = Field(default=[0.5, 0.3, 0.2], description="[DEPRECATED] Step TP sizes")
     min_sl_gap_percent: float = Field(default=0.005, description="Minimum SL gap")
-    sl_percent: float = Field(default=0.012, description="Stop loss percentage")
+    sl_percent: float = Field(default=0.012, description="[DEPRECATED] Stop loss percentage; use stop_loss_percent")
     force_sl_always: bool = Field(default=True, description="Force SL always")
     sl_retry_limit: int = Field(default=3, description="SL retry limit")
 
@@ -246,7 +246,7 @@ class TradingConfig(BaseModel):
             except Exception:
                 return default
 
-        return cls(
+        cfg = cls(
             # API
             api_key=env_str("API_KEY", os.getenv("BINANCE_API_KEY", "") or ""),
             api_secret=env_str("API_SECRET", os.getenv("BINANCE_API_SECRET", "") or ""),
@@ -272,9 +272,9 @@ class TradingConfig(BaseModel):
             max_margin_percent=env_float("MAX_MARGIN_PERCENT", getattr(cls, "max_margin_percent", 0.4)),
             max_slippage_pct=env_float("MAX_SLIPPAGE_PCT", getattr(cls, "max_slippage_pct", 0.02)),
             risk_multiplier=env_float("RISK_MULTIPLIER", getattr(cls, "risk_multiplier", 1.0)),
-            # TP/SL
-            take_profit_percent=env_float("TAKE_PROFIT_PERCENT", getattr(cls, "take_profit_percent", 1.5)),
-            stop_loss_percent=env_float("STOP_LOSS_PERCENT", getattr(cls, "stop_loss_percent", 2.0)),
+            # TP/SL (only stop_loss_percent and take_profit_percent are used)
+            take_profit_percent=env_float("TAKE_PROFIT_PERCENT", getattr(cls, "take_profit_percent", 1.8)),
+            stop_loss_percent=env_float("STOP_LOSS_PERCENT", getattr(cls, "stop_loss_percent", 1.2)),
             step_tp_levels=env_list_float("STEP_TP_LEVELS", getattr(cls, "step_tp_levels", [0.004, 0.008, 0.012])),
             step_tp_sizes=env_list_float("STEP_TP_SIZES", getattr(cls, "step_tp_sizes", [0.5, 0.3, 0.2])),
             # Telegram
@@ -289,6 +289,17 @@ class TradingConfig(BaseModel):
             ws_reconnect_interval=env_int("WS_RECONNECT_INTERVAL", getattr(cls, "ws_reconnect_interval", 5)),
             ws_heartbeat_interval=env_int("WS_HEARTBEAT_INTERVAL", getattr(cls, "ws_heartbeat_interval", 30)),
         )
+
+        # Optional QUOTE_COIN override: {USDT, USDC}; default auto-resolve (testnet→USDT, prod→USDC)
+        try:
+            qc = env_str("QUOTE_COIN", cfg.resolved_quote_coin).upper()
+            if qc in ("USDT", "USDC"):
+                # Monkey-patch resolved property via attribute for downstream usage
+                object.__setattr__(cfg, "_quote_coin_override", qc)
+        except Exception:
+            pass
+
+        return cfg
 
     class Config:
         env_file = ".env"
@@ -407,7 +418,13 @@ class TradingConfig(BaseModel):
 
     @property
     def resolved_quote_coin(self) -> str:
-        """Auto-resolve quote coin: USDT for testnet, USDC for prod"""
+        """Auto-resolve quote coin with optional QUOTE_COIN override.
+
+        Default: USDT on testnet, USDC on prod. Explicit QUOTE_COIN env of USDT/USDC overrides.
+        """
+        qc = getattr(self, "_quote_coin_override", None)
+        if qc in ("USDT", "USDC"):
+            return qc
         return "USDT" if self.testnet else "USDC"
 
     def save_to_file(self, filepath: str = "data/runtime_config.json"):

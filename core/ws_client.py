@@ -14,8 +14,13 @@ import aiohttp
 
 
 def get_endpoint_prefix(resolved_quote_coin: str) -> str:
-    """Get API endpoint prefix based on quote coin"""
-    return "/fapi" if resolved_quote_coin == "USDT" else "/dapi"
+    """Get API endpoint prefix based on quote coin.
+
+    USDⓈ-M (USDT and USDC) must always use /fapi. Only explicit COIN-M instruments
+    should use /dapi, which we do not select by quote coin.
+    """
+    # Route both USDT and USDC to USDⓈ-M
+    return "/fapi"
 
 
 async def get_listen_key(
@@ -301,9 +306,11 @@ class MarketDataStream:
 
         if self.testnet:
             base = "wss://stream.binancefuture.com"
-        elif self.resolved_quote_coin == "USDT":
+        elif self.resolved_quote_coin in ("USDT", "USDC"):
+            # USDⓈ-M market stream
             base = "wss://fstream.binance.com:9443"
         else:
+            # Only explicit COIN-M instruments (not USDC)
             base = "wss://dstream.binance.com:9443"
 
         return f"{base}/stream?streams={stream_param}"
