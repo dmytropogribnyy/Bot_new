@@ -13,6 +13,7 @@ __pycache__/
 .vscode/
 
 # Logs & temp
+# keep repo-level log policy minimal; log files under logs/ matched below
 *.log
 *.bak
 *.tmp
@@ -73,8 +74,9 @@ data/config.json
 test-output/
 
 # Stage A: Repository organization
-core/legacy/
-references_archive/
+# Do NOT ignore legacy or archive policy content
+# core/legacy/  # keep tracked
+# references_archive/  # keep tracked
 
 # Editor swap files
 *.swo
@@ -82,7 +84,8 @@ references_archive/
 
 # Tools cache and data (append-only for Stage F tools)
 tools/__pycache__/
-logs/
+# Only ignore log files, keep directory
+logs/*.log
 data/*.json
 data/runtime/*.json
 data/audit/
