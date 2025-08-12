@@ -17,7 +17,7 @@ def evaluate_best_config(days=7):
     """
     from common.config_loader import RUNTIME_CONFIG_PATH
 
-    from tp_optimizer import _update_config_tp
+    # Local helper is defined below in this module
     from utils_core import load_json_file
 
     if not os.path.exists(EXPORT_PATH):
