@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Key Management Script for BinanceBot v2.1
+Key Management Script for BinanceBot v2.3
 Quick and easy management of API keys and settings
 """
 

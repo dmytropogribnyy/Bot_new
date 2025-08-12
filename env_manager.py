@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Environment Manager for BinanceBot v2.1
+Environment Manager for BinanceBot v2.3
 Automatically manage .env file and transfer keys to configuration
 """
 

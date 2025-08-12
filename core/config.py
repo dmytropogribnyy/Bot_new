@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Configuration system for BinanceBot v2.1
+Configuration system for BinanceBot v2.3
 Unified configuration with leverage mapping and simplified loading
 """
 

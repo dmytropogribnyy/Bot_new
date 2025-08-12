@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Basic test script for BinanceBot v2.1
+Basic test script for BinanceBot v2.3
 Tests core components without making real API calls
 """
 
@@ -108,7 +108,7 @@ async def test_basic_structure():
 
 async def main():
     """Run all tests"""
-    print("🚀 Starting BinanceBot v2.1 basic tests...\n")
+    print("🚀 Starting BinanceBot v2.3 basic tests...\n")
 
     tests = [
         ("Configuration", test_config),

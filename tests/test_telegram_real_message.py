@@ -56,7 +56,7 @@ async def send_real_telegram_message():
 
             # Send test message
             test_message = """
-🤖 BinanceBot v2.1 - Test Message
+🤖 BinanceBot v2.3 - Test Message
 
 📊 Status: Stage 2 Revision Completed
 ✅ All components working

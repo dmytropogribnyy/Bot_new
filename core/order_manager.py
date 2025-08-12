@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Order Manager for BinanceBot v2.1
+Order Manager for BinanceBot v2.3
 Simplified version based on v2 structure
 """
 

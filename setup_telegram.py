@@ -126,7 +126,7 @@ def test_telegram_connection():
     try:
         import requests
 
-        test_message = "🤖 BinanceBot v2.1 - Connection Test"
+        test_message = "🤖 BinanceBot v2.3 - Connection Test"
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = {"chat_id": chat_id, "text": test_message}
 
@@ -152,7 +152,7 @@ def test_telegram_connection():
 
 def main():
     """Main setup function"""
-    print("🚀 Telegram Bot Setup for BinanceBot v2.1")
+    print("🚀 Telegram Bot Setup for BinanceBot v2.3")
     print("=" * 60)
 
     # Check if credentials already exist

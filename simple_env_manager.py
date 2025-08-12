@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Environment Manager for BinanceBot v2.1
+Simple Environment Manager for BinanceBot v2.3
 No dependencies, just manage .env file
 """
 

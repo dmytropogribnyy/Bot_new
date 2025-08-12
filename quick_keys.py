@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quick Key Management for BinanceBot v2.1
+Quick Key Management for BinanceBot v2.3
 Simple commands to manage API keys and settings
 """
 

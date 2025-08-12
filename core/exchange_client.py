@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Exchange Client for BinanceBot v2.1
+Exchange Client for BinanceBot v2.3
 Simplified version based on v2 structure
 """
 
