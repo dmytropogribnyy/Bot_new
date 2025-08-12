@@ -9,6 +9,7 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urljoin
 
 import aiohttp
 
@@ -21,6 +22,15 @@ def get_endpoint_prefix(resolved_quote_coin: str) -> str:
     """
     # Route both USDT and USDC to USDⓈ-M
     return "/fapi"
+
+
+def build_listenkey_url(testnet: bool) -> str:
+    """
+    Canonical UM listenKey endpoint builder.
+    USDT/USDC (USDⓈ-M) must use /fapi/v1/listenKey on prod and testnet.
+    """
+    base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    return urljoin(base, "/fapi/v1/listenKey")
 
 
 async def get_listen_key(

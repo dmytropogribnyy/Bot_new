@@ -85,3 +85,4 @@ tools/__pycache__/
 logs/
 data/*.json
 data/runtime/*.json
+data/audit/

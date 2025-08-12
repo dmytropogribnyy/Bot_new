@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest
+
+      - name: Run routing tests (UM)
+        run: |
+          pytest -q tests/test_endpoints.py tests/test_listenkey_um.py
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Sanity grep — forbid USDC→dapi/dstream in code
+        run: |
+          set -e
+          if rg -n '(?i)(usdc.*(dapi|dstream))|((dapi|dstream).*(usdc))' -S \
+                --glob '!**/docs/**' --glob '!**/*.md' --glob '!tests/**' ; then
+            echo 'Forbidden USDC→dapi/dstream references found'
+            exit 1
+          else
+            echo 'No forbidden references found'
+          fi
