@@ -6,6 +6,7 @@ Checks bot health, sends alerts to Telegram, generates reports
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -123,8 +124,8 @@ class AutoMonitor:
                 lines.append(f"• SL Streak: {state.get('sl_streak', 0)}")
                 lines.append(f"• Daily Loss: {state.get('daily_loss_pct', 0):.2f}%")
                 lines.append("• Status: 🔴 BLOCKED" if state.get("sl_streak", 0) >= 2 else "• Status: ✅ ACTIVE")
-            except:
-                pass
+            except Exception:
+                logging.exception("Failed to read Stage F state", exc_info=True)
 
         # Position summary
         if order_manager:
@@ -145,8 +146,8 @@ class AutoMonitor:
                         symbol = p.get("symbol", "Unknown")
                         pnl = p.get("unrealized_pnl", 0)
                         lines.append(f"  {symbol}: ${pnl:+.2f}")
-            except:
-                pass
+            except Exception:
+                logging.exception("Failed to summarize positions", exc_info=True)
 
         return "\n".join(lines)
 
@@ -229,8 +230,8 @@ class AutoMonitor:
                 # Console output
                 print(f"✅ Monitor check completed at {datetime.now().strftime('%H:%M:%S')}")
 
-            except Exception as e:
-                print(f"❌ Monitor error: {e}")
+            except Exception:
+                logging.exception("Monitor error", exc_info=True)
 
             # Wait for next check
             await asyncio.sleep(self.check_interval)

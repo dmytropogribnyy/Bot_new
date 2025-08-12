@@ -31,8 +31,9 @@ async def send_telegram(message):
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(url, json=payload)
-        except:
-            pass
+        except Exception as e:
+            # Best-effort: do not fail closing due to Telegram errors
+            print(f"Telegram send failed: {e}")
 
 
 async def close_test_position():
@@ -94,8 +95,8 @@ async def close_test_position():
                 for order in open_orders:
                     await exchange.cancel_order(order["id"], symbol)
                     print(f"   ❌ Cancelled order: {order['id']}")
-            except:
-                pass
+            except Exception as e:
+                print(f"Order cancel failed: {e}")
 
             # Place market order to close
             close_order = await exchange.create_order(
