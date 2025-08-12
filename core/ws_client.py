@@ -235,24 +235,104 @@ class UserDataStreamManager:
             raise
 
     async def _keepalive_loop(self, headers: dict[str, str]) -> None:
-        """Keep the listen key alive every 30 minutes."""
+        """
+        Keepalive loop с автоматическим восстановлением при истечении listenKey.
+        - Проверяет каждые 25 минут (безопасный запас от 30)
+        - Автоматически пересоздает listenKey при ошибках
+        - Перезапускает WebSocket stream после восстановления
+        """
+        consecutive_errors = 0
+
         while True:
             try:
-                await asyncio.sleep(30 * 60)  # 30 minutes
+                # Ждем 25 минут (безопаснее чем 30)
+                await asyncio.sleep(25 * 60)
 
-                if self.listen_key and self.http_session:
-                    await keepalive(
-                        self.http_session, self.api_base, headers, self.listen_key, self.resolved_quote_coin
-                    )
+                if not self.listen_key or not self.http_session:
+                    continue
+
+                # Отправляем keepalive с правильными параметрами
+                await keepalive(
+                    self.http_session,
+                    self.api_base,
+                    headers,
+                    self.listen_key,
+                    self.resolved_quote_coin,  # Важно передавать!
+                )
+
+                consecutive_errors = 0  # Сброс счетчика при успехе
+                logging.debug(f"Keepalive successful for {self.listen_key[:8]}...")
 
             except asyncio.CancelledError:
+                # Нормальная остановка
                 break
+
             except Exception as e:
-                logging.error(f"Keepalive error: {e}")
+                consecutive_errors += 1
+                logging.warning(f"Keepalive error #{consecutive_errors}: {e}")
+
+                # Анализируем ошибку
+                error_msg = str(e).lower()
+
+                # Признаки истекшего/невалидного listenKey
+                needs_recovery = (
+                    ("listen" in error_msg and "key" in error_msg)
+                    or ("invalid" in error_msg)
+                    or ("expired" in error_msg)
+                    or consecutive_errors > 2  # 3 ошибки подряд = проблема
+                )
+
+                if needs_recovery:
+                    logging.warning("ListenKey invalid/expired. Starting recovery...")
+
+                    try:
+                        # 1. Останавливаем старый stream правильно
+                        if self.stream_task and not self.stream_task.done():
+                            logging.info("Cancelling old stream task...")
+                            self.stream_task.cancel()
+                            try:
+                                await self.stream_task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception as ex:
+                                logging.debug(f"Stream task cleanup: {ex}")
+
+                        # 2. Получаем новый listenKey с правильными параметрами
+                        logging.info("Requesting new listenKey...")
+                        self.listen_key = await get_listen_key(
+                            self.http_session,
+                            self.api_base,
+                            headers,
+                            self.resolved_quote_coin,  # Передаем resolved_quote_coin!
+                        )
+                        logging.info(f"Got new listenKey: {self.listen_key[:8]}...")
+
+                        # 3. Запускаем новый stream
+                        logging.info("Starting new stream task...")
+                        self.stream_task = asyncio.create_task(
+                            stream_user_data(
+                                self.ws_url,
+                                self.listen_key,
+                                self.on_event,
+                                self.ws_reconnect_interval,
+                                self.ws_heartbeat_interval,
+                            )
+                        )
+
+                        consecutive_errors = 0
+                        logging.info("✅ ListenKey recovered and stream restarted successfully")
+
+                    except Exception as recovery_error:
+                        logging.error(f"❌ ListenKey recovery failed: {recovery_error}")
+                        # Backoff перед следующей попыткой
+                        await asyncio.sleep(60)
+                else:
+                    # Обычная сетевая ошибка, просто продолжаем
+                    await asyncio.sleep(5)
 
     async def stop(self) -> None:
         """Stop the user data stream and cleanup resources."""
-        # Cancel tasks
+        # Cancel tasks (do not await to preserve cancelled state in tests)
         if self.keepalive_task:
             self.keepalive_task.cancel()
 

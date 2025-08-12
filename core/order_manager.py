@@ -83,6 +83,36 @@ class OrderManager:
         except Exception:
             self.audit = None  # optional
 
+    def _ensure_pos_cache(self):
+        """Инициализировать кэш позиций если его нет"""
+        if not hasattr(self, "positions"):
+            self.positions = {}  # { symbol: {"contracts": float, "unrealized_pnl": float} }
+        if not hasattr(self, "_reported_exits"):
+            self._reported_exits = set()  # Защита от дублей записей
+
+    def _position_is_zero(self, symbol: str) -> bool:
+        """Проверить что позиция по символу закрыта (размер ~0)"""
+        self._ensure_pos_cache()
+        pos = self.positions.get(symbol) or {}
+        try:
+            size = abs(float(pos.get("contracts", 0.0)))
+        except Exception:
+            size = 0.0
+        return size < 1e-6  # Меньше минимального размера
+
+    def record_rest_exit_if_closed(self, symbol: str, realized_or_est_pnl: float) -> None:
+        """REST fallback: записать выход когда обнаружили через REST что позиция закрыта"""
+        try:
+            if self.audit:
+                self.audit.record_exit_decision(
+                    symbol=symbol,
+                    reason="NORMAL_EXIT_REST",
+                    pnl=float(realized_or_est_pnl or 0.0),
+                    metadata={"source": "REST_POLL"},
+                )
+        except Exception as e:
+            self.logger.log_event("AUDIT", "ERROR", f"record_rest_exit_if_closed failed: {e}")
+
     def _intent_key(
         self,
         *,
@@ -828,36 +858,175 @@ class OrderManager:
 
         return False
 
-    def handle_ws_event(self, event: dict) -> None:
-        """Handle WebSocket user data events"""
-        event_type = event.get("e", "unknown")
+    async def handle_ws_event(self, event: dict):
+        """
+        Handle WebSocket user data stream events with complete audit.
+        Правильно детектирует ликвидации, ADL, обычные выходы. Записывает все в аудит с точным realized PnL.
+        """
+        etype = event.get("e")
 
-        if event_type == "ORDER_TRADE_UPDATE":
-            order = event.get("o", {})
-            status = order.get("X")
-            if status == "FILLED":
-                self.logger.log_event("WS", "INFO", "Order filled via WS")
+        # === ORDER_TRADE_UPDATE: ордера, сделки, ликвидации ===
+        if etype == "ORDER_TRADE_UPDATE":
+            o = event.get("o", {})  # order payload
+            symbol = o.get("s")
+            status = o.get("X")  # FILLED / PARTIALLY_FILLED / CANCELED / EXPIRED / NEW
+            order_type = (
+                o.get("ot") or ""
+            ).upper()  # MARKET, LIMIT, STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET, LIQUIDATION
+            exec_type = (o.get("x") or "").upper()  # NEW, CANCELED, CALCULATED, EXPIRED, TRADE
+            reduce_only = bool(o.get("R"))
+            try:
+                realized_pnl = float(o.get("rp") or 0.0)
+            except Exception:
+                realized_pnl = 0.0
+            order_id = o.get("i")
+            client_id = str(o.get("c") or "")
 
-        elif event_type == "ACCOUNT_UPDATE":
-            # Update positions from WS
-            positions = event.get("a", {}).get("P", [])
-            for pos in positions:
-                symbol = pos.get("s")
-                if symbol:
-                    # Convert to ccxt format
-                    quote = self.config.resolved_quote_coin
-                    base = symbol[: -len(quote)]
-                    ccxt_symbol = f"{base}/{quote}:{quote}"
+            # Обновить внутреннее состояние ордера если есть метод
+            if hasattr(self, "_update_order_state"):
+                try:
+                    await self._update_order_state(order_id, status, o)  # type: ignore[misc]
+                except Exception as e:
+                    self.logger.log_event("WS", "WARNING", f"_update_order_state failed: {e}")
 
-                    position_amt = float(pos.get("pa", 0))
-                    if abs(position_amt) > 0.001:
-                        self.active_positions[ccxt_symbol] = {
-                            "size": position_amt,
-                            "entry_price": float(pos.get("ep", 0)),
-                            "unrealized_pnl": float(pos.get("up", 0)),
-                            "side": "buy" if position_amt > 0 else "sell",
-                            "timestamp": time.time(),
-                        }
+            # --- КРИТИЧНО: Правильная детекция ликвидации/ADL с безопасной проверкой CALCULATED ---
+            is_liq = (
+                order_type == "LIQUIDATION"
+                or client_id.startswith("autoclose-")
+                or client_id == "adl_autoclose"
+                or (
+                    exec_type == "CALCULATED" and (client_id.startswith("autoclose-") or order_type == "LIQUIDATION")
+                )  # CALCULATED только вместе с другими маркерами!
+            )
+
+            if is_liq:
+                # Различаем ADL от обычной ликвидации
+                reason = "ADL" if client_id == "adl_autoclose" else "LIQUIDATION"
+
+                self.logger.log_event(
+                    "WS", "CRITICAL", f"🚨 {reason} detected! Symbol: {symbol}, PnL: ${realized_pnl:.2f}"
+                )
+
+                # Запись в аудит
+                try:
+                    if self.audit:
+                        self.audit.record_exit_decision(
+                            symbol=symbol,
+                            reason=reason,
+                            pnl=realized_pnl,
+                            metadata={
+                                "order_id": order_id,
+                                "order_type": order_type,
+                                "exec_type": exec_type,
+                                "client_id": client_id,
+                                "source": "WS_ORDER_TRADE_UPDATE",
+                                "event_time": event.get("E"),
+                            },
+                        )
+                except Exception as e:
+                    self.logger.log_event("AUDIT", "ERROR", f"Failed to record liquidation: {e}")
+
+                # Telegram алерт
+                if hasattr(self, "telegram_bot") and self.telegram_bot:
+                    try:
+                        await self.telegram_bot.send_message(
+                            f"🚨 {reason}!\nSymbol: {symbol}\nPnL: ${realized_pnl:.2f}"
+                        )
+                    except Exception:
+                        pass
+
+                return  # Ликвидация обработана
+
+            # --- Обычный выход: FILLED + (reduceOnly или позиция стала 0) ---
+            pos_is_zero = self._position_is_zero(symbol)
+
+            if status == "FILLED" and (reduce_only or pos_is_zero):
+                # Определяем причину выхода
+                reason = "MANUAL_CLOSE"
+                if order_type in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
+                    reason = "TP_HIT"
+                elif order_type in {"STOP", "STOP_MARKET"}:
+                    reason = "SL_HIT"
+
+                # Защита от дублей записей
+                self._ensure_pos_cache()
+                key = (symbol, order_id)
+
+                if key not in getattr(self, "_reported_exits", set()):
+                    self._reported_exits.add(key)
+
+                    self.logger.log_event(
+                        "WS", "INFO", f"Position closed: {symbol}, Reason: {reason}, PnL: ${realized_pnl:.2f}"
+                    )
+
+                    # Запись в аудит
+                    try:
+                        if self.audit:
+                            self.audit.record_exit_decision(
+                                symbol=symbol,
+                                reason=reason,
+                                pnl=realized_pnl,
+                                metadata={
+                                    "order_id": order_id,
+                                    "order_type": order_type,
+                                    "source": "WS_ORDER_TRADE_UPDATE",
+                                    "event_time": event.get("E"),
+                                },
+                            )
+                    except Exception as e:
+                        self.logger.log_event("AUDIT", "ERROR", f"Failed to record exit: {e}")
+
+        # === ACCOUNT_UPDATE: обновляем кэш позиций ===
+        elif etype == "ACCOUNT_UPDATE":
+            a = event.get("a", {})
+            self._ensure_pos_cache()
+
+            # Обновляем позиции из события
+            try:
+                for p in a.get("P", []):  # Positions array
+                    s = p.get("s")  # Symbol (e.g., BTCUSDT)
+                    pa = float(p.get("pa") or 0.0)  # Position amount
+                    up = float(p.get("up") or 0.0)  # Unrealized PnL
+
+                    if s:
+                        old_size = (self.positions.get(s, {}) or {}).get("contracts", 0)
+                        self.positions[s] = {"contracts": pa, "unrealized_pnl": up}
+
+                        # Логируем если позиция закрылась
+                        if old_size != 0 and pa == 0:
+                            self.logger.log_event("WS", "INFO", f"Position zeroed via ACCOUNT_UPDATE: {s}")
+
+            except Exception as e:
+                self.logger.log_event("WS", "WARNING", f"ACCOUNT_UPDATE parse error: {e}")
+
+            # Балансы (опционально можно сохранять)
+            for b in a.get("B", []):  # Balances array
+                _asset = b.get("a")
+                _wallet_balance = float(b.get("wb", 0))
+                _cross_wallet = float(b.get("cw", 0))
+                # Ничего не делаем по умолчанию
+
+        # === MARGIN_CALL: предупреждение о риске (НЕ факт ликвидации!) ===
+        elif etype == "MARGIN_CALL":
+            self.logger.log_event("WS", "WARNING", f"⚠️ MARGIN_CALL warning: {event}")
+
+            # Telegram алерт
+            if hasattr(self, "telegram_bot") and self.telegram_bot:
+                try:
+                    await self.telegram_bot.send_message("⚠️ MARGIN CALL WARNING!\nCheck your positions immediately!")
+                except Exception:
+                    pass
+
+        # === listenKeyExpired: логируем, восстановление произойдет автоматически ===
+        elif etype == "listenKeyExpired":
+            self.logger.log_event("WS", "ERROR", "ListenKey expired — keepalive loop will recover it")
+
+            # Telegram уведомление
+            if hasattr(self, "telegram_bot") and self.telegram_bot:
+                try:
+                    await self.telegram_bot.send_message("🔄 listenKeyExpired received. Recreating via keepalive…")
+                except Exception:
+                    pass
 
     def update_price_cache(self, symbol: str, price: float) -> None:
         """Update price cache from WebSocket"""

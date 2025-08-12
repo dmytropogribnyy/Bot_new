@@ -492,7 +492,7 @@ class OptimizedExchangeClient:
         try:
             markets = await self.get_markets()
             usdc_symbols = []
-            q = self.config.resolved_quote_coin
+            q = "USDC"
 
             for symbol, market in markets.items():
                 market_type = market.get("type")
@@ -531,7 +531,7 @@ class OptimizedExchangeClient:
         try:
             markets = await self.get_markets()
             symbols: list[str] = []
-            q = self.config.resolved_quote_coin
+            q = "USDT"
             for symbol, market in markets.items():
                 market_type = market.get("type")
                 quote = market.get("quote")
