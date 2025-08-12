@@ -1,0 +1,35 @@
+# Example production requirements split (do not install this file directly)
+
+# requirements.txt (production)
+# --- Core trading ---
+ccxt>=4.3.0
+pydantic>=2.7.0
+python-telegram-bot>=21.0
+aiohttp>=3.9.0
+pandas>=2.2.0
+numpy>=1.26.0
+ta>=0.11.0
+
+# --- Infrastructure ---
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
+colorama>=0.4.6
+rich>=13.7.0
+
+# requirements-dev.txt (development)
+# --- Testing ---
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.14.0
+
+# --- Code quality ---
+ruff>=0.4.0
+mypy>=1.10.0
+black>=24.4.0
+
+# --- Tools ---
+ipython>=8.24.0
+requests>=2.32.0
+schedule>=1.2.0
+matplotlib>=3.8.0
+filelock>=3.14.0

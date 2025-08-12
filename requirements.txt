@@ -18,9 +18,5 @@ python-dotenv>=1.0.0
 rich>=13.0.0
 colorama>=0.4.6
 
-# Development dependencies (optional)
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-black>=23.0.0
-ruff>=0.1.0
+# Optional file lock support in audit logger (kept in prod since used at runtime when available)
 portalocker>=2.8.2
