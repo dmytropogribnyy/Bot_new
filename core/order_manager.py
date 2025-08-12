@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.audit_logger import get_audit_logger
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.idempotency_store import IdempotencyStore
@@ -75,6 +76,12 @@ class OrderManager:
         self.risk_guard_f = RiskGuardStageF(self.config, self.logger)
         self.deposit_usdc = 400  # Trading deposit
         self.logger.log_event("ORDER_MANAGER", "INFO", "Risk Guard Stage F initialized")
+
+        # Audit logger (env-scoped)
+        try:
+            self.audit = get_audit_logger(testnet=self.config.testnet)
+        except Exception:
+            self.audit = None  # optional
 
     def _intent_key(
         self,
@@ -362,6 +369,13 @@ class OrderManager:
             if not order or "id" not in order:
                 return {"success": False, "reason": "Failed to place order"}
 
+            # Audit order placement
+            try:
+                if self.audit:
+                    self.audit.log_order_placed(order, reason="Entry signal")
+            except Exception:
+                pass
+
             # Calculate TP/SL levels
             sl_price = self.calculate_stop_loss(entry_price, side)
             tp_levels = self.calculate_take_profit_levels(entry_price, side)
@@ -479,6 +493,13 @@ class OrderManager:
                 )
                 return {"success": False, "error": "SL_VERIFICATION_FAILED"}
 
+            # Audit SL order placement
+            try:
+                if sl_order and sl_order.get("id") and self.audit:
+                    self.audit.log_order_placed(sl_order, reason="Stop loss protection")
+            except Exception:
+                pass
+
             # Place take profit orders
             tp_orders = []
             for tp_price, tp_fraction in tp_levels:
@@ -526,6 +547,13 @@ class OrderManager:
                         symbol, "TAKE_PROFIT", close_side, tp_qty_norm, float(tp_price_norm), params_tp
                     )
                 tp_orders.append(tp_order)
+
+                # Audit TP placement
+                try:
+                    if tp_order and tp_order.get("id") and self.audit:
+                        self.audit.log_order_placed(tp_order, reason="Take profit target")
+                except Exception:
+                    pass
 
             # Store orders
             async with self.order_lock:
