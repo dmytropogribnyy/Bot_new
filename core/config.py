@@ -286,6 +286,7 @@ class TradingConfig(BaseModel):
             log_to_file=env_bool("LOG_TO_FILE", getattr(cls, "log_to_file", True)),
             log_to_console=env_bool("LOG_TO_CONSOLE", getattr(cls, "log_to_console", True)),
             # WebSocket
+            enable_websocket=env_bool("ENABLE_WEBSOCKET", getattr(cls, "enable_websocket", False)),
             ws_reconnect_interval=env_int("WS_RECONNECT_INTERVAL", getattr(cls, "ws_reconnect_interval", 5)),
             ws_heartbeat_interval=env_int("WS_HEARTBEAT_INTERVAL", getattr(cls, "ws_heartbeat_interval", 30)),
         )
