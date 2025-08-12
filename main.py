@@ -37,6 +37,7 @@ try:
 except Exception:
     pass
 
+from core.audit_logger import get_audit_logger
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager
@@ -58,6 +59,11 @@ class SimplifiedTradingBot:
         self.logger = UnifiedLogger(self.config)
         self.exchange = OptimizedExchangeClient(self.config, self.logger)
         self.order_manager = OrderManager(self.config, self.exchange, self.logger)
+        # P-block: environment-scoped audit logger
+        try:
+            self.audit = get_audit_logger(testnet=self.config.testnet)
+        except Exception:
+            self.audit = None
 
         # Get Telegram credentials
         telegram_token, telegram_chat_id = self.config.get_telegram_credentials()
@@ -349,6 +355,18 @@ class SimplifiedTradingBot:
                         self.logger.log_event(
                             "MAIN", "INFO", f"✅ EMERGENCY CLOSE EXECUTED: {symbol}, Order: {close_order.get('id')}"
                         )
+                        # Optional: record exit decision in audit (approx. PnL)
+                        try:
+                            if getattr(self, "audit", None):
+                                self.audit.record_exit_decision(
+                                    symbol=symbol,
+                                    reason="EMERGENCY_CLOSE",
+                                    pnl=float(unrealized_pnl) if isinstance(unrealized_pnl, int | float) else 0.0,
+                                    exit_signals=None,
+                                    metadata={"order_id": close_order.get("id"), "side": side},
+                                )
+                        except Exception:
+                            pass
 
                     except Exception as e:
                         self.logger.log_event("MAIN", "ERROR", f"❌ EMERGENCY CLOSE FAILED for {symbol}: {e}")
