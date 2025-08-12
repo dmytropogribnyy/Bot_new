@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Bot for BinanceBot v2.1
+Telegram Bot for BinanceBot v2.3
 Simplified version for notifications and commands
 """
 
@@ -78,7 +78,7 @@ class TelegramBot:
         """Initialize Telegram bot"""
         try:
             # Test connection using requests
-            test_message = "🤖 BinanceBot v2.1 started"
+            test_message = "🤖 BinanceBot v2.3 started"
             success = await self._send_message_sync(test_message)
 
             if success:
@@ -342,7 +342,7 @@ class TelegramBot:
     async def _handle_start(self, message: dict[str, Any]):
         """Handle /start command"""
         try:
-            start_msg = "🚀 BinanceBot v2.1\n\n"
+            start_msg = "🚀 BinanceBot v2.3\n\n"
             start_msg += "Available commands:\n"
             start_msg += "/status - Bot status\n"
             start_msg += "/balance - Account balance\n"
@@ -490,7 +490,7 @@ def cmd_test(message: dict[str, Any]):
 @handle_errors
 def cmd_version(message: dict[str, Any]):
     """Show bot version"""
-    return "🤖 BinanceBot v2.1\n📅 6 August 2025\n✅ Stage 2 Complete"
+    return "🤖 BinanceBot v2.3\n📅 12 August 2025\n✅ Stage 2 Complete"
 
 
 @register_command("/uptime", category="Info", description="Show bot uptime")
@@ -536,7 +536,7 @@ def cmd_debug(message: dict[str, Any]):
     """Show debug information"""
     debug = "🔍 Debug Information:\n"
     debug += f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-    debug += "🤖 Bot Version: v2.1\n"
+    debug += "🤖 Bot Version: v2.3\n"
     debug += "📱 Telegram: Active\n"
     debug += "💾 Database: Connected\n"
     debug += "🌐 Exchange: Testnet\n"
@@ -639,8 +639,8 @@ def cmd_health(message: dict[str, Any]):
 def cmd_info(message: dict[str, Any]):
     """Show bot information"""
     info = "ℹ️ Bot Information:\n"
-    info += "🤖 Name: BinanceBot v2.1\n"
-    info += "📅 Version: 2.1.0\n"
+    info += "🤖 Name: BinanceBot v2.3\n"
+    info += "📅 Version: 2.3.0\n"
     info += "📱 Telegram: Connected\n"
     info += "🌐 Exchange: Binance Testnet\n"
     info += "📊 Strategy: ScalpingV1\n"

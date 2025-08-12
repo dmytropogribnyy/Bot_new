@@ -51,7 +51,7 @@ async def test_telegram_integration():
             # Test sending message
             print("\n🧪 Testing Message Sending...")
             try:
-                await telegram_bot.send_message("🤖 BinanceBot v2.1 - Test message")
+                await telegram_bot.send_message("🤖 BinanceBot v2.3 - Test message")
                 print("✅ Message sent successfully")
             except Exception as e:
                 print(f"⚠️  Message sending failed: {e}")

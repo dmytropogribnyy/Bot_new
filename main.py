@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BinanceBot v2.1 - Main Entry Point
+BinanceBot v2.3 - Main Entry Point
 Simplified OptiFlow HFT Bot based on v1 logic and v2 infrastructure
 """
 
@@ -36,6 +36,8 @@ try:
             load_dotenv(dotenv_path=env_path)
 except Exception:
     pass
+
+__version__ = "2.3.0"
 
 from core.audit_logger import get_audit_logger
 from core.config import TradingConfig
@@ -87,7 +89,9 @@ class SimplifiedTradingBot:
     async def initialize(self):
         """Initialize all components"""
         try:
-            self.logger.log_event("MAIN", "INFO", "🚀 Starting BinanceBot v2.1")
+            # Versioned startup banner
+            logger.info("Starting BinanceBot v%s", __version__)
+            self.logger.log_event("MAIN", "INFO", f"🚀 Starting BinanceBot v{__version__}")
 
             # Initialize components
             self.logger.log_event("MAIN", "DEBUG", "🔧 Initializing Exchange...")
@@ -399,7 +403,7 @@ class SimplifiedTradingBot:
                             )
                     else:
                         self.logger.log_event("MAIN", "INFO", "✅ All positions emergency closed successfully")
-                except:
+                except Exception:
                     pass
 
             else:

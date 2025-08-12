@@ -78,7 +78,7 @@ async def test_telegram_commands():
 
         # Send a summary message
         summary_msg = f"""
-🤖 BinanceBot v2.1 - Command Test Complete
+🤖 BinanceBot v2.3 - Command Test Complete
 
 📊 Test Results:
 ✅ Commands Registered: {len(COMMAND_REGISTRY)}
