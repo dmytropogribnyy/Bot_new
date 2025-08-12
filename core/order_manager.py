@@ -14,7 +14,18 @@ from core.exchange_client import OptimizedExchangeClient
 from core.idempotency_store import IdempotencyStore
 from core.ids import make_client_id
 from core.precision import PrecisionError, normalize
+from core.qty_rules import minimal_trade_qty
+from core.risk_checks import check_margin_before_entry
+from core.risk_guard import (
+    is_symbol_blocked,
+    is_symbol_recently_traded,
+    pause_symbol,
+    update_symbol_last_entry,
+)
+from core.risk_guard_stage_f import RiskGuardStageF
+from core.sizing import calculate_position_from_risk
 from core.unified_logger import UnifiedLogger
+from tools.pre_trade_check import can_enter_position
 
 
 class OrderManager:
@@ -59,6 +70,11 @@ class OrderManager:
 
         # Load emergency flag on initialization
         self._load_emergency_flag()
+
+        # Initialize risk management
+        self.risk_guard_f = RiskGuardStageF(self.config, self.logger)
+        self.deposit_usdc = 400  # Trading deposit
+        self.logger.log_event("ORDER_MANAGER", "INFO", "Risk Guard Stage F initialized")
 
     def _intent_key(
         self,
@@ -226,6 +242,69 @@ class OrderManager:
     ) -> dict[str, Any]:
         """Place position with TP/SL orders"""
         try:
+            # ========== RISK MANAGEMENT CHECKS ==========
+
+            # 1. Global risk check (Stage F)
+            can_open, reason = self.risk_guard_f.can_open_new_position()
+            if not can_open:
+                self.logger.log_event("RISK_F", "WARNING", f"Position blocked: {reason}")
+                return {"success": False, "reason": f"STAGE_F: {reason}"}
+
+            # 2. Symbol-specific blocks
+            if is_symbol_blocked(symbol):
+                self.logger.log_event("RISK_GUARD", "INFO", f"{symbol} is temporarily blocked")
+                return {"success": False, "reason": "SYMBOL_BLOCKED"}
+
+            # 3. Symbol cooldown check
+            cooldown_seconds = getattr(self.config, "entry_cooldown_seconds", 300)
+            if is_symbol_recently_traded(symbol, cooldown_seconds):
+                self.logger.log_event("RISK_GUARD", "DEBUG", f"{symbol} on cooldown")
+                return {"success": False, "reason": "COOLDOWN_ACTIVE"}
+
+            # 4. Get current price for sizing
+            ticker = await self.exchange.get_ticker(symbol)
+            current_price = float(ticker.get("last", 0) or ticker.get("close", 0))
+            if not current_price:
+                return {"success": False, "reason": "NO_PRICE"}
+
+            # 5. Calculate position size from risk
+            risk_pct = 0.0075  # 0.75% = $3 for $400 deposit
+            risk_usdc = self.deposit_usdc * risk_pct
+            sl_percent = float(self.config.stop_loss_percent)
+
+            sizing = await calculate_position_from_risk(
+                self.exchange, symbol, current_price, risk_usdc, sl_percent, leverage
+            )
+
+            # 6. Check margin limits
+            ok_margin, msg = await check_margin_before_entry(self, symbol, sizing.margin, self.deposit_usdc)
+            if not ok_margin:
+                self.logger.log_event("RISK_CHECK", "WARNING", f"Margin check failed: {msg}")
+                return {"success": False, "reason": msg}
+
+            # 7. Run pre-trade filters
+            ok_filters, filter_details = await can_enter_position(self, symbol, sizing.margin)
+            if not ok_filters:
+                failed_checks = [k for k, v in filter_details.items() if not v]
+                self.logger.log_event("PRE_TRADE", "INFO", f"Filters failed for {symbol}: {failed_checks}")
+                return {"success": False, "reason": "FILTERS", "details": filter_details}
+
+            # 8. Override quantity with calculated value
+            quantity = sizing.qty
+
+            # 9. Ensure minimum quantity
+            min_qty = await minimal_trade_qty(self.exchange, symbol, current_price)
+            if quantity < min_qty:
+                quantity = min_qty
+
+            self.logger.log_event(
+                "RISK_SIZING",
+                "INFO",
+                f"{symbol} Sized: qty={quantity:.4f}, margin=${sizing.margin:.2f}, risk=${risk_usdc:.2f}",
+            )
+
+            # ========== END RISK MANAGEMENT ==========
+
             # Check if we already have a position
             if symbol in self.active_positions:
                 self.logger.log_event("ORDER_MANAGER", "WARNING", f"Position already exists for {symbol}")
@@ -307,6 +386,8 @@ class OrderManager:
             self.logger.log_event(
                 "ORDER_MANAGER", "INFO", f"Position opened: {symbol} {side} {quantity} @ {entry_price}"
             )
+            # Mark symbol as traded for cooldown
+            update_symbol_last_entry(symbol)
 
             return {
                 "success": True,
@@ -764,6 +845,35 @@ class OrderManager:
     def get_position_count(self) -> int:
         """Get number of active positions"""
         return len(self.active_positions)
+
+    async def record_position_close(self, symbol: str, pnl_usdc: float, pnl_pct: float):
+        """
+        Record position closure for risk management.
+
+        Args:
+            symbol: Trading symbol
+            pnl_usdc: PnL in USDC
+            pnl_pct: PnL in percentage
+        """
+        try:
+            # Update Stage F with trade result
+            self.risk_guard_f.record_trade_close(pnl_pct)
+
+            # Block symbol if significant loss
+            if pnl_pct < -1.5:  # Loss > 1.5%
+                pause_symbol(symbol, minutes=120)
+                self.logger.log_event(
+                    "RISK_GUARD", "WARNING", f"{symbol} blocked for 2 hours after {pnl_pct:.2f}% loss"
+                )
+            elif pnl_pct < -1.0:  # Loss > 1%
+                pause_symbol(symbol, minutes=60)
+                self.logger.log_event("RISK_GUARD", "INFO", f"{symbol} blocked for 1 hour after {pnl_pct:.2f}% loss")
+
+            # Log the closure
+            self.logger.log_event("POSITION_CLOSE", "INFO", f"{symbol} closed: PnL ${pnl_usdc:.2f} ({pnl_pct:.2f}%)")
+
+        except Exception as e:
+            self.logger.log_event("POSITION_CLOSE", "ERROR", f"Failed to record close for {symbol}: {e}")
 
     async def has_position(self, symbol: str) -> bool:
         """Check if we have a position for a symbol"""

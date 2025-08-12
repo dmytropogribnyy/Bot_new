@@ -1359,4 +1359,261 @@ check_orders.py, check_positions.py, close_position.py, monitor_bot.py, force_tr
 
 diagnose.py, tools/testnet_smoke.py, tools/surrogate_pnl.py (символы через normalize/default_symbols)
 
-Задачу: «Приступить к Stage E — интеграция WS → OMS по Acceptance RC1.1».
+# Задачу: «Приступить к Stage E — интеграция WS → OMS по Acceptance RC1.1».
+
+## New Update 12 August
+
+📝 ПЛАН БЕЗОПАСНОГО ЗАПУСКА ТОРГОВОГО БОТА С $400 USDC
+ЦЕЛЬ:
+Настроить и запустить Binance Futures бота с депозитом $400 USDC, обеспечив консервативный риск-менеджмент и стабильную прибыльность 10-20% в месяц.
+
+1. КОНФИГУРАЦИЯ И ПАРАМЕТРЫ
+   1.1 Базовые настройки ($400 депозит)
+
+Максимум позиций: 2 (начало), 3 (после 100+ сделок)
+Риск на сделку: 0.75% = $3
+Leverage: 5x (консервативно)
+Маржа в позициях: макс 50% депозита ($200)
+Дневной лимит убытков: 2% = $8
+SL/TP: 0.8% / 1.2% (Risk:Reward = 1:1.5)
+
+1.2 Торговые пары (только с MIN_NOTIONAL ≤ $5)
+XRP/USDC:USDC
+DOGE/USDC:USDC
+1000SHIB/USDC:USDC
+LINK/USDC:USDC
+ADA/USDC:USDC
+1.3 Время торговли
+
+Активные часы UTC: 8:00 - 20:00 (ликвидные сессии)
+Исключить: 02:00 - 06:00 UTC (низкая ликвидность)
+
+2. СИСТЕМА ЗАЩИТЫ И КОНТРОЛЯ
+   2.1 Pre-Trade проверки (перед каждым входом)
+
+Проверка маржи: used_margin + new_margin < 50% депозита
+Проверка объёма: 24h_volume > position_size × 100
+Проверка спреда: bid/ask spread < 0.1%
+Лимит позиций: current_positions < MAX_POSITIONS
+Дневная просадка: daily_loss < 2% депозита
+
+2.2 Обязательные защитные механизмы
+
+Mandatory SL: позиция БЕЗ стоп-лосса = немедленное закрытие
+SL verification: проверка установки SL через 1.5 сек после входа
+Синхронизация: каждые 30 сек сверка с биржей
+WebSocket fallback: автопереход на REST при сбое WS
+Graceful shutdown: корректное закрытие всех позиций при остановке
+
+2.3 Risk Guard правила
+
+Stop на день при:
+
+Убыток ≥ $8 (2% депозита)
+2 стоп-лосса подряд
+Profit Factor < 1.0 после 10 сделок за день
+
+3. РАСЧЕТ ПОЗИЦИЙ (Position Sizing)
+   3.1 Формула размера от риска
+   pythonrisk_usdc = 400 × 0.0075 = $3 # Риск на сделку
+   sl_distance = 0.008 # SL = 0.8%
+   notional = risk_usdc / sl_distance # = $375
+   margin = notional / leverage # = $75
+   quantity = notional / current_price # Количество контрактов
+   3.2 Валидация размера
+
+MIN: $6 (минимум Binance)
+MAX: $75 маржи на позицию
+TOTAL: $150 маржи на 2 позиции (37.5% депозита)
+
+4. ЭТАПЫ ЗАПУСКА
+   Фаза 1: Подготовка (1-2 часа)
+
+Обновить .env с правильными параметрами
+Синхронизировать runtime_config.json с .env
+Создать модули: sizing.py, risk_checks.py, pre_trade_check.py
+Интегрировать проверки в order_manager.py
+Запустить quick_check.py для валидации
+
+Фаза 2: Testnet (24-72 часа)
+
+Запуск на testnet с реальными параметрами
+Мониторинг каждые 6 часов
+Анализ через post_run_analysis.py
+Корректировка параметров по результатам
+Минимум 20 успешных сделок перед переходом на prod
+
+Фаза 3: Production Start (1 неделя)
+
+Начать с 1 позиции, минимальным риском (0.5% = $2)
+После 10 успешных сделок → 2 позиции
+После 50 сделок с PF > 1.3 → полные параметры
+Ежедневный анализ и корректировка
+
+Фаза 4: Масштабирование (после месяца)
+
+При депо > $500: увеличить до 3 позиций
+При депо > $600: увеличить leverage до 6-7x
+При стабильном PF > 1.5: увеличить риск до 1%
+
+5. МЕТРИКИ И МОНИТОРИНГ
+   5.1 Целевые показатели
+   МетрикаМинимумЦельОтличноWin Rate55%60%65%Profit Factor1.21.41.6Daily Return0.5%1%1.5%Max Drawdown<15%<10%<7%Avg R:R1:11:1.51:2
+   5.2 Ежедневный отчет должен содержать
+
+Количество сделок
+Win Rate
+Profit Factor
+Текущая просадка
+PnL в $ и %
+Топ-3 прибыльных/убыточных символа
+Количество срабатываний SL/TP
+
+6. ЧЕКЛИСТ ПЕРЕД ЗАПУСКОМ
+   Конфигурация
+
+.env настроен правильно
+runtime_config.json синхронизирован
+API ключи testnet созданы и проверены
+Telegram бот настроен
+
+Код
+
+Position sizing от риска реализован
+Pre-trade фильтры работают
+Проверка маржи интегрирована
+SL verification активна
+WebSocket fallback настроен
+
+Тестирование
+
+quick_check.py проходит без ошибок
+Testnet: минимум 20 сделок
+Win Rate > 55%
+Нет критических ошибок в логах
+
+7. КОМАНДЫ ЗАПУСКА
+   bash# Проверка конфигурации
+   python tools/quick_check.py
+
+# Запуск на testnet
+
+python main.py
+
+# Мониторинг логов
+
+tail -f logs/bot\_$(date +%Y%m%d).log
+
+# Анализ результатов (каждые 6 часов)
+
+python tools/post_run_analysis.py
+
+# Экстренная остановка
+
+Ctrl+C (graceful shutdown активируется автоматически)
+
+8. КРИТИЧЕСКИЕ ПРАВИЛА
+   ⛔ НИКОГДА:
+
+Не торговать BTC/ETH при депо < $500
+Не открывать позицию без проверки маржи
+Не увеличивать риск при серии убытков
+Не отключать mandatory SL
+Не игнорировать дневной лимит убытков
+
+✅ ВСЕГДА:
+
+Проверять SL после открытия позиции
+Останавливаться при -2% за день
+Анализировать каждые 6 часов на testnet
+Вести лог всех изменений параметров
+Иметь план экстренного выхода
+
+9. ОЖИДАЕМЫЕ РЕЗУЛЬТАТЫ
+   Консервативный сценарий:
+
+Месяц 1: +10% ($40)
+Месяц 2: +12% ($53)
+Месяц 3: +15% ($75)
+
+Реалистичный сценарий:
+
+Месяц 1: +15% ($60)
+Месяц 2: +18% ($79)
+Месяц 3: +20% ($107)
+
+Риски:
+
+Максимальная просадка: -10% ($40)
+Худший месяц: -5% ($20)
+Вероятность margin call: <1% при соблюдении правил
+
+# Этот план обеспечивает безопасный старт с фокусом на сохранение капитала и постепенный рост. Следуй ему пошагово, не пропускай этапы тестирования!
+
+## Status:
+
+created the auto-monitor tool, added a standalone runner, wired the OrderManager into Telegram for real data, added the /risk command, and integrated a post-run monitoring summary in graceful shutdown. I also updated Telegram status/positions handlers to show live data. Proceeding to summary.
+What I changed
+
+-   Created tools/auto_monitor.py
+-   Created tools/run_monitor.py
+-   Updated telegram/telegram_bot.py:
+-   Added set_order_manager(...)
+-   Replaced handlestatus to show live risk/positions info
+-   Replaced handlepositions to list real positions and PnL
+-   Added handlerisk and wired /risk command
+-   Updated main.py:
+-   from tools.auto_monitor import AutoMonitor
+-   Initialize self.auto_monitor
+-   Connect OrderManager to Telegram via set_order_manager
+-   Initialize AutoMonitor
+-   Generate post-run summary in cleanup_with_timeout
+    How it works
+-   AutoMonitor (tools/auto_monitor.py):
+-   Checks Stage F state: data/runtime/stage_f_state.json
+-   Checks logs for errors (looks at logs/bot_YYYYMMDD.log; if you primarily log to logs/main.log, it will still generate summary and Stage F/risk alerts; you can point it at main.log if desired)
+-   Checks positions for stuck trades via OrderManager.get_active_positions()
+-   Writes a report to logs/monitor_report.txt and sends to Telegram if configured
+-   Telegram live data:
+-   /status: shows time, risk guard status, and positions count
+-   /positions: lists each open position with side, size, entry, and PnL; totals PnL and margin
+-   /risk: shows Stage F values, trading block status, and risk parameters
+-   Post-run summary:
+-   On shutdown, the bot runs one monitor cycle and logs whether alerts were found
+    Run it
+-   Start the bot:
+-   Windows (cmd): python main.py
+-   Start the standalone monitor in parallel:
+-   Windows (cmd): python tools\\run_monitor.py
+-   Telegram commands to test:
+-   /status, /positions, /risk
+    Notes
+-   The monitor uses thresholds:
+-   Daily loss >= 1.5%
+-   SL streak >= 2
+-   Position age > 60 min
+-   Errors in logs > 5 (recent 200 lines)
+-   Alerts and the summary are saved to logs/monitor_report.txt and sent to Telegram when available.
+    Short verification checklist
+-   Stage F state is read from data/runtime/stage_f_state.json
+-   Telegram bot now uses real OrderManager data
+-   Post-run summary executes on shutdown
+-   Standalone monitor runs continuously when launched separately
+    If you want the monitor to parse logs/main.log instead of per-day files, I can switch the log path to logs/main.log or check both files.
+
+🎉 ОТЛИЧНО! СИСТЕМА МОНИТОРИНГА ПОЛНОСТЬЮ ИНТЕГРИРОВАНА!
+✅ ЧТО ТЕПЕРЬ РАБОТАЕТ:
+AutoMonitor создан и интегрирован:
+Проверяет Stage F состояние ✅
+Сканирует логи на ошибки ✅
+Отслеживает застрявшие позиции ✅
+Отправляет алерты в Telegram ✅
+Telegram показывает РЕАЛЬНЫЕ данные:
+/status - статус риск-гарда и количество позиций ✅
+/positions - детали позиций с PnL ✅
+/risk - состояние Stage F и лимиты ✅
+Post-run отчет при остановке:
+Автоматический summary при shutdown ✅
+Сохранение в logs/monitor_report.txt ✅
+Отправка в Telegram если настроен ✅
+==================================================

@@ -6,6 +6,7 @@ Simplified version for notifications and commands
 
 import asyncio
 import time
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -59,6 +60,19 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.running = False
         self.last_update_id = 0
+        # Rate limiting
+        self.last_message_time = 0.0
+        self.min_message_interval = 0.5  # seconds between messages
+
+    def set_order_manager(self, order_manager):
+        """
+        Set reference to OrderManager for accessing real trading data
+
+        Args:
+            order_manager: OrderManager instance
+        """
+        self.order_manager = order_manager
+        self.logger.log_event("TELEGRAM", "INFO", "OrderManager connected to Telegram bot")
 
     async def initialize(self):
         """Initialize Telegram bot"""
@@ -166,6 +180,10 @@ class TelegramBot:
                 await self._handle_balance(message)
             elif cmd == "/positions":
                 await self._handle_positions(message)
+            elif cmd == "/risk":
+                await self._handle_risk(message)
+            elif cmd == "/postrun":
+                await self._handle_postrun(message)
             elif cmd == "/stop":
                 await self._handle_stop(message)
             elif cmd == "/start":
@@ -179,17 +197,77 @@ class TelegramBot:
             self.logger.log_event("TELEGRAM", "ERROR", f"Failed to handle command: {e}")
 
     async def _handle_status(self, message: dict[str, Any]):
-        """Handle /status command"""
+        """Enhanced status with margin and equity info"""
         try:
-            status_msg = "📊 Bot Status:\n"
-            status_msg += "✅ Running\n"
-            status_msg += "🔄 Active\n"
-            status_msg += f"📅 Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            lines = ["📊 Bot Status"]
+            lines.append("━━━━━━━━━━━")
+            lines.append(f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-            await self._send_message_sync(status_msg)
+            if hasattr(self, "order_manager"):
+                positions = self.order_manager.get_active_positions()
+                total_margin = sum(float(p.get("margin", 0)) for p in positions)
+                total_pnl = sum(float(p.get("unrealized_pnl", 0)) for p in positions)
+
+                # Get deposit from config or use default
+                cfg = getattr(self.order_manager, "config", None)
+                deposit = 400.0  # default
+                if cfg:
+                    deposit = float(getattr(cfg, "deposit_usdc", 400.0))
+
+                equity = deposit + total_pnl
+                margin_pct = (total_margin / deposit * 100) if deposit > 0 else 0
+
+                # Get margin limit from config
+                cap_pct = 50.0  # default
+                if cfg:
+                    cap_pct = float(getattr(cfg, "max_capital_utilization_pct", 50.0))
+                margin_limit = deposit * (cap_pct / 100.0)
+
+                lines.append("")
+                lines.append("💰 Account:")
+                lines.append(f"• Equity: ${equity:.2f}")
+                lines.append(f"• Deposit: ${deposit:.2f}")
+                lines.append(f"• Unrealized PnL: ${total_pnl:+.2f}")
+
+                lines.append("")
+                lines.append("📊 Margin:")
+                lines.append(f"• Used: ${total_margin:.2f} ({margin_pct:.1f}%)")
+                lines.append(f"• Limit: ${margin_limit:.2f} ({cap_pct:.0f}%)")
+                lines.append(f"• Available: ${margin_limit - total_margin:.2f}")
+
+                lines.append("")
+                lines.append(f"📈 Positions: {len(positions)}/2")
+
+                # Risk Guard status with safe access
+                if hasattr(
+                    self,
+                    "order_manager",
+                ) and hasattr(self.order_manager, "risk_guard_f"):
+                    try:
+                        status_method = getattr(self.order_manager.risk_guard_f, "status", None)
+                        if callable(status_method):
+                            status = status_method()
+                            sl_streak = status.get("sl_streak", 0)
+                            daily_loss = status.get("daily_loss_pct", 0)
+
+                            lines.append("")
+                            lines.append("🛡️ Risk Guard:")
+                            lines.append(f"• SL Streak: {sl_streak}/2")
+                            lines.append(f"• Daily Loss: {daily_loss:.2f}%/2.0%")
+
+                            if sl_streak >= 2 or daily_loss >= 2.0:
+                                lines.append("• Status: 🔴 BLOCKED")
+                            else:
+                                lines.append("• Status: ✅ ACTIVE")
+                    except Exception:
+                        pass
+            else:
+                lines.append("⚠️ OrderManager not connected")
+
+            await self._send_message_sync("\n".join(lines))
 
         except Exception as e:
-            await self._send_message_sync(f"Error getting status: {e}")
+            await self._send_message_sync(f"❌ Status error: {e}")
 
     async def _handle_balance(self, message: dict[str, Any]):
         """Handle /balance command"""
@@ -204,16 +282,53 @@ class TelegramBot:
             await self._send_message_sync(f"Error getting balance: {e}")
 
     async def _handle_positions(self, message: dict[str, Any]):
-        """Handle /positions command"""
+        """Handle /positions command with real data"""
         try:
-            positions_msg = "📈 Positions:\n"
-            positions_msg += "No active positions\n"
-            positions_msg += "💡 Use real API keys for position info"
+            if not hasattr(self, "order_manager"):
+                await self._send_message_sync("⚠️ OrderManager not connected")
+                return
 
-            await self._send_message_sync(positions_msg)
+            positions = self.order_manager.get_active_positions()
+
+            if not positions:
+                msg = "📈 No active positions"
+            else:
+                lines = [f"📈 Active Positions ({len(positions)}):"]
+                lines.append("━━━━━━━━━━━")
+
+                total_pnl = 0
+                total_margin = 0
+
+                for p in positions:
+                    symbol = p.get("symbol", "Unknown")
+                    size = p.get("size", 0)
+                    side = p.get("side", "unknown")
+                    entry = p.get("entry_price", 0)
+                    pnl = p.get("unrealized_pnl", 0)
+                    margin = p.get("margin", 0)
+
+                    total_pnl += pnl
+                    total_margin += margin
+
+                    emoji = "🟢" if pnl >= 0 else "🔴"
+                    lines.append("")
+                    lines.append(f"{emoji} {symbol}")
+                    lines.append(f"• Side: {side}")
+                    lines.append(f"• Size: {size:.4f}")
+                    lines.append(f"• Entry: ${entry:.4f}")
+                    lines.append(f"• PnL: ${pnl:+.2f}")
+
+                lines.append("")
+                lines.append("━━━━━━━━━━━")
+                lines.append(f"Total PnL: ${total_pnl:+.2f}")
+                lines.append(f"Margin Used: ${total_margin:.2f}")
+
+                msg = "\n".join(lines)
+
+            await self._send_message_sync(msg)
 
         except Exception as e:
-            await self._send_message_sync(f"Error getting positions: {e}")
+            await self._send_message_sync(f"❌ Error getting positions: {e}")
 
     async def _handle_stop(self, message: dict[str, Any]):
         """Handle /stop command"""
@@ -244,6 +359,75 @@ class TelegramBot:
         """Handle /help command"""
         await self._handle_start(message)
 
+    async def _handle_risk(self, message: dict[str, Any]):
+        """Handle /risk command with real risk data"""
+        try:
+            if not hasattr(self, "order_manager") or not hasattr(self.order_manager, "risk_guard_f"):
+                await self._send_message_sync("⚠️ Risk Guard not connected")
+                return
+
+            # Get Stage F status
+            status = self.order_manager.risk_guard_f.status()
+
+            lines = ["🛡️ Risk Management Status"]
+            lines.append("━━━━━━━━━━━")
+            lines.append(f"• SL Streak: {status.get('sl_streak', 0)}/2")
+            lines.append(f"• Daily Loss: {status.get('daily_loss_pct', 0):.2f}%/2.0%")
+            lines.append(f"• Reset Date: {status.get('last_reset_date', 'Unknown')}")
+
+            # Trading status
+            can_trade, reason = self.order_manager.risk_guard_f.can_open_new_position()
+            if can_trade:
+                lines.append("• Trading: ✅ ALLOWED")
+            else:
+                lines.append("• Trading: 🔴 BLOCKED")
+                lines.append(f"• Reason: {reason}")
+
+            # Risk parameters
+            lines.append("")
+            lines.append("📊 Risk Parameters:")
+            lines.append("• Risk/Trade: 0.75% ($3)")
+            lines.append("• Max Positions: 2")
+            lines.append("• Daily DD Limit: 2% ($8)")
+            lines.append("• Deposit: $400 USDC")
+
+            await self._send_message_sync("\n".join(lines))
+
+        except Exception as e:
+            await self._send_message_sync(f"❌ Error getting risk status: {e}")
+
+    async def _handle_postrun(self, message: dict):
+        """Generate manual report without shutdown"""
+        try:
+            if not hasattr(self, "order_manager"):
+                await self._send_message_sync("⚠️ OrderManager not available")
+                return
+
+            from tools.auto_monitor import AutoMonitor
+
+            monitor = AutoMonitor(telegram_bot=self)
+
+            alerts, summary = await monitor.run_once(self.order_manager)
+
+            lines = ["📊 Manual Report"]
+            lines.append("━━━━━━━━━━━")
+            lines.append(f"Time: {datetime.now().strftime('%H:%M')}")
+            lines.append(f"Alerts: {len(alerts)}")
+
+            if alerts:
+                lines.append("")
+                lines.append("⚠️ Issues:")
+                for alert in alerts[:3]:
+                    lines.append(f"• {alert}")
+
+            lines.append("")
+            lines.append(summary)
+
+            await self._send_message_sync("\n".join(lines))
+
+        except Exception as e:
+            await self._send_message_sync(f"❌ Report failed: {e}")
+
     async def send_message(self, text: str):
         """Send message to Telegram"""
         try:
@@ -252,21 +436,28 @@ class TelegramBot:
             self.logger.log_event("TELEGRAM", "ERROR", f"Failed to send message: {e}")
 
     async def _send_message_sync(self, text: str):
-        """Internal method to send message using requests"""
+        """Send message with rate limiting"""
         try:
+            # Rate limiting
+            current_time = time.time()
+            elapsed = current_time - self.last_message_time
+            if elapsed < self.min_message_interval:
+                await asyncio.sleep(self.min_message_interval - elapsed)
+
             url = f"{self.base_url}/sendMessage"
             data = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
 
-            # Run blocking requests in a thread to keep event loop responsive
             response = await asyncio.to_thread(requests.post, url, json=data, timeout=15)
+
             if response.status_code != 200:
-                self.logger.log_event("TELEGRAM", "ERROR", f"Failed to send message: {response.status_code}")
+                self.logger.log_event("TELEGRAM", "ERROR", f"Send failed: {response.status_code}")
                 return False
 
+            self.last_message_time = time.time()
             return True
 
         except Exception as e:
-            self.logger.log_event("TELEGRAM", "ERROR", f"Failed to send message: {e}")
+            self.logger.log_event("TELEGRAM", "ERROR", f"Send error: {e}")
             return False
 
     async def send_alert(self, title: str, message: str, level: str = "INFO"):

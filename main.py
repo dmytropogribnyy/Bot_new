@@ -47,6 +47,7 @@ from core.unified_logger import (
     print_session_banner_start,
 )
 from telegram.telegram_bot import TelegramBot
+from tools.auto_monitor import AutoMonitor
 
 
 class SimplifiedTradingBot:
@@ -74,6 +75,8 @@ class SimplifiedTradingBot:
         self.stop_event = self._stop
         # Track background tasks we own
         self.tasks: list[asyncio.Task] = []
+        # Initialize auto monitor
+        self.auto_monitor = None  # Will be initialized after OrderManager
 
     async def initialize(self):
         """Initialize all components"""
@@ -108,6 +111,14 @@ class SimplifiedTradingBot:
             self.logger.log_event("MAIN", "DEBUG", "🔧 Initializing TelegramBot...")
             if not self.telegram_bot:
                 self.logger.log_event("MAIN", "WARNING", "⚠️ TelegramBot not configured")
+            # Connect OrderManager to Telegram
+            if self.telegram_bot:
+                self.telegram_bot.set_order_manager(self.order_manager)
+                self.logger.log_event("MAIN", "INFO", "Connected OrderManager to Telegram bot")
+
+            # Initialize auto monitor with Telegram integration
+            self.auto_monitor = AutoMonitor(telegram_bot=self.telegram_bot)
+            self.logger.log_event("MAIN", "INFO", "Auto monitor initialized")
 
             # Start WebSocket streams with fallback
             if not self.config.dry_run and self.config.enable_websocket:
@@ -177,6 +188,21 @@ class SimplifiedTradingBot:
                 self.logger.log_event("MAIN", "ERROR", f"State save failed: {e}")
             except Exception:
                 pass
+
+        # Generate post-run summary
+        try:
+            if self.auto_monitor and hasattr(self, "order_manager"):
+                self.logger.log_event("MAIN", "INFO", "Generating post-run summary...")
+                alerts, summary = await asyncio.wait_for(self.auto_monitor.run_once(self.order_manager), timeout=3.0)
+
+                if alerts:
+                    self.logger.log_event("MAIN", "WARNING", f"Post-run alerts: {len(alerts)} issues found")
+                else:
+                    self.logger.log_event("MAIN", "INFO", "Post-run check: All systems normal")
+        except TimeoutError:
+            self.logger.log_event("MAIN", "WARNING", "Post-run summary timed out")
+        except Exception as e:
+            self.logger.log_event("MAIN", "ERROR", f"Post-run summary failed: {e}")
 
         closers: list[tuple[str, object, str]] = [
             (
