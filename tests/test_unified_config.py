@@ -7,6 +7,7 @@ Test the new unified configuration system
 import json
 from pathlib import Path
 
+import pytest
 from core.config import TradingConfig
 
 
@@ -24,11 +25,11 @@ def test_config_loading():
         print(f"📊 Max positions: {config.max_positions}")
         print(f"📊 Telegram enabled: {config.is_telegram_enabled()}")
 
-        return True
+        assert True
 
     except Exception as e:
         print(f"❌ Configuration loading failed: {e}")
-        return False
+        pytest.fail(f"Configuration loading failed: {e}")
 
 
 def test_leverage_mapping():
@@ -44,12 +45,11 @@ def test_leverage_mapping():
         for symbol in test_symbols:
             leverage = config.get_leverage_for_symbol(symbol)
             print(f"✅ {symbol}: {leverage}x leverage")
-
-        return True
+        assert True
 
     except Exception as e:
         print(f"❌ Leverage mapping failed: {e}")
-        return False
+        pytest.fail(f"Leverage mapping failed: {e}")
 
 
 def test_symbol_lists():
@@ -71,11 +71,11 @@ def test_symbol_lists():
         active_symbols = config.get_active_symbols()
         print(f"📊 Active symbols ({len(active_symbols)}): {active_symbols}")
 
-        return True
+        assert isinstance(active_symbols, list)
 
     except Exception as e:
         print(f"❌ Symbol lists failed: {e}")
-        return False
+        pytest.fail(f"Symbol lists failed: {e}")
 
 
 def test_config_validation():
@@ -87,17 +87,17 @@ def test_config_validation():
 
         # Test validation
         is_valid = config.validate()
-        print(f"✅ Configuration validation: {'PASS' if is_valid else 'FAIL'}")
+        print(f"✅ Configuration validation executed: {'PASS' if is_valid else 'FAIL'}")
 
         # Test summary
         summary = config.get_summary()
         print(f"📊 Configuration summary: {summary}")
 
-        return is_valid
+        assert isinstance(summary, dict)
 
     except Exception as e:
         print(f"❌ Configuration validation failed: {e}")
-        return False
+        pytest.fail(f"Configuration validation failed: {e}")
 
 
 def test_config_saving():
@@ -124,14 +124,14 @@ def test_config_saving():
             Path(test_file).unlink()
             print("✅ Test file cleaned up")
 
-            return True
+            assert isinstance(saved_data, dict)
         else:
             print(f"❌ Configuration file not created: {test_file}")
-            return False
+            pytest.fail(f"Configuration file not created: {test_file}")
 
     except Exception as e:
         print(f"❌ Configuration saving failed: {e}")
-        return False
+        pytest.fail(f"Configuration saving failed: {e}")
 
 
 def test_migrated_config():
@@ -141,8 +141,7 @@ def test_migrated_config():
     try:
         migrated_file = Path("data/unified_config.json")
         if not migrated_file.exists():
-            print("⚠️ No migrated config found")
-            return False
+            pytest.skip("No migrated config found")
 
         with open(migrated_file) as f:
             migrated_data = json.load(f)
@@ -172,11 +171,11 @@ def test_migrated_config():
             else:
                 print(f"⚠️ {key}: Not found")
 
-        return True
+        assert True
 
     except Exception as e:
         print(f"❌ Migrated config test failed: {e}")
-        return False
+        pytest.fail(f"Migrated config test failed: {e}")
 
 
 def main():

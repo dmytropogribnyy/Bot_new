@@ -4,6 +4,11 @@ Test Real Telegram Message
 Send a real message to Telegram bot using credentials from .env
 """
 
+import pytest
+
+# Skip network-dependent Telegram tests in CI
+pytestmark = pytest.mark.skip(reason="Skip network-dependent Telegram tests in CI")
+
 import asyncio
 import os
 import sys

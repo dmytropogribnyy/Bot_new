@@ -1,48 +1,75 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+    push:
+    pull_request:
+    workflow_dispatch:
+
+# чтобы параллельные пушки не гоняли дубли одного и того же workflow
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
-  test-and-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    test-and-guard:
+        runs-on: ubuntu-latest
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
 
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then
-            pip install -r requirements-dev.txt
-          else
-            pip install pytest pytest-asyncio pytest-mock
-          fi
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+                  cache: "pip"
 
-      - name: Validate
-        run: python validate_project.py
+            - name: Install deps (prod + dev)
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  python -m pip install --upgrade pip
+                  if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+                  if [ -f requirements-dev.txt ]; then
+                    pip install -r requirements-dev.txt
+                  else
+                    # fallback для async-тестов, если dev-списка нет
+                    pip install pytest pytest-asyncio pytest-mock
+                  fi
 
-      - name: Pytests
-        run: pytest -v
+            - name: Sanity – show pytest & plugins
+              run: |
+                  python - << 'PY'
+                  import pkgutil, sys
+                  import pytest
+                  print("pytest:", pytest.__version__)
+                  plugins = [m.name for m in pkgutil.iter_modules() if m.name.startswith("pytest")]
+                  print("pytest plugins:", ", ".join(sorted(plugins)))
+                  try:
+                      import pytest_asyncio
+                      print("pytest-asyncio:", pytest_asyncio.__version__)
+                  except Exception as e:
+                      print("pytest-asyncio: NOT INSTALLED", e)
+                  PY
 
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+            - name: Validate
+              run: python validate_project.py
 
-      - name: Sanity grep — forbid USDC→dapi/dstream in code
-        run: |
-          set -e
-          if rg -n '(?i)(usdc.*(dapi|dstream))|((dapi|dstream).*(usdc))' -S \
-                --glob '!**/docs/**' --glob '!**/*.md' --glob '!tests/**' ; then
-            echo 'Forbidden USDC→dapi/dstream references found'
-            exit 1
-          else
-            echo 'No forbidden references found'
-          fi
+            - name: Pytests
+              # можно заменить на `pytest -q` если нужен более тихий вывод
+              run: pytest -v
+
+            - name: Install ripgrep
+              run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+            - name: Sanity grep — forbid USDC→dapi/dstream in code
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  if rg -n '(?i)(usdc.*(dapi|dstream))|((dapi|dstream).*(usdc))' -S \
+                       --glob '!**/docs/**' --glob '!**/*.md' --glob '!tests/**' ; then
+                    echo 'Forbidden USDC→dapi/dstream references found'
+                    exit 1
+                  else
+                    echo 'No forbidden references found'
+                  fi

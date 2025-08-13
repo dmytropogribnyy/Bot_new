@@ -8,6 +8,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add the current directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -28,16 +30,13 @@ async def test_config():
         print(f"   - Log level: {config.log_level}")
 
         # Test validation
-        if config.validate():
-            print("✅ Configuration validation passed")
-        else:
-            print("⚠️ Configuration validation failed (expected for test)")
-
-        return True
+        _ = config.validate()
+        print("✅ Configuration validation executed")
+        assert isinstance(config, TradingConfig)
 
     except Exception as e:
         print(f"❌ Configuration test failed: {e}")
-        return False
+        pytest.fail(f"Configuration test failed: {e}")
 
 
 async def test_logger():
@@ -57,11 +56,11 @@ async def test_logger():
         print("   - Check logs/main.log for file output")
         print("   - Check data/trading_bot.db for database logs")
 
-        return True
+        assert True
 
     except Exception as e:
         print(f"❌ Logging test failed: {e}")
-        return False
+        pytest.fail(f"Logging test failed: {e}")
 
 
 async def test_imports():
@@ -70,17 +69,15 @@ async def test_imports():
 
     try:
         # Test core imports
-
         print("✅ All core modules imported successfully")
 
         # Test main bot import
         print("✅ Main bot class imported successfully")
-
-        return True
+        assert True
 
     except Exception as e:
         print(f"❌ Import test failed: {e}")
-        return False
+        pytest.fail(f"Import test failed: {e}")
 
 
 async def test_basic_structure():
@@ -99,11 +96,11 @@ async def test_basic_structure():
         print(f"   - Exchange: {type(bot.exchange).__name__}")
         print(f"   - Order Manager: {type(bot.order_manager).__name__}")
 
-        return True
+        assert True
 
     except Exception as e:
         print(f"❌ Basic structure test failed: {e}")
-        return False
+        pytest.fail(f"Basic structure test failed: {e}")
 
 
 async def main():

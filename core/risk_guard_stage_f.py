@@ -2,7 +2,7 @@
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -46,7 +46,7 @@ class RiskGuardStageF:
                 return GlobalRiskState(**data)
         except Exception:
             pass
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         return GlobalRiskState(sl_streak=0, daily_loss_pct=0.0, last_reset_date=today)
 
     def _save(self) -> None:
@@ -58,7 +58,7 @@ class RiskGuardStageF:
             pass
 
     def _rollover_if_new_day(self):
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         if self.state.last_reset_date != today:
             self.state.sl_streak = 0
             self.state.daily_loss_pct = 0.0

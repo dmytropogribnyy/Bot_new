@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Test Telegram bot connection"""
 
+import pytest
+
+# Skip network-dependent Telegram tests in CI
+pytestmark = pytest.mark.skip(reason="Skip network-dependent Telegram tests in CI")
+
 import asyncio
 import os
 

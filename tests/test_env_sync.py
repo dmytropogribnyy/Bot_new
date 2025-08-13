@@ -4,6 +4,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 try:
     from dotenv import dotenv_values
 except Exception as e:
@@ -19,18 +21,14 @@ def test_env_sync():
     example_path = root / ".env.example"
 
     if dotenv_values is None:
-        print("⚠️ Skipping test_env_sync: python-dotenv not available")
-        return True
+        pytest.skip("python-dotenv not installed")
 
     # Check files exist
     if not example_path.exists():
-        print("❌ .env.example not found")
-        return False
+        pytest.skip(".env.example not found")
 
     if not env_path.exists():
-        print("❌ .env not found")
-        print("   Run: cp .env.example .env")
-        return False
+        pytest.skip(".env not found")
 
     # Load both files
     env_vars = dotenv_values(str(env_path))
@@ -59,11 +57,8 @@ def test_env_sync():
         print(f"⚠️  Extra in .env (not in .env.example): {', '.join(extra)}")
         print("   Consider adding to .env.example if needed")
 
-    if not missing:
-        print("✅ All required env vars present")
-        return True
-
-    return False
+    assert not missing, "Missing keys in .env"
+    print("✅ All required env vars present")
 
 
 def test_env_loading():
@@ -72,11 +67,12 @@ def test_env_loading():
         from core.config import TradingConfig
 
         config = TradingConfig.from_env()
-        print(f"✅ Config loaded: {len(config.dict())} fields")
-        return True
+        print(f"✅ Config loaded: {len(config.model_dump())} fields")
+        assert isinstance(config, TradingConfig)
+        assert len(config.model_dump()) > 0
     except Exception as e:
         print(f"❌ Config loading failed: {e}")
-        return False
+        pytest.fail(f"Config loading failed: {e}")
 
 
 if __name__ == "__main__":

@@ -433,7 +433,7 @@ class TradingConfig(BaseModel):
         try:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self.dict(), f, indent=2, default=str)
+                json.dump(self.model_dump(), f, indent=2, default=str)
             print(f"Configuration saved to {filepath}")
         except Exception as e:
             print(f"Failed to save configuration: {e}")
