@@ -1,5 +1,9 @@
 # Python virtual environment
 venv/
+.venv/
+env/
+.tox/
+node_modules/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -89,3 +93,11 @@ logs/*.log
 data/*.json
 data/runtime/*.json
 data/audit/
+
+# Cleaner additions
+pycache/
+*.pyc
+*.pyo
+backup_*/
+tests/archive/
+.idea/

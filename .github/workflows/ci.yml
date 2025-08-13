@@ -15,16 +15,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install pytest pytest-asyncio pytest-mock
+          fi
 
-      - name: Run routing tests (UM)
-        run: |
-          pytest -q tests/test_endpoints.py tests/test_listenkey_um.py
+      - name: Validate
+        run: python validate_project.py
+
+      - name: Pytests
+        run: pytest -v
 
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
