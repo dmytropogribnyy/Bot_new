@@ -13,10 +13,10 @@ from common.config_loader import (
     trade_stats,
     trade_stats_lock,
 )
+from utils_core import get_cached_balance
 
 from core.legacy.risk_utils import get_max_risk, set_max_risk
 from telegram.telegram_utils import escape_markdown_v2, send_telegram_message
-from utils_core import get_cached_balance
 from utils_logging import log
 
 
@@ -316,7 +316,6 @@ def generate_daily_report(days=1):
     """
     try:
         from common.config_loader import get_priority_small_balance_pairs
-
         from utils_core import get_cached_balance
 
         if not os.path.exists(EXPORT_PATH):

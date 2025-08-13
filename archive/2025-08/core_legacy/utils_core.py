@@ -379,6 +379,7 @@ def get_min_net_profit(balance=None):
         TP_LOG_FILE = "data/tp_log.csv"
 
     from tp_logger import get_last_trade
+
     from utils_logging import log
 
     # ✅ Сначала проверяем runtime override (если установлен явно)

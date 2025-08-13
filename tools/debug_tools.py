@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime
 
 from utils_core import extract_symbol
+
 from utils_logging import log
 
 OUTPUT_FILE = "data/debug_monitoring_summary.json"
@@ -14,12 +15,12 @@ TUNING_LOG_FILE = "data/filter_tuning_log.json"
 def scan_symbol(symbol: str, timeframe="5m", limit=100):
     import pandas as pd
     from common.leverage_config import get_leverage_for_symbol
+    from utils_core import get_cached_balance, get_runtime_config
 
     from core.legacy.binance_api import fetch_ohlcv
     from core.legacy.fail_stats_tracker import get_symbol_risk_factor
     from core.legacy.signal_utils import add_indicators, get_signal_breakdown, passes_1plus1
     from core.legacy.trade_engine import calculate_position_size, calculate_risk_amount
-    from utils_core import get_cached_balance, get_runtime_config
     from utils_logging import log
 
     try:

@@ -77,8 +77,11 @@ async def test_shutdown():
                     for order in open_orders:
                         await exchange.cancel_order(order["id"], symbol)
                         print(f"   ❌ Cancelled order {order['id']}")
-                except:
-                    pass
+                except Exception:
+                    import logging
+
+                    logging.getLogger(__name__).exception("shutdown test failed", exc_info=True)
+                    raise
 
                 # Place close order
                 close_order = await exchange.create_order(
