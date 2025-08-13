@@ -1,157 +1,61 @@
-# Binance USDC Futures Bot — Final Concept & Roadmap (v2.4, RC1.1)
+# Binance USDC Futures Bot — Final Concept & Roadmap (v2.4, RC1.2)
 
-> **Source of Truth:** Specification / Architecture.
-> Пошаговый план выполнения — в _USDC Futures Bot — Execution Plan (Stages) — RC1.1_.
-> Операторские инструкции — в _README.md_.
+> **Role:** Specification / Architecture.
+> **Exec plan:** см. _USDC Futures Bot — Execution Plan (Stages) — RC1.2_.
+> **Ops:** см. _README.md_.
 
-**Prod:** USDC‑контракты на USDⓈ‑Margined фьючах Binance.
-**Testnet:** USDT‑контракты на Binance Futures Testnet.
-Все расчёты размеров, баланса и PnL ведутся в **quote‑коине** (USDC/USDT).
+## 1) One-liner
+USDC Futures Bot — торговый бот для Binance Futures с безопасной архитектурой (RiskGuard, Audit), унифицированным конфигом и корректными TP/SL режимами. CI контролирует структуру и async-тесты.
 
-Материал носит образовательный характер и **не является инвестиционным советом**.
+## 2) Architecture overview
+- **Core**: OrderManager, Strategy, RiskGuard (лимиты, стрик), Unified Config.
+- **Exchange Client**: параметры исполнения (`working_type`, `tp_order_style`, `reduceOnly`), UM-эндпоинты, listenKey.
+- **WS/REST**: WS с keepalive и fallback на REST.
+- **Audit (P-block)**: tamper-evident журнал (hash-цепочка), UTC-метки, редакция секретов.
+- **Tests**: pytest + pytest-asyncio; валидатор структуры.
 
----
+## 3) Execution order (Safety-first, RC1.2)
+- **A — Repo Hygiene:** выполнено (cleanup/validate, структура тестов).
+- **D — Exchange Client (B-lite):** `tp_order_style`, `working_type` — **выполнено (подтверждено CI)**.
+- **F — Risk & Sizing:** выполнено (RiskGuard, precision-gate).
+- **B/C — Unified Config & Symbols:** выполнено (тесты зелёные).
+- **E — WS → OMS:** осталось оформить события и acceptance-тесты.
+- **P0–P5 — GPT Perspectives:** после E.
 
-## Execution order (RC1.1, Safety‑first)
+## 4) Configuration (high-level)
+- **Unified Config** (env→model): строгая валидация, сохранение/загрузка, миграция.
+- `working_type`: _MARK_PRICE_ / _LAST_PRICE_ (по умолчанию из конфига).
+- `tp_order_style`: _TAKE_PROFIT_ / _TAKE_PROFIT_MARKET_.
+- Risk-параметры: дневной лимит, SL-стрик, minNotional/precision-гейты.
 
-**A → D (B‑lite) → F → Smoke (testnet) → B (full) → C (full) → E → G/H/I/J**
+## 5) Order execution (B-lite, done)
+- Все TP/SL ставятся `reduceOnly=True`.
+- Режим `workingType` читается из конфига.
+- Поддержка `TAKE_PROFIT` и `TAKE_PROFIT_MARKET`.
+- Интеграционные async-тесты в CI зелёные.
 
--   **B‑lite в Stage D:** в конфиг добавляются **только** `tp_order_style`, `working_type`. Полная унификация конфига и нормализация символов выполняются позже (Stage B/C full).
+## 6) WebSocket → OMS (pending)
+- Цель: события `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE` попадают в OMS и обновляют состояние (позиции, баланс).
+- Keepalive listenKey, авто-релистен; безопасный shutdown.
+- **Acceptance:** тесты с моками событий зелёные; fallback WS→REST задокументирован.
 
----
+## 7) Residual items (к закрытию ближайшим PR)
+- Stage E: провести проводку событий WS→OMS + добавить acceptance-тесты.
+- Deprecation cleanup (наша сторона): `datetime.utcnow()` → `datetime.now(datetime.UTC)`; Pydantic v2 `.dict()` → `.model_dump()`; заменить `return` в тестах на `assert`; закрыть `Unclosed client session` фикстурой `await exchange.close()`.
 
-## 1) Цели и принципы
+## 8) CI/CD baseline
+- **requirements-dev.txt**: `pytest`, `pytest-asyncio`, `pytest-mock` (и линтеры/тайпчекеры — по желанию).
+- **pytest.ini**: `asyncio_mode = auto`, регистрация маркера `asyncio`.
+- **CI.yml**: установка prod+dev deps (или fallback), `env.PYTHONPATH` на корень, `validate_project.py`, `pytest -v`, sanity-grep против жёстких USDC→dapi/dstream привязок.
+- **Кнопка Run workflow** (`workflow_dispatch`) и `concurrency` для избежания гонок.
 
--   **Прозрачность:** минимальная архитектура; один источник правды для конфигурации.
--   **Безопасность:** обязательный SL, дневной стоп, отсутствие мартингейла, строгие лимиты плеча и notional.
--   **Предсказуемость:** идемпотентный OMS, детерминированный сайзинг, одинаковое поведение в Testnet/Prod.
--   **Надёжность:** health‑чек, ретраи с бэкоффом, корректное восстановление состояния после рестартов.
+## 9) Acceptance gates (release-ready)
+- CI зелёный (включая async-тесты и валидатор).
+- WS→OMS протестирован моками событий; fallback WS→REST задокументирован.
+- RiskGuard отсекает вход после превышения лимитов; precision/notional-гейты стабильны.
+- Audit-лог непрерывен (hash-цепочка), UTC-метки корректны.
 
----
-
-## 2) Операционные режимы
-
--   **DRY‑RUN** — без реальных ордеров; валидация логики.
--   **TESTNET (USDT)** — sandbox: `set_sandbox_mode(True)`; `quote_coin=USDT`.
--   **PROD (USDC)** — реальная торговля: `set_sandbox_mode(False)`; `quote_coin=USDC`.
-
-Автопереключение: если `TESTNET=true` и `QUOTE_COIN` не задан — использовать `USDT`; иначе `USDC`.
-
----
-
-## 3) Архитектура и ключевые компоненты
-
-### 3.1 Config (Pydantic)
-
-Ключевые поля `.env`/runtime (RC1.1):
-
--   `TESTNET`, `QUOTE_COIN`, `SETTLE_COIN`, `LEVERAGE_DEFAULT`, `RISK_PER_TRADE_PCT`, `DAILY_DRAWDOWN_PCT`, `MAX_CONCURRENT_POSITIONS`.
--   `working_type`: `MARK_PRICE` или `CONTRACT_PRICE`.
--   `tp_order_style`: `limit` или `market`.
--   API ключи, флаги логирования, алертов и DRY‑RUN.
-
-### 3.2 Символы и рынки
-
--   Нормализация: `perp_symbol(base, coin) -> f"{base}/{coin}:{coin}"`.
--   Фильтр по контракту и валютам settle/quote.
--   Дефолт: BTC, ETH, BNB, SOL, ADA.
-
-### 3.3 Exchange Layer
-
--   CCXT (async), `set_sandbox_mode`, `load_markets()`.
--   Параметры клиента: `enableRateLimit=True`, `adjustForTimeDifference=True`.
--   Установка плеча, reduceOnly=True, `workingType` и стиль TP.
--   Ретраи с экспоненциальным бэкоффом.
-
-### 3.4 User Data Stream / WS
-
--   Keepalive \~30 мин, подписки на `ORDER_TRADE_UPDATE` и `ACCOUNT_UPDATE`.
--   Реконнект с полной REST‑сверкой.
--   WS можно держать выключенным до стабилизации REST.
-
-### 3.5 OMS
-
--   Идемпотентные операции с `clientOrderId`.
--   Атомарность TP/SL; уборка зависших ордеров при рестарте.
-
-### 3.6 Risk & Sizing
-
--   RiskGuard: проверка SL‑streak, дневных лимитов.
--   Сайзинг по `RISK_PER_TRADE_PCT` от эквити, учёт `tickSize/stepSize`.
-
-### 3.7 Strategy
-
--   Подключена `scalping_v1` через `SymbolManager`.
-
-### 3.8 Логи и наблюдаемость
-
--   Консоль/файл, SQLite‑агрегаты, runtime_config.json.
--   Алерты в Telegram/Email/Slack.
-
----
-
-## 4) Поток выполнения (Runtime)
-
-1. Загрузка конфига.
-2. Инициализация биржи.
-3. Фильтрация рынков, установка плеча.
-4. Запуск стратегий через OMS.
-5. Health‑чек, уборка ордеров.
-6. Graceful shutdown.
-
----
-
-## 5) Безопасность и отказоустойчивость
-
--   Emergency shutdown: отмена ордеров, закрытие позиций.
--   Холодный старт: полная ресинхронизация.
--   Ограничения по убыткам.
-
----
-
-## 6) Roadmap (RC1.1 → GA)
-
-1. Stage 1 — TP/SL параметризация.
-2. Stage 2 — RiskGuard.
-3. Stage 3 — WS/REST.
-4. Stage 4 — Emergency shutdown.
-5. Stage P0–P5 — GPT Perspectives.
-
----
-
-## 7) Open Tasks Checklist
-
--   WS в проде.
--   Расширение тестов сайзинга.
--   Обновить quick_check.py.
--   Финальный аудит Risk/OMS.
-
----
-
-## 8) Процедуры запуска
-
-### Testnet smoke‑test
-
--   Проверка базовых операций и синхронизации.
-
-### Prod go‑live (микролот)
-
--   Минимальный объём, проверка логов и алертов.
--   Включение WS после стабилизации.
-
----
-
-## GPT Perspectives — интеграция
-
-**Цели:** объяснимость решений и аудит, формализация риск‑допущений и доходности.
-
--   Trader Lens, Risk Lens, Execution/SRE Lens, Capital Lens, Compliance Lens.
--   Правила auto‑rationale, откаты при превышении лимитов, деградация WS→REST.
--   Tier A/B/C со своим профилем риска и TP/SL.
--   Артефакты: decision_record, audit.jsonl.
-
-**Acceptance:** параметр strategy.tier, откаты, сводки при shutdown.
-
----
-
-**Примечание:** Материал носит образовательный характер и не является финансовым советом.
+## 10) Operability (pre-testnet)
+- `.env` — только тестнет-ключи; без прод-секретов.
+- `python main.py --dry-run` → OK; `python main.py --once` → OK.
+- Логи ротируются; audit-лог активен; emergency-shutdown корректен.
