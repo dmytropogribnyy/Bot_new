@@ -138,18 +138,21 @@ class SimplifiedTradingBot:
                     # URLs based on environment
                     if self.config.testnet:
                         # Testnet (USDⓈ-M): use binancefuture.com with /fapi paths
-                        api_base = "https://testnet.binancefuture.com"
-                        ws_base = "wss://stream.binancefuture.com"
+                        default_api = "https://testnet.binancefuture.com"
+                        default_ws = "wss://stream.binancefuture.com"
                     else:
                         # Production: USDⓈ-M (USDT and USDC) use fapi/fstream
-                        api_base = "https://fapi.binance.com"
-                        ws_base = "wss://fstream.binance.com:9443"
+                        default_api = "https://fapi.binance.com"
+                        default_ws = "wss://fstream.binance.com:9443"
+
+                    api_base = getattr(self.exchange, "api_base", default_api)
+                    ws_base = getattr(self.exchange, "ws_url", default_ws)
 
                     self.user_stream = UserDataStreamManager(
                         api_base=api_base,
                         ws_url=ws_base,
                         api_key=self.config.api_key,
-                        on_event=self.order_manager.handle_ws_event,
+                        on_event=lambda e: asyncio.create_task(self.order_manager.handle_ws_event(e)),
                         resolved_quote_coin=self.config.resolved_quote_coin,
                     )
                     await self.user_stream.start()
@@ -605,15 +608,7 @@ class SimplifiedTradingBot:
             except Exception:
                 pass
 
-            # Notify Telegram about shutdown reason (before tearing down Telegram)
-            try:
-                if self.telegram_bot:
-                    reason = self.shutdown_reason or "stop signal"
-                    await self.telegram_bot.send_message(f"🛑 Shutting down: {reason}")
-            except Exception:
-                pass
-
-            # Stop WebSocket streams
+            # Stop WebSocket streams FIRST to avoid leaking client sessions
             if hasattr(self, "user_stream"):
                 try:
                     await self.user_stream.stop()
@@ -626,6 +621,14 @@ class SimplifiedTradingBot:
                     self.logger.log_event("MAIN", "INFO", "Market data stream stopped")
                 except Exception:
                     pass
+
+            # Notify Telegram about shutdown reason (before tearing down Telegram)
+            try:
+                if self.telegram_bot:
+                    reason = self.shutdown_reason or "stop signal"
+                    await self.telegram_bot.send_message(f"🛑 Shutting down: {reason}")
+            except Exception:
+                pass
 
             # Best-effort emergency close positions before resource teardown
             try:

@@ -64,6 +64,10 @@ class OrderManager:
         self.shutdown_requested = False
         self.emergency_mode = False
 
+        # Lightweight WS idempotency window to avoid duplicate processing on reconnects
+        self._ws_seen: set[tuple[object, object, object]] = set()
+        self._ws_seen_max: int = 10000
+
         # Emergency shutdown flag (persistent)
         self.emergency_shutdown_flag = False
         self.shutdown_timestamp = None
@@ -863,7 +867,20 @@ class OrderManager:
         Handle WebSocket user data stream events with complete audit.
         Правильно детектирует ликвидации, ADL, обычные выходы. Записывает все в аудит с точным realized PnL.
         """
+        # Deduplicate repeated WS events (reconnects/duplicates)
         etype = event.get("e")
+        try:
+            ts = event.get("E")
+            oid = event.get("o", {}).get("i") if etype == "ORDER_TRADE_UPDATE" else None
+            eid = (etype, ts, oid)
+            if eid in self._ws_seen:
+                return
+            self._ws_seen.add(eid)
+            if len(self._ws_seen) > self._ws_seen_max:
+                # Keep a rolling window; order is not guaranteed but sufficient for lightweight dedup
+                self._ws_seen = set(list(self._ws_seen)[-self._ws_seen_max :])
+        except Exception:
+            pass
 
         # === ORDER_TRADE_UPDATE: ордера, сделки, ликвидации ===
         if etype == "ORDER_TRADE_UPDATE":
