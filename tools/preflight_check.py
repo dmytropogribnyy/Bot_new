@@ -129,7 +129,9 @@ def check_version_and_banner() -> bool:
             ver_ok = True
         if re.search(BANNER_RE, t):
             banner_present = True
-        if re.search(exact_pat, t) or re.search(short_pat, t):
+        # Accept either exact hardcoded version, short major.minor, or dynamic formatting using v%s
+        dynamic_fmt = re.search(r"Starting\s+BinanceBot\s+v%s", t)
+        if re.search(exact_pat, t) or re.search(short_pat, t) or (dynamic_fmt and ver_ok):
             banner_version_ok = True
 
     res = True
