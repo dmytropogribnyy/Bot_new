@@ -5,7 +5,6 @@ on:
     pull_request:
     workflow_dispatch:
 
-# чтобы параллельные пушки не гоняли дубли одного и того же workflow
 concurrency:
     group: ci-${{ github.ref }}
     cancel-in-progress: true
@@ -13,6 +12,8 @@ concurrency:
 jobs:
     test-and-guard:
         runs-on: ubuntu-latest
+        env:
+            PYTHONPATH: ${{ github.workspace }}
 
         steps:
             - name: Checkout
@@ -40,9 +41,10 @@ jobs:
             - name: Sanity – show pytest & plugins
               run: |
                   python - << 'PY'
-                  import pkgutil, sys
-                  import pytest
+                  import pkgutil, os, sys, pytest
                   print("pytest:", pytest.__version__)
+                  print("PYTHONPATH:", os.environ.get("PYTHONPATH"))
+                  print("sys.path[0]:", sys.path[0])
                   plugins = [m.name for m in pkgutil.iter_modules() if m.name.startswith("pytest")]
                   print("pytest plugins:", ", ".join(sorted(plugins)))
                   try:
@@ -56,7 +58,6 @@ jobs:
               run: python validate_project.py
 
             - name: Pytests
-              # можно заменить на `pytest -q` если нужен более тихий вывод
               run: pytest -v
 
             - name: Install ripgrep
