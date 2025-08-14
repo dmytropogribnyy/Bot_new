@@ -67,6 +67,9 @@ class OptimizedExchangeClient:
             # some compatibility paths may still call it without one. This avoids noisy logs/Telegram.
             try:
                 opts = dict(getattr(self.exchange, "options", {}) or {})
+                # Ensure time sync and sane recvWindow immediately after client init
+                opts["adjustForTimeDifference"] = True
+                opts["recvWindow"] = 10_000
                 opts["warnOnFetchOpenOrdersWithoutSymbol"] = False
                 self.exchange.options = opts
             except Exception:

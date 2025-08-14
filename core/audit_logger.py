@@ -76,14 +76,14 @@ class AuditLogger:
         )
 
     # --------- Time helpers (UTC) ---------
-    # Backward-compatible UTC alias for Python < 3.11
-    _UTC = getattr(datetime, "UTC", UTC)
+    _UTC = UTC
 
     def _today_str(self) -> str:
         return datetime.now(self._UTC).strftime("%Y%m%d")
 
     def _now_iso(self) -> str:
-        return datetime.now(self._UTC).isoformat()
+        # Example: 2025-08-14T15:32:10Z
+        return datetime.now(self._UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # --------- File management / rotation ---------
     def _set_files(self) -> None:

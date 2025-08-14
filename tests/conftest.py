@@ -1,6 +1,13 @@
+# tests/conftest.py
 import sys
 from pathlib import Path
 
+# КРИТИЧНО: Сначала добавляем корень проекта в sys.path
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Теперь безопасно импортировать проект
 import pytest
 import pytest_asyncio
 
@@ -9,22 +16,17 @@ from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager
 from core.unified_logger import UnifiedLogger
 
-# Ensure project root on sys.path for core imports when running from tests dir
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 @pytest.fixture
 def symbol() -> str:
-    """Provide a default symbol for tests expecting a 'symbol' fixture."""
+    """Дефолтный символ для тестов, где ожидается фикстура 'symbol'."""
     return "BTC/USDT:USDT"
 
 
 @pytest_asyncio.fixture
 async def exchange_client():
-    """Create an exchange client and ensure it is closed to avoid session leaks."""
-    config = TradingConfig()
+    """Создаёт exchange‑клиент и гарантированно закрывает его (без утечек сессий)."""
+    config = TradingConfig()  # или TradingConfig.from_env() — если хочешь идти через маппинг .env
     logger = UnifiedLogger(config)
     client = OptimizedExchangeClient(config, logger)
     try:
@@ -38,7 +40,7 @@ async def exchange_client():
 
 @pytest_asyncio.fixture
 async def order_manager(exchange_client):
-    """Provide an OrderManager wired to the exchange client, with a real logger."""
+    """OrderManager, связанный с exchange_client, с реальным логгером."""
     config = exchange_client.config
     logger = UnifiedLogger(config)
     om = OrderManager(config, exchange_client, logger)

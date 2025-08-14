@@ -142,7 +142,7 @@ class ColoredFormatter(logging.Formatter):
 class JSONLFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_obj: dict[str, Any] = {
-            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "level": record.levelname,
             "name": record.name,
             "tag": getattr(record, "tag", "SYSTEM"),
@@ -238,9 +238,7 @@ def setup_logging(
     level_console = level_console or env_str("LOG_CONSOLE_LEVEL", "INFO")
     level_file = level_file or env_str("LOG_FILE_LEVEL", "INFO")
 
-    use_emoji = env_bool("LOG_EMOJI", True) and sys.stdout.isatty()
     use_rich = env_bool("LOG_RICH", True) and RICH_AVAILABLE and sys.stdout.isatty()
-    use_color = env_bool("LOG_COLOR", True) and sys.stdout.isatty()
 
     rate_limit_secs = int(env_str("LOG_RATE_LIMIT_SECS", "60"))
     dedup_window_secs = int(env_str("LOG_DEDUP_WINDOW_SECS", "60"))
@@ -256,6 +254,13 @@ def setup_logging(
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
+    # UTC formatter for human-readable logs
+    utc_formatter = logging.Formatter(
+        fmt="%(asctime)sZ | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    utc_formatter.converter = time.gmtime  # type: ignore[attr-defined]
+
     # Console
     if use_rich:
         console_handler = RichHandler(
@@ -267,7 +272,7 @@ def setup_logging(
         )
     else:
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(ColoredFormatter(use_emoji=use_emoji, use_color=use_color))
+    console_handler.setFormatter(utc_formatter)
     console_handler.setLevel(getattr(logging, level_console.upper(), logging.INFO))
     console_handler.addFilter(DuplicateFilter(dedup_window_secs))
     console_handler.addFilter(RateLimitFilter(window_secs=rate_limit_secs))
@@ -283,8 +288,7 @@ def setup_logging(
         compress=compress,
         encoding="utf-8",
     )
-    readable_format = "%(asctime)s | %(levelname)-7s | [%(tag)-10s] %(message)s"
-    readable_handler.setFormatter(logging.Formatter(readable_format, datefmt="%Y-%m-%d %H:%M:%S"))
+    readable_handler.setFormatter(utc_formatter)
     readable_handler.setLevel(getattr(logging, level_file.upper(), logging.INFO))
     logger.addHandler(readable_handler)
 
@@ -326,7 +330,7 @@ def set_tag(logger_obj: logging.LoggerAdapter, tag: str) -> None:
 
 # ============= Session banners =============
 def print_session_banner_start(logger_obj: logging.LoggerAdapter | logging.Logger, run_id: str, mode: str) -> None:
-    time_str = datetime.now().strftime("%H:%M:%S")
+    time_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     banner = f"{'─' * 10} START [{run_id}] mode={mode} time={time_str} {'─' * 10}"
     underline = "_" * len(banner)
     emit = logger_obj.info if hasattr(logger_obj, "info") else print

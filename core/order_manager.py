@@ -78,7 +78,7 @@ class OrderManager:
 
         # Initialize risk management
         self.risk_guard_f = RiskGuardStageF(self.config, self.logger)
-        self.deposit_usdc = 400  # Trading deposit
+        self.deposit_usdc = self.config.trading_deposit  # Trading deposit
         self.logger.log_event("ORDER_MANAGER", "INFO", "Risk Guard Stage F initialized")
 
         # Audit logger (env-scoped)
@@ -86,6 +86,21 @@ class OrderManager:
             self.audit = get_audit_logger(testnet=self.config.testnet)
         except Exception:
             self.audit = None  # optional
+
+    async def get_trading_capital(self) -> float:
+        """
+        Возвращает капитал для расчёта risk/margin:
+        - при use_dynamic_balance=True: фактический quote-баланс * balance_percentage
+        - иначе: фиксированный trading_deposit
+        """
+        if getattr(self.config, "use_dynamic_balance", False):
+            try:
+                balance = await self.exchange.get_quote_balance()  # уже реализовано в exchange_client
+                return float(balance) * float(getattr(self.config, "balance_percentage", 0.95))
+            except Exception as e:
+                self.logger.log_event("ORDER_MANAGER", "WARNING", f"[CAPITAL] fallback to fixed deposit: {e}")
+                return float(self.config.trading_deposit)
+        return float(self.config.trading_deposit)
 
     def _ensure_pos_cache(self):
         """Инициализировать кэш позиций если его нет"""
@@ -308,17 +323,18 @@ class OrderManager:
             if not current_price:
                 return {"success": False, "reason": "NO_PRICE"}
 
-            # 5. Calculate position size from risk
-            risk_pct = 0.0075  # 0.75% = $3 for $400 deposit
-            risk_usdc = self.deposit_usdc * risk_pct
+            # 5. Calculate position size from risk (dynamic/static capital)
+            capital = await self.get_trading_capital()
+            risk_pct = 0.0075  # 0.75% от капитала
+            risk_usdc = float(capital) * risk_pct
             sl_percent = float(self.config.stop_loss_percent)
 
             sizing = await calculate_position_from_risk(
                 self.exchange, symbol, current_price, risk_usdc, sl_percent, leverage
             )
 
-            # 6. Check margin limits
-            ok_margin, msg = await check_margin_before_entry(self, symbol, sizing.margin, self.deposit_usdc)
+            # 6. Check margin limits against available capital
+            ok_margin, msg = await check_margin_before_entry(self, symbol, sizing.margin, capital)
             if not ok_margin:
                 self.logger.log_event("RISK_CHECK", "WARNING", f"Margin check failed: {msg}")
                 return {"success": False, "reason": msg}

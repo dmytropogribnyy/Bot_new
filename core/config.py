@@ -45,6 +45,11 @@ class TradingConfig(BaseModel):
     max_position_size_usdt: float = Field(default=100.0, description="Maximum position size in USDT")
     default_leverage: int = Field(default=5, description="Default leverage for positions")
 
+    trading_deposit: float = Field(default=400.0, description="Base trading deposit in quote currency")
+
+    use_dynamic_balance: bool = Field(default=False, description="Use real futures balance instead of fixed deposit")
+    balance_percentage: float = Field(default=0.95, description="Fraction of available quote balance to use")
+
     # Risk Management
     stop_loss_percent: float = Field(default=1.2, description="Default stop loss percentage")
     take_profit_percent: float = Field(default=1.8, description="Default take profit percentage")
