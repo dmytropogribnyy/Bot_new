@@ -17,9 +17,6 @@
     "files.insertFinalNewline": true,
     "files.trimFinalNewlines": true,
 
-    // Ruff аргументы (новый ключ для расширения VS Code)
-    "ruff.lint.args": ["--config=pyproject.toml"],
-
     // Отключаем другие линтеры
     "python.linting.enabled": false,
     "python.linting.pylintEnabled": false,

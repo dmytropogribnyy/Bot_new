@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # === Module-level env helpers (Stage B centralization) ===
@@ -302,9 +302,7 @@ class TradingConfig(BaseModel):
 
         return cfg
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = ConfigDict()
 
     def __init__(self, **data):
         # Load .env file manually
