@@ -4,9 +4,10 @@
   "base_risk_pct": 0.005,
   "min_risk_factor": 0.8,
 
-  "atr_threshold_percent": 0.0006,
-  "volume_threshold_usdc": 10000,
-  "rel_volume_threshold": 0.15,
+  "atr_threshold_percent": 0.0,
+  "volume_threshold": 0,
+  "volume_threshold_usdc": 0,
+  "rel_volume_threshold": 0,
   "rsi_threshold": 30,
   "min_macd_strength": 0.00001,
   "min_rsi_strength": 0.5,

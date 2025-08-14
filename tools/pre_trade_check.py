@@ -22,7 +22,11 @@ async def check_spread(exchange, symbol: str, max_pct: float = 0.1) -> bool:
         if not bid or not ask:
             return False
 
-        spread = abs(ask - bid) / bid * 100.0
+        # Use midprice-based spread percent
+        mid = (ask + bid) / 2.0
+        if mid <= 0:
+            return False
+        spread = abs(ask - bid) / mid * 100.0
         return spread <= max_pct
     except Exception:
         return False
@@ -45,8 +49,18 @@ async def can_enter_position(
     # Volume check
     checks["volume"] = await check_volume(exchange, symbol, planned_margin_usdc)
 
-    # Spread check
-    checks["spread"] = await check_spread(exchange, symbol, 0.1)
+    # Spread check (configurable, allow disabling on testnet)
+    try:
+        max_spread = float(getattr(order_manager.config, "max_spread_pct", 0.20))
+    except Exception:
+        max_spread = 0.20
+    # Allow disabling on testnet
+    if getattr(order_manager.config, "testnet", False) and getattr(
+        order_manager.config, "disable_spread_filter_testnet", True
+    ):
+        checks["spread"] = True
+    else:
+        checks["spread"] = await check_spread(exchange, symbol, max_spread)
 
     # Position limit check
     max_positions = getattr(order_manager.config, "max_concurrent_positions", 2)

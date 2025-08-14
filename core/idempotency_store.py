@@ -22,7 +22,7 @@ class IdempotencyStore:
     def load(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         if os.path.exists(self.path):
-            with open(self.path, encoding="utf-8") as f:
+            with open(self.path, encoding="utf-8", errors="replace") as f:
                 self._cache = json.load(f)
         else:
             self._cache = {}
@@ -30,7 +30,7 @@ class IdempotencyStore:
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", errors="replace") as f:
             json.dump(self._cache, f, ensure_ascii=False)
         os.replace(tmp, self.path)  # атомарно
 

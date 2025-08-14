@@ -41,7 +41,7 @@ class RiskGuardStageF:
     def _load_state(self) -> GlobalRiskState:
         try:
             if os.path.exists(self.state_path):
-                with open(self.state_path, encoding="utf-8") as f:
+                with open(self.state_path, encoding="utf-8", errors="replace") as f:
                     data = json.load(f)
                 return GlobalRiskState(**data)
         except Exception:
@@ -52,7 +52,7 @@ class RiskGuardStageF:
     def _save(self) -> None:
         try:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
-            with open(self.state_path, "w", encoding="utf-8") as f:
+            with open(self.state_path, "w", encoding="utf-8", errors="replace") as f:
                 json.dump(self.state.__dict__, f)
         except Exception:
             pass

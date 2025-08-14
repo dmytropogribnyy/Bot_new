@@ -145,7 +145,13 @@ class TradingConfig(BaseModel):
     bonus_profit_threshold: float = Field(default=2.0, description="Bonus profit threshold")
     max_hold_minutes: int = Field(default=10, description="Maximum hold time")
     min_profit_threshold: float = Field(default=0.06, description="Minimum profit threshold")
-    entry_cooldown_seconds: int = Field(default=300, description="Cooldown between entries on same symbol")
+    entry_cooldown_seconds: int = Field(default=0, description="Cooldown between entries on same symbol")
+
+    # Spread filter configuration
+    max_spread_pct: float = Field(default=0.20, description="Maximum allowed bid-ask spread percent")
+    disable_spread_filter_testnet: bool = Field(
+        default=True, description="Disable spread filter on testnet (unless explicitly turned off)"
+    )
 
     # Multi-TP levels (optional)
     tp1_percent: float | None = Field(default=None)
@@ -173,7 +179,7 @@ class TradingConfig(BaseModel):
     min_total_qty_for_tp_full: float = Field(default=0.002, description="Minimum total quantity for TP")
 
     # Limits and Safety
-    max_hourly_trade_limit: int = Field(default=15, description="Maximum hourly trades")
+    max_hourly_trade_limit: int = Field(default=0, description="Maximum hourly trades")
     max_capital_utilization_pct: float = Field(default=0.8, description="Maximum capital utilization")
     max_margin_percent: float = Field(default=0.4, description="Maximum margin percentage")
     max_slippage_pct: float = Field(default=0.02, description="Maximum slippage")
@@ -277,6 +283,15 @@ class TradingConfig(BaseModel):
             max_margin_percent=env_float("MAX_MARGIN_PERCENT", getattr(cls, "max_margin_percent", 0.4)),
             max_slippage_pct=env_float("MAX_SLIPPAGE_PCT", getattr(cls, "max_slippage_pct", 0.02)),
             risk_multiplier=env_float("RISK_MULTIPLIER", getattr(cls, "risk_multiplier", 1.0)),
+            # Dynamic balance & deposit
+            use_dynamic_balance=env_bool("USE_DYNAMIC_BALANCE", getattr(cls, "use_dynamic_balance", False)),
+            balance_percentage=env_float("BALANCE_PERCENTAGE", getattr(cls, "balance_percentage", 0.95)),
+            trading_deposit=env_float("TRADING_DEPOSIT", getattr(cls, "trading_deposit", 400.0)),
+            # Spread filter
+            max_spread_pct=env_float("MAX_SPREAD_PCT", getattr(cls, "max_spread_pct", 0.20)),
+            disable_spread_filter_testnet=env_bool(
+                "DISABLE_SPREAD_FILTER_TESTNET", getattr(cls, "disable_spread_filter_testnet", True)
+            ),
             # TP/SL (only stop_loss_percent and take_profit_percent are used)
             take_profit_percent=env_float("TAKE_PROFIT_PERCENT", getattr(cls, "take_profit_percent", 1.8)),
             stop_loss_percent=env_float("STOP_LOSS_PERCENT", getattr(cls, "stop_loss_percent", 1.2)),
@@ -294,6 +309,9 @@ class TradingConfig(BaseModel):
             enable_websocket=env_bool("ENABLE_WEBSOCKET", getattr(cls, "enable_websocket", False)),
             ws_reconnect_interval=env_int("WS_RECONNECT_INTERVAL", getattr(cls, "ws_reconnect_interval", 5)),
             ws_heartbeat_interval=env_int("WS_HEARTBEAT_INTERVAL", getattr(cls, "ws_heartbeat_interval", 30)),
+            # Entry controls
+            entry_cooldown_seconds=env_int("ENTRY_COOLDOWN_SECONDS", getattr(cls, "entry_cooldown_seconds", 0)),
+            max_hourly_trade_limit=env_int("MAX_HOURLY_TRADE_LIMIT", getattr(cls, "max_hourly_trade_limit", 0)),
         )
 
         # Optional QUOTE_COIN override: {USDT, USDC}; default auto-resolve (testnet→USDT, prod→USDC)
@@ -407,6 +425,16 @@ class TradingConfig(BaseModel):
             # Multi-TP (optional parsing; lists may still come from runtime_config.json)
             "STEP_TP_LEVELS": "step_tp_levels",
             "STEP_TP_SIZES": "step_tp_sizes",
+            # Dynamic balance & deposit
+            "USE_DYNAMIC_BALANCE": "use_dynamic_balance",
+            "BALANCE_PERCENTAGE": "balance_percentage",
+            "TRADING_DEPOSIT": "trading_deposit",
+            # Entry controls
+            "ENTRY_COOLDOWN_SECONDS": "entry_cooldown_seconds",
+            "MAX_HOURLY_TRADE_LIMIT": "max_hourly_trade_limit",
+            # Spread filter
+            "MAX_SPREAD_PCT": "max_spread_pct",
+            "DISABLE_SPREAD_FILTER_TESTNET": "disable_spread_filter_testnet",
         }
 
         for env_var, config_key in env_mapping.items():
@@ -422,6 +450,8 @@ class TradingConfig(BaseModel):
                 "telegram_enabled",
                 "log_to_file",
                 "log_to_console",
+                "use_dynamic_balance",
+                "disable_spread_filter_testnet",
             ):
                 setattr(self, config_key, val.lower() in ("true", "1", "yes", "on"))
                 continue
@@ -432,6 +462,8 @@ class TradingConfig(BaseModel):
                 "max_positions",
                 "default_leverage",
                 "max_concurrent_positions",
+                "entry_cooldown_seconds",
+                "max_hourly_trade_limit",
             ):
                 try:
                     setattr(self, config_key, int(val))
@@ -448,6 +480,9 @@ class TradingConfig(BaseModel):
                 "max_capital_utilization_pct",
                 "max_margin_percent",
                 "risk_multiplier",
+                "balance_percentage",
+                "trading_deposit",
+                "max_spread_pct",
             ):
                 try:
                     setattr(self, config_key, float(val))

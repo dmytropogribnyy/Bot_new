@@ -55,7 +55,7 @@ class OptimizedExchangeClient:
                 "options": {
                     "defaultType": "future",
                     "adjustForTimeDifference": True,
-                    "recvWindow": 60000,
+                    "recvWindow": 10000,
                 },
             }
 
@@ -69,7 +69,7 @@ class OptimizedExchangeClient:
                 opts = dict(getattr(self.exchange, "options", {}) or {})
                 # Ensure time sync and sane recvWindow immediately after client init
                 opts["adjustForTimeDifference"] = True
-                opts["recvWindow"] = 10_000
+                opts["recvWindow"] = 10000
                 opts["warnOnFetchOpenOrdersWithoutSymbol"] = False
                 self.exchange.options = opts
             except Exception:

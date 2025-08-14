@@ -170,7 +170,7 @@ class AuditLogger:
                 os.fsync(f.fileno())
             return
 
-        with open(path, "a", buffering=1, encoding="utf-8") as f:
+        with open(path, "a", buffering=1, encoding="utf-8", errors="replace") as f:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
@@ -316,7 +316,7 @@ class AuditLogger:
             "audit_hash": self.last_hash,
         }
         # Write report as JSON
-        with open(self.daily_report_file, "w", encoding="utf-8") as f:
+        with open(self.daily_report_file, "w", encoding="utf-8", errors="replace") as f:
             json.dump(report, f, indent=2)
         self._write_event(AuditLevel.INFO, "DAILY_REPORT_GENERATED", {"report_file": str(self.daily_report_file)})
         return report
