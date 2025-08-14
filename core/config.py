@@ -353,9 +353,9 @@ class TradingConfig(BaseModel):
                     with open(config_file, encoding="utf-8") as f:
                         file_config = json.load(f)
 
-                    # Update only non-empty values
+                    # Update values present in file (allow 0/False), only known attributes
                     for key, value in file_config.items():
-                        if value and hasattr(self, key):
+                        if hasattr(self, key) and value is not None:
                             setattr(self, key, value)
 
                     print(f"Loaded configuration from {config_file}")
@@ -365,25 +365,100 @@ class TradingConfig(BaseModel):
 
     def _load_from_env(self):
         """Load configuration from environment variables"""
+        # Map .env keys to model fields (names must match attributes)
         env_mapping = {
+            # API
             "BINANCE_API_KEY": "api_key",
             "BINANCE_API_SECRET": "api_secret",
             "BINANCE_TESTNET": "testnet",
+            "DRY_RUN": "dry_run",
+            # Logging
+            "LOG_LEVEL": "log_level",
+            "LOG_TO_FILE": "log_to_file",
+            "LOG_TO_CONSOLE": "log_to_console",
+            # Telegram
             "TELEGRAM_TOKEN": "telegram_token",
             "TELEGRAM_CHAT_ID": "telegram_chat_id",
-            "LOG_LEVEL": "log_level",
-            "DRY_RUN": "dry_run",
+            "TELEGRAM_ENABLED": "telegram_enabled",
+            # WebSocket
+            "ENABLE_WEBSOCKET": "enable_websocket",
+            "WS_RECONNECT_INTERVAL": "ws_reconnect_interval",
+            "WS_HEARTBEAT_INTERVAL": "ws_heartbeat_interval",
+            # Execution
+            "WORKING_TYPE": "working_type",
+            "TP_ORDER_STYLE": "tp_order_style",
+            # Positions / Risk
+            "MAX_POSITIONS": "max_positions",
+            "MIN_POSITION_SIZE_USDT": "min_position_size_usdt",
+            "MAX_POSITION_SIZE_USDT": "max_position_size_usdt",
+            "LEVERAGE_DEFAULT": "default_leverage",
+            "STOP_LOSS_PERCENT": "stop_loss_percent",
+            "TAKE_PROFIT_PERCENT": "take_profit_percent",
+            "MAX_SLIPPAGE_PCT": "max_slippage_pct",
+            "MAX_CAPITAL_UTILIZATION_PCT": "max_capital_utilization_pct",
+            "MAX_MARGIN_PERCENT": "max_margin_percent",
+            "MAX_CONCURRENT_POSITIONS": "max_concurrent_positions",
+            "RISK_MULTIPLIER": "risk_multiplier",
+            # Multi-TP (optional parsing; lists may still come from runtime_config.json)
+            "STEP_TP_LEVELS": "step_tp_levels",
+            "STEP_TP_SIZES": "step_tp_sizes",
         }
 
         for env_var, config_key in env_mapping.items():
-            env_value = os.getenv(env_var)
-            if env_value is not None:
-                if config_key == "testnet":
-                    setattr(self, config_key, env_value.lower() == "true")
-                elif config_key == "dry_run":
-                    setattr(self, config_key, env_value.lower() == "true")
-                else:
-                    setattr(self, config_key, env_value)
+            raw = os.getenv(env_var)
+            if raw is None:
+                continue
+            val = raw.strip()
+            # booleans
+            if config_key in (
+                "testnet",
+                "dry_run",
+                "enable_websocket",
+                "telegram_enabled",
+                "log_to_file",
+                "log_to_console",
+            ):
+                setattr(self, config_key, val.lower() in ("true", "1", "yes", "on"))
+                continue
+            # ints
+            if config_key in (
+                "ws_reconnect_interval",
+                "ws_heartbeat_interval",
+                "max_positions",
+                "default_leverage",
+                "max_concurrent_positions",
+            ):
+                try:
+                    setattr(self, config_key, int(val))
+                except Exception:
+                    pass
+                continue
+            # floats
+            if config_key in (
+                "min_position_size_usdt",
+                "max_position_size_usdt",
+                "stop_loss_percent",
+                "take_profit_percent",
+                "max_slippage_pct",
+                "max_capital_utilization_pct",
+                "max_margin_percent",
+                "risk_multiplier",
+            ):
+                try:
+                    setattr(self, config_key, float(val))
+                except Exception:
+                    pass
+                continue
+            # strings (working_type, tp_order_style, tokens, etc.)
+            setattr(self, config_key, val)
+
+        # Optional QUOTE_COIN override (USDT/USDC) in normal ctor
+        try:
+            qc = os.getenv("QUOTE_COIN")
+            if qc and qc.strip().upper() in ("USDT", "USDC"):
+                object.__setattr__(self, "_quote_coin_override", qc.strip().upper())
+        except Exception:
+            pass
 
     def get_telegram_credentials(self) -> tuple[str, str]:
         """Get Telegram credentials"""

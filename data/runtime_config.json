@@ -13,28 +13,29 @@
 
   "step_tp_levels": [0.006, 0.012, 0.018],
   "step_tp_sizes": [0.5, 0.3, 0.2],
-  "SL_PERCENT": 0.008,
-  "FORCE_SL_ALWAYS": true,
+  "sl_percent": 0.008,
+  "force_sl_always": true,
   "sl_retry_limit": 3,
 
   "auto_profit_enabled": true,
   "auto_profit_threshold": 0.8,
   "bonus_profit_threshold": 1.5,
-  "max_hold_minutes": 15,
+  "max_hold_minutes": 5,
 
-  "MIN_NOTIONAL_OPEN": 6.0,
-  "MIN_NOTIONAL_ORDER": 5.0,
+  "min_notional_open": 6.0,
+  "min_notional_order": 5.0,
 
-  "max_hourly_trade_limit": 10,
+  "entry_cooldown_seconds": 120,
+  "max_hourly_trade_limit": 6,
   "hourly_limit_check_mode": "active_only",
   "cycle_interval_seconds": 5,
 
-  "max_capital_utilization_pct": 50,
-  "max_margin_percent": 40,
-  "max_slippage_pct": 2,
+  "max_capital_utilization_pct": 0.50,
+  "max_margin_percent": 0.40,
+  "max_slippage_pct": 0.02,
 
-  "min_dynamic_pairs": 5,
-  "max_dynamic_pairs": 10,
+  "min_dynamic_pairs": 2,
+  "max_dynamic_pairs": 3,
 
   "monitoring_hours_utc": [8,9,10,11,12,13,14,15,16,17,18,19,20],
 
@@ -47,11 +48,16 @@
   "position_close_threshold": 0.000001,
   "position_close_retry_limit": 5,
   "market_reload_retry_limit": 3,
-  "adaptive_tp_threshold_enabled": true,
+
+  "adaptive_tp_threshold_enabled": false,
   "tp_min_trades_initial": 10,
   "tp_min_trades_full": 20,
   "tp_update_threshold_initial": 0.1,
   "tp_update_threshold_full": 0.2,
+
   "bot_status": "running",
-  "last_adaptation_timestamp": null
+  "last_adaptation_timestamp": null,
+
+  "usdt_symbols": ["BTCUSDT", "ETHUSDT"],
+  "usdc_symbols": ["BTCUSDC", "ETHUSDC", "SOLUSDC"]
 }

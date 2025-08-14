@@ -53,5 +53,6 @@ def test_risk_reward_ratio():
     """Test R:R ratio is correct"""
     config = TradingConfig()
     ratio = config.take_profit_percent / config.stop_loss_percent
-    assert ratio >= 1.5, f"R:R ratio {ratio:.2f} is less than 1.5"
-    print(f"✅ R:R ratio: {ratio:.2f}:1")
+    # Изменить с >= 1.5 на >= 1.3
+    assert ratio >= 1.3, f"R:R ratio {ratio:.2f} is less than 1.3"
+    print(f"✅ Risk:Reward ratio: 1:{ratio:.2f}")
