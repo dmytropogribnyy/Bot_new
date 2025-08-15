@@ -595,6 +595,38 @@ class OrderManager:
             pass
         return None
 
+    async def get_trigger_ref_price(self, symbol: str, working_type: str) -> tuple[float, float, float]:
+        """Return (trigger_ref, mark, last) based on working_type, tolerant to missing fields."""
+        try:
+            ticker = await self.exchange.get_ticker(symbol)
+        except Exception:
+            ticker = None
+        info = {}
+        try:
+            info = (ticker or {}).get("info", {}) or {}
+        except Exception:
+            info = {}
+
+        def as_float(x) -> float | None:
+            try:
+                return float(x)
+            except Exception:
+                return None
+
+        last = as_float((ticker or {}).get("last")) or as_float((ticker or {}).get("close"))
+        mark = as_float((ticker or {}).get("markPrice")) or as_float(info.get("markPrice")) or last
+        if last is None:
+            last = (
+                mark if mark is not None else as_float((ticker or {}).get("bid")) or as_float((ticker or {}).get("ask"))
+            )
+        if mark is None:
+            mark = last
+        if str(working_type).upper() == "MARK_PRICE":
+            trigger_ref = mark if mark is not None else (last or 0.0)
+        else:
+            trigger_ref = last if last is not None else (mark or 0.0)
+        return float(trigger_ref or 0.0), float(mark or 0.0), float(last or 0.0)
+
     def _make_client_id(self, symbol: str, order_type: str) -> str:
         import hashlib
         import time
@@ -801,8 +833,8 @@ class OrderManager:
             current_price = float((ticker or {}).get("last") or (ticker or {}).get("close") or entry_price)
         except Exception:
             current_price = float(entry_price)
-        # use min 2 ticks or 2 bps (whichever is larger)
-        price_buffer = float(min_price_buffer(current_price, tick_size, min_basis_points=2.0, min_ticks=2))
+        # use min 2 ticks or 2 bps (whichever is larger) — kept for compatibility in some paths
+        _ = float(min_price_buffer(current_price, tick_size, min_basis_points=2.0, min_ticks=2))
         close_side = "sell" if side == "buy" else "buy"
 
         # 3.1) Auto-increase quantity for BTC/ETH to reach minQty if allowed and budget permits
@@ -858,19 +890,22 @@ class OrderManager:
         except Exception:
             pass
 
-        # 5) SL — compute, tick-quantize, and nudge
+        # 5) SL — compute vs trigger reference with robust retries
         sl_percent = float(getattr(self.config, "stop_loss_percent", 0.0))
+        entry_sl = entry_price * (1 - _pct(sl_percent)) if side == "buy" else entry_price * (1 + _pct(sl_percent))
+        # Seed with initial trigger ref
+        trigger_ref_initial, mark0, last0 = await self.get_trigger_ref_price(symbol, self.config.working_type)
         if side == "buy":
-            sl_raw = max(entry_price * (1 - _pct(sl_percent)), current_price - price_buffer)
-            sl_price = round_to_tick(sl_raw, tick_size, direction="down")
-            sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
+            barrier0 = round_to_tick(trigger_ref_initial - 2 * float(tick_size), tick_size, direction="down")
+            sl_candidate0 = min(entry_sl, barrier0)
+            sl_price0 = round_to_tick(sl_candidate0, tick_size, direction="down")
+            sl_price0 = nudge_price(sl_price0, trigger_ref_initial, tick_size, side=side, is_sl=True, min_ticks=2)
         else:
-            sl_raw = min(entry_price * (1 + _pct(sl_percent)), current_price + price_buffer)
-            sl_price = round_to_tick(sl_raw, tick_size, direction="up")
-            sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
-
-        # Normalize SL with exchange schema
-        sl_price_norm, sl_qty_norm, _ = normalize(float(sl_price), float(order_qty), market, current_price, symbol)
+            barrier0 = round_to_tick(trigger_ref_initial + 2 * float(tick_size), tick_size, direction="up")
+            sl_candidate0 = max(entry_sl, barrier0)
+            sl_price0 = round_to_tick(sl_candidate0, tick_size, direction="up")
+            sl_price0 = nudge_price(sl_price0, trigger_ref_initial, tick_size, side=side, is_sl=True, min_ticks=2)
+        sl_price_norm, sl_qty_norm, _ = normalize(float(sl_price0), float(order_qty), market, current_price, symbol)
         # Idempotent client ID for SL
         env = getattr(self.config, "ENV", "PROD")
         strategy = getattr(self.config, "STRATEGY", "DEFAULT")
@@ -894,6 +929,20 @@ class OrderManager:
         while attempt < max_attempts:
             attempt += 1
             cid_attempt = cid_sl if attempt == 1 else self._make_client_id(symbol, f"SLr{attempt}")
+            # Refresh trigger reference each attempt
+            trigger_ref, mark, last = await self.get_trigger_ref_price(symbol, self.config.working_type)
+            k_ticks = max(2, 2 + attempt)
+            if side == "buy":
+                barrier = round_to_tick(trigger_ref - k_ticks * float(tick_size), tick_size, direction="down")
+                sl_candidate = min(entry_sl, barrier)
+                sl_calc = round_to_tick(sl_candidate, tick_size, direction="down")
+                sl_calc = nudge_price(sl_calc, trigger_ref, tick_size, side=side, is_sl=True, min_ticks=2)
+            else:
+                barrier = round_to_tick(trigger_ref + k_ticks * float(tick_size), tick_size, direction="up")
+                sl_candidate = max(entry_sl, barrier)
+                sl_calc = round_to_tick(sl_candidate, tick_size, direction="up")
+                sl_calc = nudge_price(sl_calc, trigger_ref, tick_size, side=side, is_sl=True, min_ticks=2)
+            sl_price_norm, sl_qty_norm, _ = normalize(float(sl_calc), float(order_qty), market, current_price, symbol)
             sl_params = {
                 "stopPrice": float(sl_price_norm),
                 "reduceOnly": True,
@@ -905,7 +954,8 @@ class OrderManager:
                 self.logger.log_event(
                     "ORDER_MANAGER",
                     "DEBUG",
-                    f"{symbol}: SL  = {entry_price:.6f} * (1 {'-' if side == 'buy' else '+'} {sl_percent:.4f}/100) = {float(sl_raw):.6f} -> {float(sl_price_norm):.6f}",
+                    f"{symbol}: workingType={self.config.working_type} mark={float(mark):.6f} last={float(last):.6f} "
+                    f"attempt={attempt}/{max_attempts} k_ticks={k_ticks} -> SL={float(sl_price_norm):.6f}",
                 )
                 sl_order = await self.exchange.create_order(
                     symbol,
@@ -919,18 +969,7 @@ class OrderManager:
             except Exception as e:
                 es = str(e)
                 if "-2021" in es or "immediately" in es.lower():
-                    # Increase distance by 1 tick and retry
-                    if side == "buy":
-                        sl_price = sl_price - float(tick_size)
-                        sl_price = round_to_tick(sl_price, tick_size, direction="down")
-                        sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
-                    else:
-                        sl_price = sl_price + float(tick_size)
-                        sl_price = round_to_tick(sl_price, tick_size, direction="up")
-                        sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
-                    sl_price_norm, sl_qty_norm, _ = normalize(
-                        float(sl_price), float(order_qty), market, current_price, symbol
-                    )
+                    # retry next loop; barrier will be increased via k_ticks
                     if attempt >= max_attempts:
                         self.logger.log_event(
                             "ORDER_MANAGER",
@@ -971,16 +1010,20 @@ class OrderManager:
                 )
                 continue
 
+            # Compute TP price relative to trigger reference with >=2-tick distance
+            trigger_ref_tp, mark_tp, last_tp = await self.get_trigger_ref_price(symbol, self.config.working_type)
             if side == "buy":
                 tp_raw = entry_price * (1 + _pct(tp_pct))
-                tp_price = max(tp_raw, current_price + price_buffer)
+                barrier_tp = round_to_tick(trigger_ref_tp + 2 * float(tick_size), tick_size, direction="up")
+                tp_price = max(tp_raw, barrier_tp)
                 tp_price = round_to_tick(tp_price, tick_size, direction="up")
-                tp_price = nudge_price(tp_price, current_price, tick_size, side=side, is_sl=False, min_ticks=2)
+                tp_price = nudge_price(tp_price, trigger_ref_tp, tick_size, side=side, is_sl=False, min_ticks=2)
             else:
                 tp_raw = entry_price * (1 - _pct(tp_pct))
-                tp_price = min(tp_raw, current_price - price_buffer)
+                barrier_tp = round_to_tick(trigger_ref_tp - 2 * float(tick_size), tick_size, direction="down")
+                tp_price = min(tp_raw, barrier_tp)
                 tp_price = round_to_tick(tp_price, tick_size, direction="down")
-                tp_price = nudge_price(tp_price, current_price, tick_size, side=side, is_sl=False, min_ticks=2)
+                tp_price = nudge_price(tp_price, trigger_ref_tp, tick_size, side=side, is_sl=False, min_ticks=2)
 
             # Normalize TP price/qty
             tp_price_norm, tp_qty_norm, _ = normalize(float(tp_price), float(tp_qty), market, current_price, symbol)
