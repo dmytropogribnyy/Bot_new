@@ -13,6 +13,8 @@ It intentionally avoids legacy dependencies from core/trade_engine.py.
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from core.config import TradingConfig
 from core.exchange_client import OptimizedExchangeClient
 from core.order_manager import OrderManager
@@ -43,10 +45,18 @@ class TradeEngineV2:
 
         # State
         self._last_symbols: list[str] = []
+        # Track symbols undergoing emergency close to suppress sync/guards
+        try:
+            if not hasattr(self.order_manager, "_emergency_closing"):
+                self.order_manager._emergency_closing = defaultdict(bool)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     async def run_cycle(self) -> None:
         """Run a single scan/evaluate/execute cycle."""
         try:
+            # Suppress activity if any symbol is in emergency close; engine can choose to pause
+            # (No-op here; actual suppression handled by OrderManager guards)
             if not self.exchange.is_initialized:
                 return
 
@@ -84,6 +94,15 @@ class TradeEngineV2:
                         continue
                     entry_price = ticker.get("last") or ticker.get("close")
                 if not entry_price:
+                    continue
+
+                # Short entry control
+                if direction == "sell" and not getattr(self.config, "allow_shorts", True):
+                    self.logger.log_event(
+                        "ENGINE",
+                        "INFO",
+                        f"{symbol}: SHORT signal skipped (ALLOW_SHORTS={getattr(self.config, 'allow_shorts', True)})",
+                    )
                     continue
 
                 # Position sizing: ensure minimum notional

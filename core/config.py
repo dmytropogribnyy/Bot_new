@@ -32,6 +32,45 @@ def env_bool(key: str, default: bool) -> bool:
     return str(val).strip().lower() in ("true", "1", "yes", "on")
 
 
+# New safe parsers for centralized .env overrides
+def _get_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    v2 = v.strip().lower()
+    if v2 in ("1", "true", "yes", "y", "on"):
+        return True
+    if v2 in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+
+def _get_int(name: str, default: int) -> int:
+    try:
+        v = os.getenv(name)
+        return int(v) if v is not None and v.strip() != "" else default
+    except Exception:
+        return default
+
+
+def _get_float(name: str, default: float) -> float:
+    try:
+        v = os.getenv(name)
+        return float(v) if v is not None and v.strip() != "" else default
+    except Exception:
+        return default
+
+
+def _get_json(name: str, default):
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
+    try:
+        return json.loads(v)
+    except Exception:
+        return default
+
+
 class TradingConfig(BaseModel):
     """Main configuration class for the trading bot"""
 
@@ -185,6 +224,9 @@ class TradingConfig(BaseModel):
     max_margin_percent: float = Field(default=0.4, description="Maximum margin percentage")
     max_slippage_pct: float = Field(default=0.02, description="Maximum slippage")
 
+    # Short trading control
+    allow_shorts: bool = Field(default=True)
+
     # Signal Settings
     min_primary_score: int = Field(default=1, description="Minimum primary score")
     min_secondary_score: int = Field(default=1, description="Minimum secondary score")
@@ -200,23 +242,23 @@ class TradingConfig(BaseModel):
     mandatory_sl: bool = True
 
     # Protective order defaults (configurable via env)
-    sl_order_type: str = Field(default="STOP_MARKET", env="SL_ORDER_TYPE")
-    tp_order_type: str = Field(default="TAKE_PROFIT_MARKET", env="TP_ORDER_TYPE")
-    time_in_force: str = Field(default="GTC", env="TIME_IN_FORCE")
-    reduce_only: bool = Field(default=True, env="REDUCE_ONLY")
+    sl_order_type: str = Field(default="STOP_MARKET")
+    tp_order_type: str = Field(default="TAKE_PROFIT_MARKET")
+    time_in_force: str = Field(default="GTC")
+    reduce_only: bool = Field(default=True)
 
     # Multiple TP and trailing stop controls (Stage: multiple-tp-trailing)
-    enable_multiple_tp: bool = Field(default=True, env="ENABLE_MULTIPLE_TP")
+    enable_multiple_tp: bool = Field(default=True)
     # Raw TP levels from env/file. Use property tp_levels to consume.
-    tp_levels_raw: list[dict] | str = Field(default=[], env="TP_LEVELS")
-    enable_trailing_stop: bool = Field(default=False, env="ENABLE_TRAILING_STOP")
-    trailing_stop_percent: float = Field(default=0.5, env="TRAILING_STOP_PERCENT")
-    trailing_activation_after_tp: int = Field(default=1, env="TRAILING_ACTIVATION_AFTER_TP")
+    tp_levels_raw: list[dict] | str = Field(default=[])
+    enable_trailing_stop: bool = Field(default=False)
+    trailing_stop_percent: float = Field(default=0.5)
+    trailing_activation_after_tp: int = Field(default=1)
 
     # Position sizing / minQty handling (auto-increase for BTC/ETH)
-    base_position_size_usdt: float = Field(default=20.0, env="BASE_POSITION_SIZE_USDT")
-    allow_auto_increase_for_min: bool = Field(default=True, env="ALLOW_AUTO_INCREASE_FOR_MIN")
-    max_auto_increase_usdt: float = Field(default=150.0, env="MAX_AUTO_INCREASE_USDT")
+    base_position_size_usdt: float = Field(default=20.0)
+    allow_auto_increase_for_min: bool = Field(default=True)
+    max_auto_increase_usdt: float = Field(default=150.0)
 
     # === Stage F additions (global daily guard) ===
     max_sl_streak: int = Field(default=3, description="Maximum consecutive stop-losses per day before blocking entries")
@@ -229,128 +271,79 @@ class TradingConfig(BaseModel):
     # === Stage B: Unified Config - from_env loader ===
     @classmethod
     def from_env(cls) -> "TradingConfig":
-        """Load configuration from environment variables (unified mapping).
+        """Centralized loader: defaults < runtime_config.json < .env overrides.
 
-        Note: This is additive and does not remove existing file/env loaders.
+        Creates an instance (which loads file config), then applies .env overrides using
+        safe parsers. Returns the finalized instance.
         """
+        self = cls()
 
-        def env_bool(key: str, default: bool) -> bool:
-            val = os.getenv(key)
-            if val is None:
-                return default
-            return str(val).strip().lower() in ("true", "1", "yes", "on")
-
-        def _clean_str(v: str) -> str:
-            v = v.split("#", 1)[0]
-            v = v.split(";", 1)[0]
-            return v.strip()
-
-        def env_int(key: str, default: int) -> int:
-            val = os.getenv(key)
-            if val is None:
-                return default
-            try:
-                return int(_clean_str(val))
-            except Exception:
-                return default
-
-        def env_float(key: str, default: float) -> float:
-            val = os.getenv(key)
-            if val is None:
-                return default
-            try:
-                return float(_clean_str(val))
-            except Exception:
-                return default
-
-        def env_str(key: str, default: str) -> str:
-            val = os.getenv(key)
-            return _clean_str(val) if val is not None else default
-
-        def env_list_float(key: str, default: list[float]) -> list[float]:
-            val = os.getenv(key)
-            if not val:
-                return default
-            try:
-                cleaned = _clean_str(val)
-                return [float(x.strip()) for x in cleaned.split(",") if x.strip()]
-            except Exception:
-                return default
-
-        cfg = cls(
-            # API
-            api_key=env_str("API_KEY", os.getenv("BINANCE_API_KEY", "") or ""),
-            api_secret=env_str("API_SECRET", os.getenv("BINANCE_API_SECRET", "") or ""),
-            testnet=env_bool("TESTNET", str(os.getenv("BINANCE_TESTNET", "true")).lower() == "true"),
-            dry_run=env_bool("DRY_RUN", False),
-            # Stage D
-            working_type=env_str("WORKING_TYPE", "MARK_PRICE"),
-            tp_order_style=env_str("TP_ORDER_STYLE", "limit"),
-            # Protective order types
-            sl_order_type=env_str("SL_ORDER_TYPE", "STOP_MARKET"),
-            tp_order_type=env_str("TP_ORDER_TYPE", "TAKE_PROFIT_MARKET"),
-            time_in_force=env_str("TIME_IN_FORCE", "GTC"),
-            reduce_only=env_bool("REDUCE_ONLY", True),
-            # Stage F
-            max_sl_streak=env_int("MAX_SL_STREAK", getattr(cls, "max_sl_streak", 3)),
-            daily_drawdown_pct=env_float("DAILY_DRAWDOWN_PCT", getattr(cls, "daily_drawdown_pct", 3.0)),
-            enable_stage_f_guard=env_bool("ENABLE_STAGE_F_GUARD", True),
-            stage_f_state_path=env_str("STAGE_F_STATE_PATH", "data/runtime/stage_f_state.json"),
-            # Trading
-            default_leverage=env_int("LEVERAGE_DEFAULT", getattr(cls, "default_leverage", 5)),
-            min_position_size_usdt=env_float("MIN_POSITION_SIZE_USDT", getattr(cls, "min_position_size_usdt", 10.0)),
-            max_position_size_usdt=env_float("MAX_POSITION_SIZE_USDT", getattr(cls, "max_position_size_usdt", 100.0)),
-            max_concurrent_positions=env_int("MAX_CONCURRENT_POSITIONS", getattr(cls, "max_concurrent_positions", 3)),
-            # Risk
-            max_capital_utilization_pct=env_float(
-                "MAX_CAPITAL_UTILIZATION_PCT", getattr(cls, "max_capital_utilization_pct", 0.8)
-            ),
-            max_margin_percent=env_float("MAX_MARGIN_PERCENT", getattr(cls, "max_margin_percent", 0.4)),
-            max_slippage_pct=env_float("MAX_SLIPPAGE_PCT", getattr(cls, "max_slippage_pct", 0.02)),
-            risk_multiplier=env_float("RISK_MULTIPLIER", getattr(cls, "risk_multiplier", 1.0)),
-            # Dynamic balance & deposit
-            use_dynamic_balance=env_bool("USE_DYNAMIC_BALANCE", getattr(cls, "use_dynamic_balance", False)),
-            balance_percentage=env_float("BALANCE_PERCENTAGE", getattr(cls, "balance_percentage", 0.95)),
-            trading_deposit=env_float("TRADING_DEPOSIT", getattr(cls, "trading_deposit", 400.0)),
-            # Spread filter
-            max_spread_pct=env_float("MAX_SPREAD_PCT", getattr(cls, "max_spread_pct", 0.20)),
-            disable_spread_filter_testnet=env_bool(
-                "DISABLE_SPREAD_FILTER_TESTNET", getattr(cls, "disable_spread_filter_testnet", True)
-            ),
-            # TP/SL (only stop_loss_percent and take_profit_percent are used)
-            take_profit_percent=env_float("TAKE_PROFIT_PERCENT", getattr(cls, "take_profit_percent", 1.8)),
-            stop_loss_percent=env_float("STOP_LOSS_PERCENT", getattr(cls, "stop_loss_percent", 1.2)),
-            step_tp_levels=env_list_float("STEP_TP_LEVELS", getattr(cls, "step_tp_levels", [0.004, 0.008, 0.012])),
-            step_tp_sizes=env_list_float("STEP_TP_SIZES", getattr(cls, "step_tp_sizes", [0.5, 0.3, 0.2])),
-            # Telegram
-            telegram_enabled=env_bool("TELEGRAM_ENABLED", getattr(cls, "telegram_enabled", False)),
-            telegram_token=env_str("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", "") or ""),
-            telegram_chat_id=env_str("TELEGRAM_CHAT_ID", ""),
-            # Logging
-            log_level=env_str("LOG_LEVEL", getattr(cls, "log_level", "INFO")),
-            log_to_file=env_bool("LOG_TO_FILE", getattr(cls, "log_to_file", True)),
-            log_to_console=env_bool("LOG_TO_CONSOLE", getattr(cls, "log_to_console", True)),
-            # WebSocket
-            enable_websocket=env_bool("ENABLE_WEBSOCKET", getattr(cls, "enable_websocket", False)),
-            ws_reconnect_interval=env_int("WS_RECONNECT_INTERVAL", getattr(cls, "ws_reconnect_interval", 5)),
-            ws_heartbeat_interval=env_int("WS_HEARTBEAT_INTERVAL", getattr(cls, "ws_heartbeat_interval", 30)),
-            # Entry controls
-            entry_cooldown_seconds=env_int("ENTRY_COOLDOWN_SECONDS", getattr(cls, "entry_cooldown_seconds", 0)),
-            max_hourly_trade_limit=env_int("MAX_HOURLY_TRADE_LIMIT", getattr(cls, "max_hourly_trade_limit", 0)),
+        # Booleans
+        self.allow_shorts = _get_bool("ALLOW_SHORTS", self.allow_shorts)
+        self.enable_multiple_tp = _get_bool("ENABLE_MULTIPLE_TP", self.enable_multiple_tp)
+        self.reduce_only = _get_bool("REDUCE_ONLY", self.reduce_only)
+        self.enable_websocket = _get_bool("ENABLE_WEBSOCKET", self.enable_websocket)
+        self.dry_run = _get_bool("DRY_RUN", self.dry_run)
+        self.enable_trailing_stop = _get_bool("ENABLE_TRAILING_STOP", self.enable_trailing_stop)
+        self.disable_spread_filter_testnet = _get_bool(
+            "DISABLE_SPREAD_FILTER_TESTNET", getattr(self, "disable_spread_filter_testnet", False)
+        )
+        self.use_dynamic_balance = _get_bool("USE_DYNAMIC_BALANCE", getattr(self, "use_dynamic_balance", False))
+        self.allow_auto_increase_for_min = _get_bool(
+            "ALLOW_AUTO_INCREASE_FOR_MIN", getattr(self, "allow_auto_increase_for_min", True)
         )
 
-        # Optional QUOTE_COIN override: {USDT, USDC}; default auto-resolve (testnet→USDT, prod→USDC)
-        try:
-            qc = env_str("QUOTE_COIN", cfg.resolved_quote_coin).upper()
-            if qc in ("USDT", "USDC"):
-                # Monkey-patch resolved property via attribute for downstream usage
-                object.__setattr__(cfg, "_quote_coin_override", qc)
-        except Exception:
-            pass
+        # Integers
+        self.max_positions = _get_int("MAX_POSITIONS", self.max_positions)
+        self.max_concurrent_positions = _get_int("MAX_CONCURRENT_POSITIONS", self.max_concurrent_positions)
+        self.ws_reconnect_interval = _get_int("WS_RECONNECT_INTERVAL", getattr(self, "ws_reconnect_interval", 5))
+        self.ws_heartbeat_interval = _get_int("WS_HEARTBEAT_INTERVAL", getattr(self, "ws_heartbeat_interval", 30))
+        self.entry_cooldown_seconds = _get_int("ENTRY_COOLDOWN_SECONDS", getattr(self, "entry_cooldown_seconds", 0))
+        self.max_hourly_trade_limit = _get_int("MAX_HOURLY_TRADE_LIMIT", getattr(self, "max_hourly_trade_limit", 0))
 
-        return cfg
+        # Floats (percents are in percent units, e.g., 1.0 == 1%)
+        self.stop_loss_percent = _get_float("STOP_LOSS_PERCENT", self.stop_loss_percent)
+        self.take_profit_percent = _get_float("TAKE_PROFIT_PERCENT", getattr(self, "take_profit_percent", 0.0))
+        self.max_slippage_pct = _get_float("MAX_SLIPPAGE_PCT", getattr(self, "max_slippage_pct", 0.02))
+        self.max_capital_utilization_pct = _get_float(
+            "MAX_CAPITAL_UTILIZATION_PCT", getattr(self, "max_capital_utilization_pct", 0.50)
+        )
+        self.max_margin_percent = _get_float("MAX_MARGIN_PERCENT", getattr(self, "max_margin_percent", 0.40))
+        self.trailing_stop_percent = _get_float("TRAILING_STOP_PERCENT", getattr(self, "trailing_stop_percent", 0.5))
+        self.base_position_size_usdt = _get_float(
+            "BASE_POSITION_SIZE_USDT", getattr(self, "base_position_size_usdt", 0.0)
+        )
+        self.min_position_size_usdt = _get_float("MIN_POSITION_SIZE_USDT", getattr(self, "min_position_size_usdt", 0.0))
+        self.max_auto_increase_usdt = _get_float("MAX_AUTO_INCREASE_USDT", getattr(self, "max_auto_increase_usdt", 0.0))
+        self.max_spread_pct = _get_float("MAX_SPREAD_PCT", getattr(self, "max_spread_pct", 5.0))
+        self.balance_percentage = _get_float("BALANCE_PERCENTAGE", getattr(self, "balance_percentage", 1.0))
+        self.trading_deposit = _get_float("TRADING_DEPOSIT", getattr(self, "trading_deposit", 0.0))
+        # Optional fee knobs (apply only if present on model)
+        if hasattr(self, "enable_fee_adjustment"):
+            self.enable_fee_adjustment = _get_bool(
+                "ENABLE_FEE_ADJUSTMENT", getattr(self, "enable_fee_adjustment", True)
+            )
+        if hasattr(self, "taker_fee_percent"):
+            self.taker_fee_percent = _get_float("TAKER_FEE_PERCENT", getattr(self, "taker_fee_percent", 0.04))
+        if hasattr(self, "maker_fee_percent"):
+            self.maker_fee_percent = _get_float("MAKER_FEE_PERCENT", getattr(self, "maker_fee_percent", 0.0))
 
-    model_config = ConfigDict()
+        # TP levels from JSON
+        tp_env = _get_json("TP_LEVELS", None)
+        if tp_env is not None:
+            self.tp_levels_raw = tp_env
+
+        # Order types / strings
+        self.working_type = os.getenv("WORKING_TYPE", getattr(self, "working_type", "MARK_PRICE"))
+        self.sl_order_type = os.getenv("SL_ORDER_TYPE", getattr(self, "sl_order_type", "STOP_MARKET"))
+        self.tp_order_type = os.getenv("TP_ORDER_TYPE", getattr(self, "tp_order_type", "TAKE_PROFIT_MARKET"))
+        self.time_in_force = os.getenv("TIME_IN_FORCE", getattr(self, "time_in_force", "GTC"))
+
+        # Normalize all field types via Pydantic and return a clean instance
+        validated = self.__class__.model_validate(self.model_dump())
+        return validated
+
+    model_config = ConfigDict(validate_assignment=True)
 
     def __init__(self, **data):
         # Load .env file manually
@@ -370,9 +363,10 @@ class TradingConfig(BaseModel):
                 manager = SimpleEnvManager()
                 env_vars = manager.load_env_file()
 
-                # Set environment variables
+                # Set environment variables only if not already present
                 for key, value in env_vars.items():
-                    os.environ[key] = value
+                    if key not in os.environ:
+                        os.environ[key] = value
 
                 print(f"✅ Loaded {len(env_vars)} variables using SimpleEnvManager")
 
@@ -385,7 +379,9 @@ class TradingConfig(BaseModel):
                             line = line.strip()
                             if line and not line.startswith("#") and "=" in line:
                                 key, value = line.split("=", 1)
-                                os.environ[key.strip()] = value.strip()
+                                k = key.strip()
+                                if k not in os.environ:
+                                    os.environ[k] = value.strip()
                     print("✅ Loaded .env file manually")
 
         except Exception as e:
@@ -470,6 +466,8 @@ class TradingConfig(BaseModel):
             # Spread filter
             "MAX_SPREAD_PCT": "max_spread_pct",
             "DISABLE_SPREAD_FILTER_TESTNET": "disable_spread_filter_testnet",
+            # Short control
+            "ALLOW_SHORTS": "allow_shorts",
         }
 
         for env_var, config_key in env_mapping.items():
@@ -489,6 +487,7 @@ class TradingConfig(BaseModel):
                 "disable_spread_filter_testnet",
                 "enable_multiple_tp",
                 "enable_trailing_stop",
+                "allow_shorts",
             ):
                 setattr(self, config_key, val.lower() in ("true", "1", "yes", "on"))
                 continue
@@ -590,8 +589,11 @@ class TradingConfig(BaseModel):
         """Save current configuration to file"""
         try:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            # Ensure we serialize a fully validated model to avoid Pydantic warnings
+            cfg_valid = self.__class__.model_validate(self.model_dump())
+            payload = cfg_valid.model_dump(mode="json")
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self.model_dump(), f, indent=2, default=str)
+                json.dump(payload, f, indent=2, ensure_ascii=False)
             print(f"Configuration saved to {filepath}")
         except Exception as e:
             print(f"Failed to save configuration: {e}")
@@ -662,10 +664,9 @@ class TradingConfig(BaseModel):
                         # tolerate list of numbers (levels) without sizes
                         pct = float(item)
                         size = 0.0
-                    # Convert fraction→percent if value looks fractional
-                    pct_percent = pct * 100.0 if pct <= 1.0 else pct
-                    if pct_percent > 0 and 0 < size <= 1:
-                        levels_from_env.append({"percent": pct_percent, "size": size})
+                    # Treat TP_LEVELS percent as already in percent units (1.0 == 1%)
+                    if pct > 0 and 0 < size <= 1:
+                        levels_from_env.append({"percent": pct, "size": size})
                 except Exception:
                     continue
 

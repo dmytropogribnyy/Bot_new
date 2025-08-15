@@ -1,5 +1,5 @@
 {
-  "max_concurrent_positions": 2,
+  "max_concurrent_positions": 1,
   "risk_multiplier": 0.75,
   "base_risk_pct": 0.005,
   "min_risk_factor": 0.8,
@@ -12,9 +12,6 @@
   "min_macd_strength": 0.00001,
   "min_rsi_strength": 0.5,
 
-  "step_tp_levels": [0.006, 0.012, 0.018],
-  "step_tp_sizes": [0.5, 0.3, 0.2],
-  "sl_percent": 0.008,
   "force_sl_always": true,
   "sl_retry_limit": 3,
 

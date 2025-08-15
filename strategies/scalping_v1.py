@@ -220,6 +220,14 @@ class ScalpingV1(BaseStrategy):
                         direction = "sell"
 
             if direction:
+                # Strategy-level optional shorts filter
+                if direction == "sell" and not getattr(self.config, "allow_shorts", True):
+                    self.logger.log_event(
+                        "STRATEGY",
+                        "DEBUG",
+                        f"{symbol}: SHORT signal filtered at strategy level",
+                    )
+                    return None, {"reason": "shorts_disabled"}
                 # Add additional info to breakdown
                 breakdown.update(
                     {

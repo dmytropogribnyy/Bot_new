@@ -1,14 +1,30 @@
+import json
+import warnings
+
+from core.config import TradingConfig
+
+
+def test_config_serialization_is_clean(tmp_path):
+    cfg = TradingConfig().from_env()
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        # exercise save_to_file which validates then serializes
+        out = tmp_path / "runtime_config.json"
+        cfg.save_to_file(str(out))
+        data = json.loads(out.read_text(encoding="utf-8"))
+        assert isinstance(data, dict) and len(data) > 0
+        assert not any("PydanticSerializationUnexpectedValue" in str(x.message) for x in w)
+
+
 #!/usr/bin/env python3
 """
 Test Unified Configuration
 Test the new unified configuration system
 """
 
-import json
 from pathlib import Path
 
 import pytest
-from core.config import TradingConfig
 
 
 def test_config_loading():

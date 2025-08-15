@@ -6,6 +6,7 @@ Simplified version based on v2 structure
 
 import asyncio
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,18 @@ from core.risk_guard_stage_f import RiskGuardStageF
 from core.sizing import calculate_position_from_risk
 from core.symbol_utils import base_of, to_binance_symbol
 from core.unified_logger import UnifiedLogger
+from core.utils.price_qty_utils import (
+    ensure_minimums,
+    min_price_buffer,
+    nudge_price,
+    round_to_step,
+    round_to_tick,
+)
 from tools.pre_trade_check import can_enter_position
+
+
+def _pct(v: float) -> float:
+    return float(v) / 100.0
 
 
 class OrderManager:
@@ -89,6 +101,9 @@ class OrderManager:
         self.risk_guard_f = RiskGuardStageF(self.config, self.logger)
         self.deposit_usdc = self.config.trading_deposit  # Trading deposit
         self.logger.log_event("ORDER_MANAGER", "INFO", "Risk Guard Stage F initialized")
+
+        # Emergency-close in-flight markers per symbol
+        self._emergency_closing: dict[str, bool] = defaultdict(bool)
 
         # Audit logger (env-scoped)
         try:
@@ -307,6 +322,16 @@ class OrderManager:
     ) -> dict[str, Any]:
         """Place position with TP/SL orders"""
         try:
+            # Entry logging
+            try:
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "INFO",
+                    f"Opening {str(side).upper()} position for {symbol}",
+                )
+            except Exception:
+                pass
+
             # ========== RISK MANAGEMENT CHECKS ==========
 
             # 1. Global risk check (Stage F)
@@ -497,6 +522,7 @@ class OrderManager:
                 "sl_price": sl_price,
                 "tp_levels": tp_levels,
                 "tp_sl_orders": tp_sl_result,
+                "filled_qty": float(actual_filled),
             }
 
         except Exception as e:
@@ -536,6 +562,38 @@ class OrderManager:
             return float(limits.get("min") or 0.0)
         except Exception:
             return 0.0
+
+    def _get_step_size(self, market: dict) -> float:
+        """Extract LOT_SIZE.stepSize if present, else fall back to precision.amount."""
+        try:
+            filters = (market.get("info", {}) or {}).get("filters", []) or []
+            for f in filters:
+                if (f or {}).get("filterType") == "LOT_SIZE":
+                    step = float((f or {}).get("stepSize") or 0)
+                    if step > 0:
+                        return step
+        except Exception:
+            pass
+        try:
+            precision = (market.get("precision", {}) or {}).get("amount")
+            if precision is not None:
+                return 10 ** (-int(precision))
+        except Exception:
+            pass
+        return 0.0
+
+    def _get_min_notional(self, market: dict) -> float | None:
+        """Try to extract minNotional from filters if available; otherwise None."""
+        try:
+            filters = (market.get("info", {}) or {}).get("filters", []) or []
+            for f in filters:
+                if (f or {}).get("filterType") in {"MIN_NOTIONAL", "NOTIONAL"}:
+                    mn = float((f or {}).get("minNotional") or (f or {}).get("notional") or 0)
+                    if mn > 0:
+                        return mn
+        except Exception:
+            pass
+        return None
 
     def _make_client_id(self, symbol: str, order_type: str) -> str:
         import hashlib
@@ -734,6 +792,8 @@ class OrderManager:
         market = markets.get(symbol, {})
         min_qty = self._get_min_qty(market)
         tick_size = self._get_tick_size(market)
+        step_size = self._get_step_size(market)
+        min_notional = self._get_min_notional(market)
 
         # 3) Current price and price buffer
         ticker = await self.exchange.get_ticker(symbol)
@@ -741,7 +801,8 @@ class OrderManager:
             current_price = float((ticker or {}).get("last") or (ticker or {}).get("close") or entry_price)
         except Exception:
             current_price = float(entry_price)
-        price_buffer = float(tick_size) * 5.0
+        # use min 2 ticks or 2 bps (whichever is larger)
+        price_buffer = float(min_price_buffer(current_price, tick_size, min_basis_points=2.0, min_ticks=2))
         close_side = "sell" if side == "buy" else "buy"
 
         # 3.1) Auto-increase quantity for BTC/ETH to reach minQty if allowed and budget permits
@@ -771,14 +832,45 @@ class OrderManager:
         except Exception:
             pass
 
-        # 4) SL — common
-        if side == "buy":
-            raw_sl = max(entry_price * (1 - self.config.stop_loss_percent / 100.0), current_price - price_buffer)
-        else:
-            raw_sl = min(entry_price * (1 + self.config.stop_loss_percent / 100.0), current_price + price_buffer)
+        # 4) Quantity normalization and minimums
+        try:
+            order_qty = ensure_minimums(
+                order_qty,
+                current_price,
+                step_size=step_size or 0.0,
+                min_qty=min_qty or None,
+                min_notional=min_notional,
+                allow_increase=True,
+            )
+        except Exception:
+            # fallback to exchange.round_amount
+            order_qty = self.exchange.round_amount(symbol, order_qty)
+        # Final step rounding down for safety
+        if step_size and step_size > 0:
+            order_qty = round_to_step(order_qty, step_size, direction="down")
+        order_qty = self.exchange.round_amount(symbol, order_qty)
+        try:
+            self.logger.log_event(
+                "ORDER_MANAGER",
+                "INFO",
+                f"{symbol}: protective qty={float(order_qty):.10f} (filled={float(actual_filled if actual_filled is not None else quantity):.10f})",
+            )
+        except Exception:
+            pass
 
-        # Normalize SL price/qty
-        sl_price_norm, sl_qty_norm, _ = normalize(float(raw_sl), float(order_qty), market, current_price, symbol)
+        # 5) SL — compute, tick-quantize, and nudge
+        sl_percent = float(getattr(self.config, "stop_loss_percent", 0.0))
+        if side == "buy":
+            sl_raw = max(entry_price * (1 - _pct(sl_percent)), current_price - price_buffer)
+            sl_price = round_to_tick(sl_raw, tick_size, direction="down")
+            sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
+        else:
+            sl_raw = min(entry_price * (1 + _pct(sl_percent)), current_price + price_buffer)
+            sl_price = round_to_tick(sl_raw, tick_size, direction="up")
+            sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
+
+        # Normalize SL with exchange schema
+        sl_price_norm, sl_qty_norm, _ = normalize(float(sl_price), float(order_qty), market, current_price, symbol)
         # Idempotent client ID for SL
         env = getattr(self.config, "ENV", "PROD")
         strategy = getattr(self.config, "STRATEGY", "DEFAULT")
@@ -796,25 +888,66 @@ class OrderManager:
         cid_sl = self.idem.get(intent_sl) or make_client_id(env, strategy, symbol, close_side, intent_sl)
         if self.idem.get(intent_sl) is None:
             self.idem.put(intent_sl, cid_sl)
-        sl_params = {
-            "stopPrice": float(sl_price_norm),
-            "reduceOnly": True,
-            "workingType": self.config.working_type,
-            "timeInForce": self.config.time_in_force,
-            "newClientOrderId": cid_sl,
-        }
-        try:
-            sl_order = await self.exchange.create_order(
-                symbol,
-                getattr(self.config, "sl_order_type", "STOP_MARKET"),
-                close_side,
-                float(sl_qty_norm or order_qty),
-                None,
-                sl_params,
-            )
-        except Exception as e:
-            self.logger.log_event("ORDER_MANAGER", "ERROR", f"SL failed: {e}")
-            sl_order = None
+        attempt = 0
+        max_attempts = int(getattr(self.config, "sl_retry_limit", 3))
+        sl_order = None
+        while attempt < max_attempts:
+            attempt += 1
+            cid_attempt = cid_sl if attempt == 1 else self._make_client_id(symbol, f"SLr{attempt}")
+            sl_params = {
+                "stopPrice": float(sl_price_norm),
+                "reduceOnly": True,
+                "workingType": self.config.working_type,
+                "timeInForce": self.config.time_in_force,
+                "newClientOrderId": cid_attempt,
+            }
+            try:
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "DEBUG",
+                    f"{symbol}: SL  = {entry_price:.6f} * (1 {'-' if side == 'buy' else '+'} {sl_percent:.4f}/100) = {float(sl_raw):.6f} -> {float(sl_price_norm):.6f}",
+                )
+                sl_order = await self.exchange.create_order(
+                    symbol,
+                    getattr(self.config, "sl_order_type", "STOP_MARKET"),
+                    close_side,
+                    float(sl_qty_norm or order_qty),
+                    None,
+                    sl_params,
+                )
+                break
+            except Exception as e:
+                es = str(e)
+                if "-2021" in es or "immediately" in es.lower():
+                    # Increase distance by 1 tick and retry
+                    if side == "buy":
+                        sl_price = sl_price - float(tick_size)
+                        sl_price = round_to_tick(sl_price, tick_size, direction="down")
+                        sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
+                    else:
+                        sl_price = sl_price + float(tick_size)
+                        sl_price = round_to_tick(sl_price, tick_size, direction="up")
+                        sl_price = nudge_price(sl_price, current_price, tick_size, side=side, is_sl=True, min_ticks=2)
+                    sl_price_norm, sl_qty_norm, _ = normalize(
+                        float(sl_price), float(order_qty), market, current_price, symbol
+                    )
+                    if attempt >= max_attempts:
+                        self.logger.log_event(
+                            "ORDER_MANAGER",
+                            "CRITICAL",
+                            f"{symbol}: SL rejected (-2021) after {attempt} attempts — closing position",
+                        )
+                        try:
+                            await self.close_position_market(symbol)
+                        except Exception:
+                            pass
+                        sl_order = None
+                        break
+                    continue
+                else:
+                    self.logger.log_event("ORDER_MANAGER", "ERROR", f"SL failed: {e}")
+                    sl_order = None
+                    break
 
         # 5) TP levels
         tp_levels_cfg = self.config.tp_levels
@@ -824,7 +957,7 @@ class OrderManager:
 
         for i, level in enumerate(tp_levels_cfg, start=1):
             try:
-                tp_pct = float(level["percent"])  # percent
+                tp_pct = float(level["percent"])  # percent (1.0 == 1%)
                 size_pct = float(level.get("size", 0))  # 0..1
             except Exception:
                 continue
@@ -839,14 +972,18 @@ class OrderManager:
                 continue
 
             if side == "buy":
-                raw_tp = entry_price * (1 + tp_pct / 100.0)
-                tp_price_raw = max(raw_tp, current_price + price_buffer)
+                tp_raw = entry_price * (1 + _pct(tp_pct))
+                tp_price = max(tp_raw, current_price + price_buffer)
+                tp_price = round_to_tick(tp_price, tick_size, direction="up")
+                tp_price = nudge_price(tp_price, current_price, tick_size, side=side, is_sl=False, min_ticks=2)
             else:
-                raw_tp = entry_price * (1 - tp_pct / 100.0)
-                tp_price_raw = min(raw_tp, current_price - price_buffer)
+                tp_raw = entry_price * (1 - _pct(tp_pct))
+                tp_price = min(tp_raw, current_price - price_buffer)
+                tp_price = round_to_tick(tp_price, tick_size, direction="down")
+                tp_price = nudge_price(tp_price, current_price, tick_size, side=side, is_sl=False, min_ticks=2)
 
             # Normalize TP price/qty
-            tp_price_norm, tp_qty_norm, _ = normalize(float(tp_price_raw), float(tp_qty), market, current_price, symbol)
+            tp_price_norm, tp_qty_norm, _ = normalize(float(tp_price), float(tp_qty), market, current_price, symbol)
             if float(tp_qty_norm or 0) <= 0:
                 continue
 
@@ -876,27 +1013,77 @@ class OrderManager:
                 "stopPrice": float(tp_price_norm),
             }
 
+            # Debug formula log
             try:
-                if order_type == "TAKE_PROFIT_MARKET":
-                    tp_order = await self.exchange.create_order(
-                        symbol, "TAKE_PROFIT_MARKET", close_side, float(tp_qty_norm), None, params_tp
-                    )
-                else:
-                    tp_order = await self.exchange.create_order(
-                        symbol, "TAKE_PROFIT", close_side, float(tp_qty_norm), float(tp_price_norm), params_tp
-                    )
-                if tp_order:
-                    tp_orders.append(tp_order)
-                    last_tp_id = tp_order.get("id")
-                    last_tp_price = float(tp_price_norm)
-
                 self.logger.log_event(
                     "ORDER_MANAGER",
-                    "INFO",
-                    f"TP{i} placed: {symbol} qty={float(tp_qty_norm):.10f} @ {float(tp_price_norm):.6f}",
+                    "DEBUG",
+                    f"{symbol}: TP{i} = {entry_price:.6f} * (1 {'+' if side == 'buy' else '-'} {tp_pct:.4f}/100) = {float(tp_raw):.6f} -> {float(tp_price_norm):.6f}",
                 )
-            except Exception as e:
-                self.logger.log_event("ORDER_MANAGER", "ERROR", f"TP{i} failed: {e}")
+            except Exception:
+                pass
+
+            attempt_tp = 0
+            tp_order = None
+            while attempt_tp < int(getattr(self.config, "sl_retry_limit", 3)):
+                attempt_tp += 1
+                cid_tp_attempt = cid_tp if attempt_tp == 1 else self._make_client_id(symbol, f"TPr{i}_{attempt_tp}")
+                params_tp_attempt = dict(params_tp)
+                params_tp_attempt["newClientOrderId"] = cid_tp_attempt
+                try:
+                    if order_type == "TAKE_PROFIT_MARKET":
+                        tp_order = await self.exchange.create_order(
+                            symbol, "TAKE_PROFIT_MARKET", close_side, float(tp_qty_norm), None, params_tp_attempt
+                        )
+                    else:
+                        tp_order = await self.exchange.create_order(
+                            symbol,
+                            "TAKE_PROFIT",
+                            close_side,
+                            float(tp_qty_norm),
+                            float(tp_price_norm),
+                            params_tp_attempt,
+                        )
+                    if tp_order:
+                        tp_orders.append(tp_order)
+                        last_tp_id = tp_order.get("id")
+                        last_tp_price = float(tp_price_norm)
+                        self.logger.log_event(
+                            "ORDER_MANAGER",
+                            "INFO",
+                            f"TP{i} placed: {symbol} qty={float(tp_qty_norm):.10f} @ {float(tp_price_norm):.6f}",
+                        )
+                    break
+                except Exception as e:
+                    es = str(e)
+                    if "-2021" in es or "immediately" in es.lower():
+                        # Increase distance by 1 tick and retry in favorable direction
+                        if side == "buy":
+                            tp_price = tp_price + float(tick_size)
+                            tp_price = round_to_tick(tp_price, tick_size, direction="up")
+                            tp_price = nudge_price(
+                                tp_price, current_price, tick_size, side=side, is_sl=False, min_ticks=2
+                            )
+                        else:
+                            tp_price = tp_price - float(tick_size)
+                            tp_price = round_to_tick(tp_price, tick_size, direction="down")
+                            tp_price = nudge_price(
+                                tp_price, current_price, tick_size, side=side, is_sl=False, min_ticks=2
+                            )
+                        tp_price_norm, tp_qty_norm, _ = normalize(
+                            float(tp_price), float(tp_qty), market, current_price, symbol
+                        )
+                        if attempt_tp >= int(getattr(self.config, "sl_retry_limit", 3)):
+                            self.logger.log_event(
+                                "ORDER_MANAGER",
+                                "CRITICAL",
+                                f"{symbol}: TP{i} rejected (-2021) after {attempt_tp} attempts",
+                            )
+                            break
+                        continue
+                    else:
+                        self.logger.log_event("ORDER_MANAGER", "ERROR", f"TP{i} failed: {e}")
+                        break
 
         # Store last placed orders
         try:
@@ -947,16 +1134,39 @@ class OrderManager:
     async def close_position_emergency(self, symbol: str) -> dict[str, Any]:
         """Emergency close position"""
         try:
+            # Mark emergency closing to suppress sync/guards
+            self._emergency_closing[symbol] = True
             position = self.active_positions.get(symbol)
             if not position:
+                # Try to close anyway as a safety, ignore -2022
+                try:
+                    await self.exchange.create_order(
+                        symbol=symbol, type="MARKET", side="sell", amount=0, params={"reduceOnly": True}
+                    )
+                except Exception:
+                    pass
+                self._emergency_closing[symbol] = False
                 return {"success": False, "reason": "Position not found"}
 
             # Cancel all orders first
             await self.cancel_all_orders(symbol)
 
-            # Close position with market order
+            # Close position with market order (reduceOnly) and ignore -2022 when already flat
             side = "sell" if position["side"] == "long" else "buy"
-            order = await self.exchange.create_market_order(symbol, side, abs(position["size"]))
+            try:
+                order = await self.exchange.create_order(
+                    symbol=symbol, type="MARKET", side=side, amount=abs(position["size"]), params={"reduceOnly": True}
+                )
+            except Exception as e:
+                if "-2022" in str(e):
+                    self.logger.log_event(
+                        "ORDER_MANAGER",
+                        "INFO",
+                        f"{symbol}: reduceOnly rejected (-2022) during emergency close; ignoring",
+                    )
+                    order = {"status": "closed", "info": {"ignored": "-2022"}}
+                else:
+                    raise
 
             # Remove from tracking
             async with self.position_lock:
@@ -969,6 +1179,12 @@ class OrderManager:
         except Exception as e:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to emergency close {symbol}: {e}")
             return {"success": False, "reason": str(e)}
+        finally:
+            # Clear emergency flag
+            try:
+                self._emergency_closing[symbol] = False
+            except Exception:
+                pass
 
     async def cancel_all_orders(self, symbol: str):
         """Cancel all orders for a symbol"""
@@ -1583,6 +1799,9 @@ class OrderManager:
 
             # Проверяем каждую позицию на наличие SL
             for symbol, pos in exchange_positions.items():
+                # Suppress checks during emergency close workflow
+                if self._emergency_closing.get(symbol, False):
+                    continue
                 open_orders = await self.exchange.get_open_orders(symbol)
 
                 # Нормализованная проверка SL
@@ -1599,15 +1818,33 @@ class OrderManager:
                     # Закрываем позицию без SL
                     side = "sell" if pos.get("side") == "long" else "buy"
                     qty = float(pos.get("contracts", pos.get("size", 0)))
-                    await self.exchange.create_order(symbol, "market", side, qty, None, {"reduceOnly": True})
+                    try:
+                        await self.exchange.create_order(symbol, "market", side, qty, None, {"reduceOnly": True})
+                    except Exception as e:
+                        if "-2022" in str(e):
+                            self.logger.log_event(
+                                "SYNC", "INFO", f"{symbol}: reduceOnly rejected (-2022) while syncing; ignoring"
+                            )
+                        else:
+                            raise
 
             # Убираем висячие ордера без позиций
             all_orders = await self.exchange.get_open_orders()
             for order in all_orders:
                 is_reduce = (order.get("reduceOnly") is True) or (order.get("info", {}).get("reduceOnly") is True)
                 if is_reduce and order["symbol"] not in exchange_positions:
-                    await self.exchange.cancel_order(order["id"], order["symbol"])
-                    self.logger.log_event("SYNC", "INFO", f"Cancelled orphan order {order['id']}")
+                    try:
+                        await self.exchange.cancel_order(order["id"], order["symbol"])
+                        self.logger.log_event("SYNC", "INFO", f"Cancelled orphan order {order['id']}")
+                    except Exception as e:
+                        if "-2022" in str(e):
+                            self.logger.log_event(
+                                "SYNC",
+                                "INFO",
+                                f"{order['symbol']}: cancel reduceOnly rejected (-2022); ignoring",
+                            )
+                        else:
+                            raise
 
         except Exception as e:
             self.logger.log_event("SYNC", "ERROR", f"Sync failed: {e}")
