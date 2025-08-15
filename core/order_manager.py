@@ -115,10 +115,26 @@ class OrderManager:
         self._bonus_closing = defaultdict(float)  # symbol -> last_attempt_ts
 
     def _cid(self, symbol: str, intent: str, suffix: str = "") -> str:
-        """Generate unique client order ID with intent and suffix (<=32 chars)."""
-        base = f"PROD-DEFAULT-{symbol.replace('/', 'SLASH')}-{intent}"
-        tail = f"{int(time.time() * 1_000_000) % 1_000_000:06d}"
-        return f"{base}-{suffix}-{tail}"[:32]
+        import re
+        import time
+
+        from core.symbol_utils import to_binance_symbol  # уже импортируется выше
+
+        max_len = 32  # оставим как в проекте
+        # короткое и «чистое» имя символа (BTCUSDT)
+        raw = to_binance_symbol(symbol) or symbol
+        safe = re.sub(r"[^A-Za-z0-9_-]", "", raw.replace("/", ""))
+
+        # базовая голова и гарантированная «важная» часть (sfx+tail)
+        head = f"PROD-DEFAULT-{safe}-{intent}"
+        tail = f"{suffix + '-' if suffix else ''}{int(time.time() * 1_000_000) % 1_000_000:06d}"
+
+        # оставляем место под '-' + tail в конце
+        keep = max_len - 1 - len(tail)
+        if keep < 8:  # минимальная голова, чтобы не слиплось в мусор
+            keep = 8
+
+        return f"{head[:keep]}-{tail}"
 
     async def get_trading_capital(self) -> float:
         """
