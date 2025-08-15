@@ -644,6 +644,38 @@ class OrderManager:
             pass
         return binance_symbol
 
+    async def _post_check_protectives(self, symbol: str, expected_tp_count: int) -> bool:
+        """Verify exactly one SL reduceOnly and expected number of TP reduceOnly orders exist with workingType set.
+
+        Null-safe: if API returns None or lists are missing, return False only if clearly inconsistent; otherwise True.
+        """
+        try:
+            try:
+                orders = await self.exchange.get_open_orders(symbol)
+            except Exception:
+                orders = []
+            if not orders:
+                return False
+            sl_count = 0
+            tp_count = 0
+            for o in orders or []:
+                try:
+                    info = o.get("info", {}) or {}
+                    otype = str(o.get("type") or info.get("type") or "").upper()
+                    reduce_only = bool(o.get("reduceOnly") is True or info.get("reduceOnly") is True)
+                    wt = info.get("workingType") or o.get("workingType")
+                    if not reduce_only or not wt:
+                        continue
+                    if ("STOP" in otype) or (otype in {"STOP", "STOP_MARKET"}):
+                        sl_count += 1
+                    elif ("TAKE_PROFIT" in otype) or (otype in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}):
+                        tp_count += 1
+                except Exception:
+                    continue
+            return sl_count == 1 and tp_count == expected_tp_count
+        except Exception:
+            return False
+
     def _activate_trailing(self, symbol: str, side: str, activation_price: float) -> None:
         self.trailing_stops[symbol] = {
             "side": side,
@@ -988,6 +1020,24 @@ class OrderManager:
                     sl_order = None
                     break
 
+        # SL must exist before proceeding with TPs; otherwise cancel and emergency close
+        if not sl_order or not sl_order.get("id"):
+            try:
+                self.logger.log_event(
+                    "ORDER_MANAGER", "CRITICAL", f"{symbol}: SL not placed — cancelling TPs and emergency closing"
+                )
+            except Exception:
+                pass
+            try:
+                await self.cancel_all_orders(symbol)
+            except Exception:
+                pass
+            try:
+                await self.close_position_emergency(symbol)
+            except Exception:
+                pass
+            return {"sl_order": None, "tp_orders": []}
+
         # 5) TP levels
         tp_levels_cfg = self.config.tp_levels
         tp_orders: list[dict] = []
@@ -1127,6 +1177,28 @@ class OrderManager:
                     else:
                         self.logger.log_event("ORDER_MANAGER", "ERROR", f"TP{i} failed: {e}")
                         break
+
+        # Post-check: ensure exactly 1 SL and expected TPs are present
+        try:
+            expected_tp_count = len(tp_orders)
+            ok_post = await self._post_check_protectives(symbol, expected_tp_count)
+            if not ok_post:
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "CRITICAL",
+                    f"{symbol}: Post-check failed; cancelling all and emergency closing",
+                )
+                try:
+                    await self.cancel_all_orders(symbol)
+                except Exception:
+                    pass
+                try:
+                    await self.close_position_emergency(symbol)
+                except Exception:
+                    pass
+                return {"sl_order": sl_order, "tp_orders": tp_orders, "post_check": False}
+        except Exception:
+            pass
 
         # Store last placed orders
         try:
