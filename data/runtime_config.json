@@ -16,9 +16,9 @@
   "sl_retry_limit": 3,
 
   "auto_profit_enabled": true,
-  "auto_profit_threshold": 0.8,
-  "bonus_profit_threshold": 1.5,
-  "max_hold_minutes": 5,
+  "auto_profit_threshold": 0.05,
+  "bonus_profit_threshold": 0.1,
+  "max_hold_minutes": 3,
 
   "min_notional_open": 6.0,
   "min_notional_order": 5.0,
