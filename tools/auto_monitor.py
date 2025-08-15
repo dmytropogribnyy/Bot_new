@@ -158,7 +158,7 @@ class AutoMonitor:
         # Always save to file
         report_file = Path("logs/monitor_report.txt")
         try:
-            with open(report_file, "a") as f:
+            with open(report_file, "a", encoding="utf-8") as f:
                 f.write(f"\n{'=' * 50}\n")
                 f.write(f"Monitor Report - {timestamp}\n")
                 f.write(f"{'=' * 50}\n")

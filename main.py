@@ -296,30 +296,21 @@ class SimplifiedTradingBot:
         try:
             self.logger.log_event("MAIN", "INFO", "🔍 Emergency position check...")
 
-            # Direct API call to get positions with retry
+            # Fetch open positions via exchange client with retry
             open_positions = []
+            last_err = None
             for attempt in range(3):
                 try:
-                    positions = await self.exchange.exchange.fetch_positions()
-                    # Tolerate schema: use size or contracts, allow both long/short
-                    open_positions = []
-                    for p in positions:
-                        try:
-                            size_val = float(p.get("contracts", p.get("size", 0)))
-                        except Exception:
-                            size_val = 0.0
-                        if size_val != 0:
-                            # Also normalize a derived side if missing
-                            if "side" not in p or not p.get("side"):
-                                p["side"] = "long" if size_val > 0 else "short"
-                            open_positions.append(p)
+                    positions = await self.exchange.get_all_positions()
+                    open_positions = positions or []
                     break
                 except Exception as e:
+                    last_err = e
                     self.logger.log_event("MAIN", "WARNING", f"Position fetch attempt {attempt + 1} failed: {e}")
                     if attempt < 2:
                         await asyncio.sleep(1)
 
-            if not open_positions and attempt == 2:
+            if not open_positions and last_err is not None:
                 self.logger.log_event("MAIN", "ERROR", "Failed to fetch positions after 3 attempts")
                 return
 
@@ -329,40 +320,50 @@ class SimplifiedTradingBot:
                 )
 
                 for pos in open_positions:
-                    symbol = pos["symbol"]
-                    side = pos.get("side", "long")
+                    symbol = pos.get("symbol")
+                    if not symbol:
+                        continue
                     try:
                         contracts = float(pos.get("contracts", pos.get("size", 0)))
                     except Exception:
                         contracts = 0.0
+                    if contracts <= 0:
+                        continue
+                    side_raw = str(pos.get("side", "long")).lower()
+                    close_side = "sell" if side_raw in ("long", "buy") else "buy"
+                    try:
+                        amount = self.exchange.round_amount(symbol, abs(float(contracts)))
+                    except Exception:
+                        amount = abs(float(contracts))
                     unrealized_pnl = pos.get("unrealizedPnl", 0)
 
                     self.logger.log_event(
                         "MAIN",
                         "WARNING",
-                        f"🚨 EMERGENCY CLOSE: {symbol} {side} {contracts} contracts, PnL: ${unrealized_pnl:.2f}",
+                        f"🚨 EMERGENCY CLOSE: {symbol} {side_raw} {contracts} contracts, PnL: ${float(unrealized_pnl):.2f}",
                     )
 
                     try:
-                        # Cancel orders first
+                        # Cancel all orders first via client wrapper
                         try:
-                            open_orders = await self.exchange.exchange.fetch_open_orders(symbol)
-                            for order in open_orders:
-                                await self.exchange.exchange.cancel_order(order["id"], symbol)
-                                self.logger.log_event("MAIN", "INFO", f"❌ Cancelled order {order['id']}")
+                            await self.exchange.cancel_all_orders(symbol)
+                            self.logger.log_event("MAIN", "INFO", f"❌ Cancelled orders for {symbol}")
                         except Exception:
                             pass
 
-                        # Close position immediately
-                        close_side = "sell" if side == "long" else "buy"
-                        close_order = await self.exchange.exchange.create_order(
-                            symbol=symbol, type="market", side=close_side, amount=contracts, params={"reduceOnly": True}
+                        # Market close the position using client wrapper
+                        close_order = await self.exchange.create_order(
+                            symbol=symbol,
+                            order_type="market",
+                            side=close_side,
+                            amount=amount,
+                            params={"reduceOnly": True},
                         )
 
                         self.logger.log_event(
                             "MAIN", "INFO", f"✅ EMERGENCY CLOSE EXECUTED: {symbol}, Order: {close_order.get('id')}"
                         )
-                        # Optional: record exit decision in audit (approx. PnL)
+                        # Record exit decision in audit (approx. PnL)
                         try:
                             if getattr(self, "audit", None):
                                 self.audit.record_exit_decision(
@@ -370,7 +371,7 @@ class SimplifiedTradingBot:
                                     reason="EMERGENCY_CLOSE",
                                     pnl=float(unrealized_pnl) if isinstance(unrealized_pnl, int | float) else 0.0,
                                     exit_signals=None,
-                                    metadata={"order_id": close_order.get("id"), "side": side},
+                                    metadata={"order_id": close_order.get("id"), "side": side_raw},
                                 )
                         except Exception:
                             pass
@@ -378,36 +379,31 @@ class SimplifiedTradingBot:
                     except Exception as e:
                         self.logger.log_event("MAIN", "ERROR", f"❌ EMERGENCY CLOSE FAILED for {symbol}: {e}")
 
-                # Wait and verify
-                await asyncio.sleep(3)
-
-                try:
-                    final_positions = await self.exchange.exchange.fetch_positions()
-                    still_open = []
-                    for p in final_positions:
+                # Verification loop with retries
+                for attempt in range(3):
+                    await asyncio.sleep(1)
+                    try:
+                        final_positions = await self.exchange.get_all_positions()
+                    except Exception:
+                        final_positions = []
+                    open_count = 0
+                    for p in final_positions or []:
                         try:
                             val = float(p.get("contracts", p.get("size", 0)))
                         except Exception:
                             val = 0.0
-                        if val != 0:
-                            still_open.append(p)
+                        if val > 0.0001:
+                            open_count += 1
 
-                    if still_open:
+                    if open_count == 0:
+                        self.logger.log_event("SHUTDOWN", "INFO", "✅ All positions closed")
+                        break
+                    elif attempt < 2:
                         self.logger.log_event(
-                            "MAIN",
-                            "ERROR",
-                            f"🚨 CRITICAL: {len(still_open)} position(s) STILL OPEN after emergency close!",
+                            "SHUTDOWN", "WARNING", f"Attempt {attempt + 1}: Still {open_count} positions, retrying..."
                         )
-                        # Send urgent telegram
-                        if self.telegram_bot:
-                            await self.telegram_bot.send_message(
-                                f"🚨 CRITICAL: {len(still_open)} positions still open after bot shutdown!\n"
-                                f"Please close manually on Binance!"
-                            )
                     else:
-                        self.logger.log_event("MAIN", "INFO", "✅ All positions emergency closed successfully")
-                except Exception:
-                    pass
+                        self.logger.log_event("SHUTDOWN", "ERROR", "Failed to close all positions after 3 attempts")
 
             else:
                 self.logger.log_event("MAIN", "INFO", "✅ No open positions found")

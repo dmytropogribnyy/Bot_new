@@ -5,6 +5,7 @@ Unified configuration with leverage mapping and simplified loading
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -195,8 +196,27 @@ class TradingConfig(BaseModel):
 
     # === Stage D additions (add at the end) ===
     working_type: Literal["MARK_PRICE", "CONTRACT_PRICE"] = "MARK_PRICE"
-    tp_order_style: Literal["limit", "market"] = "limit"
+    tp_order_style: Literal["limit", "market"] = "limit"  # [DEPRECATED] prefer tp_order_type
     mandatory_sl: bool = True
+
+    # Protective order defaults (configurable via env)
+    sl_order_type: str = Field(default="STOP_MARKET", env="SL_ORDER_TYPE")
+    tp_order_type: str = Field(default="TAKE_PROFIT_MARKET", env="TP_ORDER_TYPE")
+    time_in_force: str = Field(default="GTC", env="TIME_IN_FORCE")
+    reduce_only: bool = Field(default=True, env="REDUCE_ONLY")
+
+    # Multiple TP and trailing stop controls (Stage: multiple-tp-trailing)
+    enable_multiple_tp: bool = Field(default=True, env="ENABLE_MULTIPLE_TP")
+    # Raw TP levels from env/file. Use property tp_levels to consume.
+    tp_levels_raw: list[dict] | str = Field(default=[], env="TP_LEVELS")
+    enable_trailing_stop: bool = Field(default=False, env="ENABLE_TRAILING_STOP")
+    trailing_stop_percent: float = Field(default=0.5, env="TRAILING_STOP_PERCENT")
+    trailing_activation_after_tp: int = Field(default=1, env="TRAILING_ACTIVATION_AFTER_TP")
+
+    # Position sizing / minQty handling (auto-increase for BTC/ETH)
+    base_position_size_usdt: float = Field(default=20.0, env="BASE_POSITION_SIZE_USDT")
+    allow_auto_increase_for_min: bool = Field(default=True, env="ALLOW_AUTO_INCREASE_FOR_MIN")
+    max_auto_increase_usdt: float = Field(default=150.0, env="MAX_AUTO_INCREASE_USDT")
 
     # === Stage F additions (global daily guard) ===
     max_sl_streak: int = Field(default=3, description="Maximum consecutive stop-losses per day before blocking entries")
@@ -266,6 +286,11 @@ class TradingConfig(BaseModel):
             # Stage D
             working_type=env_str("WORKING_TYPE", "MARK_PRICE"),
             tp_order_style=env_str("TP_ORDER_STYLE", "limit"),
+            # Protective order types
+            sl_order_type=env_str("SL_ORDER_TYPE", "STOP_MARKET"),
+            tp_order_type=env_str("TP_ORDER_TYPE", "TAKE_PROFIT_MARKET"),
+            time_in_force=env_str("TIME_IN_FORCE", "GTC"),
+            reduce_only=env_bool("REDUCE_ONLY", True),
             # Stage F
             max_sl_streak=env_int("MAX_SL_STREAK", getattr(cls, "max_sl_streak", 3)),
             daily_drawdown_pct=env_float("DAILY_DRAWDOWN_PCT", getattr(cls, "daily_drawdown_pct", 3.0)),
@@ -410,6 +435,16 @@ class TradingConfig(BaseModel):
             # Execution
             "WORKING_TYPE": "working_type",
             "TP_ORDER_STYLE": "tp_order_style",
+            "SL_ORDER_TYPE": "sl_order_type",
+            "TP_ORDER_TYPE": "tp_order_type",
+            "TIME_IN_FORCE": "time_in_force",
+            "REDUCE_ONLY": "reduce_only",
+            # Multiple TP & Trailing
+            "ENABLE_MULTIPLE_TP": "enable_multiple_tp",
+            "TP_LEVELS": "tp_levels_raw",
+            "ENABLE_TRAILING_STOP": "enable_trailing_stop",
+            "TRAILING_STOP_PERCENT": "trailing_stop_percent",
+            "TRAILING_ACTIVATION_AFTER_TP": "trailing_activation_after_tp",
             # Positions / Risk
             "MAX_POSITIONS": "max_positions",
             "MIN_POSITION_SIZE_USDT": "min_position_size_usdt",
@@ -452,6 +487,8 @@ class TradingConfig(BaseModel):
                 "log_to_console",
                 "use_dynamic_balance",
                 "disable_spread_filter_testnet",
+                "enable_multiple_tp",
+                "enable_trailing_stop",
             ):
                 setattr(self, config_key, val.lower() in ("true", "1", "yes", "on"))
                 continue
@@ -464,6 +501,7 @@ class TradingConfig(BaseModel):
                 "max_concurrent_positions",
                 "entry_cooldown_seconds",
                 "max_hourly_trade_limit",
+                "trailing_activation_after_tp",
             ):
                 try:
                     setattr(self, config_key, int(val))
@@ -483,11 +521,18 @@ class TradingConfig(BaseModel):
                 "balance_percentage",
                 "trading_deposit",
                 "max_spread_pct",
+                "trailing_stop_percent",
+                "base_position_size_usdt",
+                "max_auto_increase_usdt",
             ):
                 try:
                     setattr(self, config_key, float(val))
                 except Exception:
                     pass
+                continue
+            # additional booleans
+            if config_key in ("allow_auto_increase_for_min",):
+                setattr(self, config_key, val.lower() in ("true", "1", "yes", "on"))
                 continue
             # strings (working_type, tp_order_style, tokens, etc.)
             setattr(self, config_key, val)
@@ -585,6 +630,67 @@ class TradingConfig(BaseModel):
             "telegram_enabled": self.is_telegram_enabled(),
             "log_level": self.log_level,
         }
+
+    @property
+    def tp_levels(self) -> list[dict]:
+        """
+        Возвращает список уровней TP: [{percent: float, size: 0..1}, ...].
+        Источники:
+        - TP_LEVELS (JSON-строка или список) — percent в долях (0.012 → 1.2%).
+        - step_tp_levels + step_tp_sizes — уровни/доли из конфигурации (уровни в долях).
+        Если multiple TP выключен — fallback на один уровень по take_profit_percent.
+        """
+        if not getattr(self, "enable_multiple_tp", False):
+            return [{"percent": float(self.take_profit_percent), "size": 1.0}]
+
+        # 1) Try explicit TP_LEVELS first (env/file). Accept JSON string or list.
+        raw_levels: list[dict] | list | str = getattr(self, "tp_levels_raw", [])
+        levels_from_env: list[dict] = []
+        if isinstance(raw_levels, str):
+            try:
+                raw_levels = json.loads(raw_levels)
+            except Exception as e:
+                logging.warning(f"Invalid TP_LEVELS format: {e}")
+                raw_levels = []
+        if isinstance(raw_levels, list):
+            for item in raw_levels:
+                try:
+                    if isinstance(item, dict):
+                        pct = float(item.get("percent", 0))
+                        size = float(item.get("size", 0))
+                    else:
+                        # tolerate list of numbers (levels) without sizes
+                        pct = float(item)
+                        size = 0.0
+                    # Convert fraction→percent if value looks fractional
+                    pct_percent = pct * 100.0 if pct <= 1.0 else pct
+                    if pct_percent > 0 and 0 < size <= 1:
+                        levels_from_env.append({"percent": pct_percent, "size": size})
+                except Exception:
+                    continue
+
+        # 2) Fallback to step arrays
+        levels_from_steps: list[dict] = []
+        try:
+            steps = getattr(self, "step_tp_levels", []) or []
+            sizes = getattr(self, "step_tp_sizes", []) or []
+            for pct_raw, sz in zip(steps, sizes, strict=False):
+                try:
+                    pct_percent = (float(pct_raw) * 100.0) if float(pct_raw) <= 1.0 else float(pct_raw)
+                    sz_f = float(sz)
+                    if pct_percent > 0 and 0 < sz_f <= 1:
+                        levels_from_steps.append({"percent": pct_percent, "size": sz_f})
+                except Exception:
+                    continue
+        except Exception:
+            levels_from_steps = []
+
+        parsed = levels_from_env or levels_from_steps
+        return parsed or [{"percent": float(self.take_profit_percent), "size": 1.0}]
+
+    # Backward-compatible helper
+    def get_tp_levels(self) -> list[dict]:
+        return self.tp_levels
 
 
 # Global configuration instance

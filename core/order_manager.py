@@ -25,6 +25,7 @@ from core.risk_guard import (
 )
 from core.risk_guard_stage_f import RiskGuardStageF
 from core.sizing import calculate_position_from_risk
+from core.symbol_utils import base_of, to_binance_symbol
 from core.unified_logger import UnifiedLogger
 from tools.pre_trade_check import can_enter_position
 
@@ -50,6 +51,14 @@ class OrderManager:
         self.pending_orders: dict[str, list[dict]] = {}  # symbol -> [orders]
         self.tp_orders: dict[str, list[dict]] = {}  # symbol -> [tp_orders]
         self.sl_orders: dict[str, dict] = {}  # symbol -> sl_order
+
+        # Trailing stop state per symbol
+        self.trailing_stops: dict[str, dict] = {}
+
+        # Pending/active trailing (HWM) after last TP execution
+        # Keys are Binance raw symbols (e.g., BTCUSDT). Entries store 'ccxt_symbol' for REST calls.
+        self.pending_trailing: dict[str, dict] = {}
+        self.active_trailing: dict[str, dict] = {}
 
         # Monitoring and synchronization
         self.last_sync_time = 0
@@ -426,18 +435,46 @@ class OrderManager:
             except Exception:
                 pass
 
-            # Calculate TP/SL levels
+            # Calculate TP/SL levels (for logging)
             sl_price = self.calculate_stop_loss(entry_price, side)
             tp_levels = self.calculate_take_profit_levels(entry_price, side)
 
-            # Place TP/SL orders
-            tp_sl_result = await self.place_tp_sl_orders(symbol, side, quantity, entry_price)
+            # CRITICAL: Determine actual filled amount for protective orders
+            actual_filled: float = float(quantity)
+            try:
+                if order and order.get("id"):
+                    # Give exchange a brief moment to settle order fills
+                    await asyncio.sleep(0.5)
+                    details = await self.exchange.exchange.fetch_order(order["id"], symbol)
+                    try:
+                        actual_filled = float(details.get("filled", 0.0))
+                    except Exception:
+                        actual_filled = 0.0
+                    if actual_filled <= 0:
+                        try:
+                            actual_filled = float(order.get("filled", quantity))
+                        except Exception:
+                            actual_filled = float(quantity)
+                    # Round by LOT_SIZE step size
+                    actual_filled = self.exchange.round_amount(symbol, actual_filled)
+                    self.logger.log_event(
+                        "ORDER_MANAGER",
+                        "INFO",
+                        f"Entry filled: {symbol} {side} requested={quantity} filled={actual_filled}",
+                    )
+            except Exception as e:
+                self.logger.log_event("ORDER_MANAGER", "WARNING", f"Failed to fetch filled qty: {e}")
+
+            # Place TP/SL orders using actual filled quantity
+            tp_sl_result = await self.place_tp_sl_orders(
+                symbol, side, quantity, entry_price, actual_filled=actual_filled
+            )
 
             # Update active positions
             async with self.position_lock:
                 self.active_positions[symbol] = {
                     "symbol": symbol,
-                    "size": quantity,
+                    "size": actual_filled,
                     "side": side,
                     "entry_price": entry_price,
                     "mark_price": entry_price,
@@ -466,166 +503,427 @@ class OrderManager:
             self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to place position for {symbol}: {e}")
             return {"success": False, "reason": str(e)}
 
-    async def place_tp_sl_orders(self, symbol: str, side: str, quantity: float, entry_price: float) -> dict[str, Any]:
-        """Place take profit and stop loss orders"""
+    async def place_tp_sl_orders(
+        self, symbol: str, side: str, quantity: float, entry_price: float, actual_filled: float | None = None
+    ) -> dict[str, Any]:
+        """DEPRECATED: use place_protective_orders(). Kept for BC."""
+        self.logger.log_event(
+            "ORDER_MANAGER",
+            "WARNING",
+            "place_tp_sl_orders() is deprecated; using place_protective_orders().",
+        )
+        return await self.place_protective_orders(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            quantity=quantity,
+            actual_filled=actual_filled,
+        )
+
+    def _get_tick_size(self, market: dict) -> float:
+        return next(
+            (
+                float(f.get("tickSize"))
+                for f in (market.get("info", {}) or {}).get("filters", [])
+                if f.get("filterType") == "PRICE_FILTER" and float(f.get("tickSize", 0) or 0) > 0
+            ),
+            0.01,
+        )
+
+    def _get_min_qty(self, market: dict) -> float:
+        limits = (market.get("limits", {}) or {}).get("amount", {}) or {}
         try:
-            # Calculate prices
-            sl_price = self.calculate_stop_loss(entry_price, side)
-            tp_levels = self.calculate_take_profit_levels(entry_price, side)
+            return float(limits.get("min") or 0.0)
+        except Exception:
+            return 0.0
 
-            # Load market schema for precision gate
-            markets = await self.exchange.get_markets()
-            market = markets.get(symbol, {})
+    def _make_client_id(self, symbol: str, order_type: str) -> str:
+        import hashlib
+        import time
 
-            # Determine closing side for protective orders (opposite to entry)
+        raw = f"{symbol}_{order_type}_{int(time.time() * 1000)}"
+        return f"{order_type}_{hashlib.md5(raw.encode()).hexdigest()[:8]}"[:32]
+
+    def _binance_to_ccxt(self, binance_symbol: str) -> str:
+        try:
+            q = self.config.resolved_quote_coin
+            if binance_symbol and binance_symbol.endswith(q):
+                base = binance_symbol[: -len(q)]
+                return f"{base}/{q}:{q}"
+        except Exception:
+            pass
+        return binance_symbol
+
+    def _activate_trailing(self, symbol: str, side: str, activation_price: float) -> None:
+        self.trailing_stops[symbol] = {
+            "side": side,
+            "activated": True,
+            "activation_price": float(activation_price),
+            "high_water_mark": float(activation_price),
+            "current_sl": None,
+            "trailing_percent": float(getattr(self.config, "trailing_stop_percent", 0.5)),
+        }
+        self.logger.log_event(
+            "ORDER_MANAGER", "INFO", f"Trailing stop activated for {symbol} at {float(activation_price):.6f}"
+        )
+
+    async def _move_sl_order(self, symbol: str, new_price: float, side: str) -> None:
+        try:
+            # Cancel only existing reduceOnly STOP/SL orders when possible to avoid removing TPs
+            try:
+                open_orders = await self.exchange.get_open_orders(symbol)
+            except Exception:
+                open_orders = []
+            for o in open_orders or []:
+                try:
+                    otype = str(o.get("type") or o.get("info", {}).get("type") or "").upper()
+                    is_reduce = bool(o.get("reduceOnly") is True or (o.get("info", {}).get("reduceOnly") is True))
+                    if is_reduce and ("STOP" in otype or otype in {"STOP", "STOP_MARKET"}):
+                        await self.exchange.cancel_order(o["id"], symbol)
+                except Exception:
+                    continue
+
+            params = {
+                "stopPrice": float(new_price),
+                "reduceOnly": True,
+                "workingType": self.config.working_type,
+                "timeInForce": self.config.time_in_force,
+            }
+            await self.exchange.create_order(
+                symbol,
+                getattr(self.config, "sl_order_type", "STOP_MARKET"),
+                ("sell" if side == "buy" else "buy"),
+                None,
+                None,
+                params,
+            )
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to move SL for {symbol}: {e}")
+
+    async def _activate_trailing(self, symbol: str, pending: dict) -> None:
+        """Activate trailing stop after the last TP is filled (HWM initialized at activation price)."""
+        try:
+            side = pending["side"]
+            activation_price = float(pending["activation_price"])
+            old_sl_id = pending.get("sl_order_id")
+
+            # Cancel previous SL if exists
+            if old_sl_id:
+                try:
+                    await self.exchange.cancel_order(old_sl_id, symbol)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await self.exchange.cancel_sl_order(symbol, side)
+                except Exception:
+                    pass
+
+            trailing_pct = float(self.config.trailing_stop_percent) / 100.0
             close_side = "sell" if side == "buy" else "buy"
 
-            # Normalize SL before placing
-            sl_price_norm, sl_qty_norm, _ = normalize(sl_price, float(quantity), market, None, symbol)
+            if side == "buy":
+                sl_price = activation_price * (1 - trailing_pct)
+            else:
+                sl_price = activation_price * (1 + trailing_pct)
+
+            params = {
+                "stopPrice": float(sl_price),
+                "reduceOnly": True,
+                "workingType": self.config.working_type,
+                "newClientOrderId": self._make_client_id(symbol, "TRAIL"),
+            }
+
+            try:
+                sl_order = await self.exchange.create_order(
+                    symbol, getattr(self.config, "sl_order_type", "STOP_MARKET"), close_side, None, None, params
+                )
+                self.active_trailing[symbol] = {
+                    "side": side,
+                    "sl_order_id": sl_order.get("id") if sl_order else None,
+                    "current_sl_price": float(sl_price),
+                    "high_water_mark": float(activation_price),
+                    "trailing_percent": float(trailing_pct),
+                }
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "INFO",
+                    f"{symbol}: Trailing activated at HWM={float(activation_price):.6f}, SL={float(sl_price):.6f}",
+                )
+            except Exception as e:
+                self.logger.log_event("ORDER_MANAGER", "ERROR", f"{symbol}: trailing activation failed: {e}")
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"_activate_trailing failed: {e}")
+
+    async def update_trailing_stop(self, symbol: str, current_price: float) -> None:
+        trail = self.active_trailing.get(symbol)
+        if not trail:
+            return
+
+        side = trail["side"]
+        hwm = float(trail["high_water_mark"]) if trail.get("high_water_mark") is not None else float(current_price)
+        current_sl = float(trail["current_sl_price"]) if trail.get("current_sl_price") is not None else None
+        trailing_pct = float(trail["trailing_percent"])  # already fraction (0.005 for 0.5%)
+
+        new_hwm = hwm
+        if side == "buy" and current_price > hwm:
+            new_hwm = current_price
+        elif side == "sell" and current_price < hwm:
+            new_hwm = current_price
+
+        if side == "buy":
+            new_sl = new_hwm * (1 - trailing_pct)
+            should_move = (current_sl is None) or (new_sl > float(current_sl))
+        else:
+            new_sl = new_hwm * (1 + trailing_pct)
+            should_move = (current_sl is None) or (new_sl < float(current_sl))
+
+        if not should_move:
+            return
+
+        old_sl_id = trail.get("sl_order_id")
+        if old_sl_id:
+            try:
+                await self.exchange.cancel_order(old_sl_id, symbol)
+            except Exception:
+                pass
+        else:
+            try:
+                await self.exchange.cancel_sl_order(symbol, side)
+            except Exception:
+                pass
+
+        close_side = "sell" if side == "buy" else "buy"
+        params = {
+            "stopPrice": float(new_sl),
+            "reduceOnly": True,
+            "workingType": self.config.working_type,
+            "newClientOrderId": self._make_client_id(symbol, "SL_TRAIL"),
+        }
+
+        try:
+            sl_order = await self.exchange.create_order(
+                symbol, getattr(self.config, "sl_order_type", "STOP_MARKET"), close_side, None, None, params
+            )
+            trail["sl_order_id"] = sl_order.get("id") if sl_order else None
+            trail["current_sl_price"] = float(new_sl)
+            trail["high_water_mark"] = float(new_hwm)
             self.logger.log_event(
                 "ORDER_MANAGER",
-                "DEBUG",
-                f"Normalized SL for {symbol}: price {sl_price} -> {sl_price_norm}, qty {quantity} -> {sl_qty_norm}",
+                "INFO",
+                f"{symbol}: HWM updated to {float(new_hwm):.6f}, SL moved to {float(new_sl):.6f}",
             )
-            # Idempotent SL order
-            env = getattr(self.config, "ENV", "PROD")
-            strategy = getattr(self.config, "STRATEGY", "DEFAULT")
-            intent_sl = self._intent_key(
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"{symbol}: trailing SL update failed: {e}")
+
+    async def place_protective_orders(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        quantity: float,
+        actual_filled: float | None = None,
+    ) -> dict[str, Any]:
+        """Place one SL + N TP (from config), optionally activate trailing."""
+        # 1) Quantity: prefer actual filled
+        order_qty = float(actual_filled) if actual_filled else float(quantity)
+        order_qty = self.exchange.round_amount(symbol, order_qty)
+
+        # 2) Market metadata
+        markets = await self.exchange.get_markets()
+        market = markets.get(symbol, {})
+        min_qty = self._get_min_qty(market)
+        tick_size = self._get_tick_size(market)
+
+        # 3) Current price and price buffer
+        ticker = await self.exchange.get_ticker(symbol)
+        try:
+            current_price = float((ticker or {}).get("last") or (ticker or {}).get("close") or entry_price)
+        except Exception:
+            current_price = float(entry_price)
+        price_buffer = float(tick_size) * 5.0
+        close_side = "sell" if side == "buy" else "buy"
+
+        # 3.1) Auto-increase quantity for BTC/ETH to reach minQty if allowed and budget permits
+        try:
+            b = base_of(symbol).upper()
+            if (
+                getattr(self.config, "allow_auto_increase_for_min", True)
+                and b in {"BTC", "ETH"}
+                and float(order_qty) < float(min_qty or 0)
+            ):
+                needed = float(min_qty) - float(order_qty)
+                add_usdt = float(needed) * float(current_price)
+                if add_usdt <= float(getattr(self.config, "max_auto_increase_usdt", 150.0)):
+                    order_qty = float(min_qty)
+                    order_qty = self.exchange.round_amount(symbol, order_qty)
+                    self.logger.log_event(
+                        "ORDER_MANAGER",
+                        "INFO",
+                        f"{symbol}: auto-increase qty to minQty {float(min_qty):.10f} (+~${float(add_usdt):.2f})",
+                    )
+                else:
+                    self.logger.log_event(
+                        "ORDER_MANAGER",
+                        "WARNING",
+                        f"{symbol}: cannot auto-increase to minQty — extra ${float(add_usdt):.2f} > cap ${float(getattr(self.config, 'max_auto_increase_usdt', 150.0)):.2f}",
+                    )
+        except Exception:
+            pass
+
+        # 4) SL — common
+        if side == "buy":
+            raw_sl = max(entry_price * (1 - self.config.stop_loss_percent / 100.0), current_price - price_buffer)
+        else:
+            raw_sl = min(entry_price * (1 + self.config.stop_loss_percent / 100.0), current_price + price_buffer)
+
+        # Normalize SL price/qty
+        sl_price_norm, sl_qty_norm, _ = normalize(float(raw_sl), float(order_qty), market, current_price, symbol)
+        # Idempotent client ID for SL
+        env = getattr(self.config, "ENV", "PROD")
+        strategy = getattr(self.config, "STRATEGY", "DEFAULT")
+        intent_sl = self._intent_key(
+            env=env,
+            strategy=strategy,
+            symbol=symbol,
+            side=close_side,
+            order_type=getattr(self.config, "sl_order_type", "STOP_MARKET"),
+            qty_norm=float(sl_qty_norm or order_qty),
+            price_norm=float(sl_price_norm),
+            tp=None,
+            sl=float(sl_price_norm),
+        )
+        cid_sl = self.idem.get(intent_sl) or make_client_id(env, strategy, symbol, close_side, intent_sl)
+        if self.idem.get(intent_sl) is None:
+            self.idem.put(intent_sl, cid_sl)
+        sl_params = {
+            "stopPrice": float(sl_price_norm),
+            "reduceOnly": True,
+            "workingType": self.config.working_type,
+            "timeInForce": self.config.time_in_force,
+            "newClientOrderId": cid_sl,
+        }
+        try:
+            sl_order = await self.exchange.create_order(
+                symbol,
+                getattr(self.config, "sl_order_type", "STOP_MARKET"),
+                close_side,
+                float(sl_qty_norm or order_qty),
+                None,
+                sl_params,
+            )
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"SL failed: {e}")
+            sl_order = None
+
+        # 5) TP levels
+        tp_levels_cfg = self.config.tp_levels
+        tp_orders: list[dict] = []
+        last_tp_id = None
+        last_tp_price = None
+
+        for i, level in enumerate(tp_levels_cfg, start=1):
+            try:
+                tp_pct = float(level["percent"])  # percent
+                size_pct = float(level.get("size", 0))  # 0..1
+            except Exception:
+                continue
+
+            tp_qty = self.exchange.round_amount(symbol, order_qty * size_pct)
+            if float(tp_qty) < float(min_qty or 0):
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "WARNING",
+                    f"TP{i} qty {float(tp_qty):.10f} < minQty {float(min_qty):.10f}, skipped",
+                )
+                continue
+
+            if side == "buy":
+                raw_tp = entry_price * (1 + tp_pct / 100.0)
+                tp_price_raw = max(raw_tp, current_price + price_buffer)
+            else:
+                raw_tp = entry_price * (1 - tp_pct / 100.0)
+                tp_price_raw = min(raw_tp, current_price - price_buffer)
+
+            # Normalize TP price/qty
+            tp_price_norm, tp_qty_norm, _ = normalize(float(tp_price_raw), float(tp_qty), market, current_price, symbol)
+            if float(tp_qty_norm or 0) <= 0:
+                continue
+
+            # Idempotent client ID for TP
+            order_type = getattr(self.config, "tp_order_type", None) or (
+                "TAKE_PROFIT_MARKET" if getattr(self.config, "tp_order_style", "limit") == "market" else "TAKE_PROFIT"
+            )
+            intent_tp = self._intent_key(
                 env=env,
                 strategy=strategy,
                 symbol=symbol,
                 side=close_side,
-                order_type="STOP_MARKET",
-                qty_norm=sl_qty_norm,
-                price_norm=sl_price_norm,
-                tp=None,
-                sl=sl_price_norm,
+                order_type=order_type,
+                qty_norm=float(tp_qty_norm),
+                price_norm=float(tp_price_norm),
+                tp=float(tp_price_norm),
+                sl=None,
             )
-            cid_sl = self.idem.get(intent_sl) or make_client_id(env, strategy, symbol, close_side, intent_sl)
-            if self.idem.get(intent_sl) is None:
-                self.idem.put(intent_sl, cid_sl)
-            params_sl = {
-                "stopPrice": float(sl_price_norm),
+            cid_tp = self.idem.get(intent_tp) or make_client_id(env, strategy, symbol, close_side, intent_tp)
+            if self.idem.get(intent_tp) is None:
+                self.idem.put(intent_tp, cid_tp)
+            params_tp = {
                 "reduceOnly": True,
                 "workingType": self.config.working_type,
-                "newClientOrderId": cid_sl,
+                "timeInForce": self.config.time_in_force,
+                "newClientOrderId": cid_tp,
+                "stopPrice": float(tp_price_norm),
             }
-            self.logger.log_event("ORDER_MANAGER", "DEBUG", f"[IDEMP] intent={intent_sl} clientId={cid_sl}")
-            sl_order = await self.exchange.create_order(symbol, "STOP_MARKET", close_side, sl_qty_norm, None, params_sl)
 
-            # КРИТИЧНО: Проверка что SL реально установился
-            if sl_price_norm and not sl_order.get("id"):
-                self.logger.log_event("ORDER_MANAGER", "CRITICAL", f"SL FAILED for {symbol} - CLOSING POSITION")
-                # Немедленно закрыть позицию
-                close_order = await self.exchange.create_order(
-                    symbol, "market", close_side, float(quantity), None, {"reduceOnly": True}
-                )
-                return {"success": False, "error": "SL_NOT_SET", "closed": close_order.get("id")}
-
-            # Дополнительная проверка через REST API
-            await asyncio.sleep(1.5)
-            open_orders = await self.exchange.get_open_orders(symbol)
-
-            # Нормализуем проверку типа
-            has_sl = False
-            for o in open_orders:
-                otype = str(o.get("type") or o.get("info", {}).get("type") or "").upper()
-                is_reduce = (o.get("reduceOnly") is True) or (o.get("info", {}).get("reduceOnly") is True)
-                if (("STOP" in otype) or (otype in {"STOP", "STOP_MARKET"})) and is_reduce:
-                    has_sl = True
-                    break
-
-            if sl_price_norm and not has_sl:
-                self.logger.log_event("ORDER_MANAGER", "CRITICAL", f"SL NOT FOUND on exchange for {symbol}")
-                # Экстренное закрытие
-                await self.exchange.create_order(
-                    symbol, "market", close_side, float(quantity), None, {"reduceOnly": True}
-                )
-                return {"success": False, "error": "SL_VERIFICATION_FAILED"}
-
-            # Audit SL order placement
             try:
-                if sl_order and sl_order.get("id") and self.audit:
-                    self.audit.log_order_placed(sl_order, reason="Stop loss protection")
-            except Exception:
-                pass
-
-            # Place take profit orders
-            tp_orders = []
-            for tp_price, tp_fraction in tp_levels:
-                # Convert fraction to absolute amount
-                tp_amount = round(float(quantity) * float(tp_fraction), 6)
-                if tp_amount <= 0:
-                    continue
-                # Normalize TP before placing
-                tp_price_norm, tp_qty_norm, _ = normalize(tp_price, tp_amount, market, None, symbol)
-                if tp_qty_norm <= 0:
-                    continue
-                self.logger.log_event(
-                    "ORDER_MANAGER",
-                    "DEBUG",
-                    f"Normalized TP for {symbol}: price {tp_price} -> {tp_price_norm}, qty {tp_amount} -> {tp_qty_norm}",
-                )
-                # Idempotent TP order
-                intent_tp = self._intent_key(
-                    env=env,
-                    strategy=strategy,
-                    symbol=symbol,
-                    side=close_side,
-                    order_type=("TAKE_PROFIT_MARKET" if self.config.tp_order_style == "market" else "TAKE_PROFIT"),
-                    qty_norm=tp_qty_norm,
-                    price_norm=tp_price_norm,
-                    tp=tp_price_norm,
-                    sl=None,
-                )
-                cid_tp = self.idem.get(intent_tp) or make_client_id(env, strategy, symbol, close_side, intent_tp)
-                if self.idem.get(intent_tp) is None:
-                    self.idem.put(intent_tp, cid_tp)
-                params_tp = {
-                    "reduceOnly": True,
-                    "workingType": self.config.working_type,
-                    "newClientOrderId": cid_tp,
-                }
-                if self.config.tp_order_style == "market":
-                    params_tp["stopPrice"] = float(tp_price_norm)
+                if order_type == "TAKE_PROFIT_MARKET":
                     tp_order = await self.exchange.create_order(
-                        symbol, "TAKE_PROFIT_MARKET", close_side, tp_qty_norm, None, params_tp
+                        symbol, "TAKE_PROFIT_MARKET", close_side, float(tp_qty_norm), None, params_tp
                     )
                 else:
-                    params_tp["stopPrice"] = float(tp_price_norm)
                     tp_order = await self.exchange.create_order(
-                        symbol, "TAKE_PROFIT", close_side, tp_qty_norm, float(tp_price_norm), params_tp
+                        symbol, "TAKE_PROFIT", close_side, float(tp_qty_norm), float(tp_price_norm), params_tp
                     )
-                tp_orders.append(tp_order)
+                if tp_order:
+                    tp_orders.append(tp_order)
+                    last_tp_id = tp_order.get("id")
+                    last_tp_price = float(tp_price_norm)
 
-                # Audit TP placement
-                try:
-                    if tp_order and tp_order.get("id") and self.audit:
-                        self.audit.log_order_placed(tp_order, reason="Take profit target")
-                except Exception:
-                    pass
+                self.logger.log_event(
+                    "ORDER_MANAGER",
+                    "INFO",
+                    f"TP{i} placed: {symbol} qty={float(tp_qty_norm):.10f} @ {float(tp_price_norm):.6f}",
+                )
+            except Exception as e:
+                self.logger.log_event("ORDER_MANAGER", "ERROR", f"TP{i} failed: {e}")
 
-            # Store orders
+        # Store last placed orders
+        try:
             async with self.order_lock:
                 self.sl_orders[symbol] = sl_order
                 self.tp_orders[symbol] = tp_orders
+        except Exception:
+            pass
 
+        # Arm pending trailing to activate after the last TP is filled
+        if getattr(self.config, "enable_trailing_stop", False) and last_tp_id and last_tp_price is not None:
+            # store using Binance raw symbol key for WS matching, but keep ccxt symbol in payload
+            binance_key = to_binance_symbol(symbol)
+            self.pending_trailing[binance_key] = {
+                "side": side,
+                "activation_price": float(last_tp_price),
+                "tp_order_id": last_tp_id,
+                "sl_order_id": (sl_order or {}).get("id") if sl_order else None,
+                "ccxt_symbol": symbol,
+            }
             self.logger.log_event(
                 "ORDER_MANAGER",
                 "INFO",
-                f"Placed TP/SL orders for {symbol}: SL@{sl_price}, TP@{[tp[0] for tp in tp_levels]}",
+                f"{symbol}: pending trailing armed at {float(last_tp_price):.6f} (after last TP id={last_tp_id})",
             )
 
-            return {
-                "sl_order": sl_order,
-                "tp_orders": tp_orders,
-                "sl_price": sl_price,
-                "tp_prices": [tp[0] for tp in tp_levels],
-            }
-
-        except Exception as e:
-            self.logger.log_event("ORDER_MANAGER", "ERROR", f"Failed to place TP/SL orders for {symbol}: {e}")
-            return {"success": False, "reason": str(e)}
+        return {"sl_order": sl_order, "tp_orders": tp_orders}
 
     def calculate_stop_loss(self, entry_price: float, side: str) -> float:
         """Calculate stop loss price"""
@@ -970,6 +1268,19 @@ class OrderManager:
 
                 return  # Ликвидация обработана
 
+            # --- Активация трейлинга после последнего TP ---
+            try:
+                pending = self.pending_trailing.get(symbol)
+                if status == "FILLED" and pending and pending.get("tp_order_id") == order_id:
+                    self.logger.log_event(
+                        "ORDER_MANAGER", "INFO", f"{symbol}: last TP filled, activating trailing stop"
+                    )
+                    ccxt_symbol = pending.get("ccxt_symbol") or self._binance_to_ccxt(symbol)
+                    await self._activate_trailing(ccxt_symbol, pending)
+                    self.pending_trailing[symbol] = None
+            except Exception as e:
+                self.logger.log_event("ORDER_MANAGER", "WARNING", f"Trailing activation check failed: {e}")
+
             # --- Обычный выход: FILLED + (reduceOnly или позиция стала 0) ---
             pos_is_zero = self._position_is_zero(symbol)
 
@@ -1008,6 +1319,19 @@ class OrderManager:
                             )
                     except Exception as e:
                         self.logger.log_event("AUDIT", "ERROR", f"Failed to record exit: {e}")
+
+        # === Market data ticker-like events to drive trailing updates ===
+        elif etype in ("24hrTicker", "ticker", "aggTrade", "trade", "markPriceUpdate"):
+            symbol2 = event.get("s") or event.get("symbol")
+            price_val = event.get("c") or event.get("lastPrice") or event.get("p") or event.get("price")
+            if symbol2 and price_val:
+                try:
+                    ccxt_symbol2 = self._binance_to_ccxt(symbol2)
+                    await self.update_trailing_stop(ccxt_symbol2, float(price_val))
+                except Exception as e:
+                    self.logger.log_event("ORDER_MANAGER", "ERROR", f"Trailing update failed for {symbol2}: {e}")
+
+            # Activation check is handled in ORDER_TRADE_UPDATE below
 
         # === ACCOUNT_UPDATE: обновляем кэш позиций ===
         elif etype == "ACCOUNT_UPDATE":
@@ -1060,6 +1384,44 @@ class OrderManager:
                     await self.telegram_bot.send_message("🔄 listenKeyExpired received. Recreating via keepalive…")
                 except Exception:
                     pass
+
+    async def handle_order_update(self, event: dict) -> None:
+        """
+        Lightweight handler for order updates in a simplified form.
+        Activates trailing when the last TP (tracked in pending_trailing) is filled.
+        Expects event with keys: 'X' (status), 'i' (orderId), 's' (symbol in Binance raw format).
+        """
+        try:
+            status = event.get("X")
+            order_id = event.get("i")
+            symbol_raw = event.get("s")
+            if status != "FILLED" or not symbol_raw or order_id is None:
+                return
+            pending = self.pending_trailing.get(symbol_raw)
+            if pending and pending.get("tp_order_id") == order_id:
+                ccxt_symbol = pending.get("ccxt_symbol") or self._binance_to_ccxt(symbol_raw)
+                self.logger.log_event(
+                    "ORDER_MANAGER", "INFO", f"{ccxt_symbol}: last TP filled, activating trailing stop"
+                )
+                await self._activate_trailing(ccxt_symbol, pending)
+                self.pending_trailing[symbol_raw] = None
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "WARNING", f"handle_order_update failed: {e}")
+
+    async def handle_price_update(self, event: dict) -> None:
+        """
+        Lightweight handler for price updates from market WS streams.
+        Expects: { 's': 'BTCUSDT', 'c'|'lastPrice'|'p': 'price' }
+        """
+        try:
+            symbol_raw = event.get("s") or event.get("symbol")
+            price_str = event.get("c") or event.get("lastPrice") or event.get("p") or event.get("price")
+            if not symbol_raw or not price_str:
+                return
+            ccxt_symbol = self._binance_to_ccxt(symbol_raw)
+            await self.update_trailing_stop(ccxt_symbol, float(price_str))
+        except Exception as e:
+            self.logger.log_event("ORDER_MANAGER", "ERROR", f"handle_price_update failed: {e}")
 
     def update_price_cache(self, symbol: str, price: float) -> None:
         """Update price cache from WebSocket"""

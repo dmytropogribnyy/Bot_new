@@ -5,6 +5,7 @@ Simplified version based on v2 structure
 """
 
 import asyncio
+import math
 import time
 from typing import Any
 
@@ -417,6 +418,39 @@ class OptimizedExchangeClient:
             self.logger.log_event("EXCHANGE", "ERROR", f"Failed to cancel all orders for {symbol}: {e}")
             return []
 
+    async def cancel_sl_order(self, symbol: str, side: str | None) -> None:
+        """
+        Cancel current SL/trailing reduceOnly order for a symbol, if found.
+        It scans open orders and cancels ones that look like STOP/SL/TRAIL for the closing side.
+        """
+        try:
+            orders = await self.get_open_orders(symbol)
+        except Exception:
+            return
+
+        close_side: str | None = None
+        if side:
+            s = str(side).lower()
+            close_side = "sell" if s == "buy" else ("buy" if s == "sell" else None)
+
+        for order in orders or []:
+            try:
+                info = order.get("info", {}) or {}
+                o_side = (order.get("side") or "").lower()
+                cid_raw = order.get("clientOrderId") or info.get("clientOrderId") or info.get("clientOrder") or ""
+                cid = str(cid_raw).lower()
+                otype = str(order.get("type") or info.get("type") or "").upper()
+                is_reduce = bool(order.get("reduceOnly") is True or info.get("reduceOnly") is True)
+                is_sl_like = ("sl" in cid) or ("stop" in cid) or ("trail" in cid) or ("STOP" in otype)
+                if is_reduce and is_sl_like and (close_side is None or o_side == close_side):
+                    try:
+                        await self.cancel_order(order["id"], symbol)
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                continue
+
     async def get_order(self, order_id: str, symbol: str) -> dict[str, Any] | None:
         """Get order details"""
         try:
@@ -607,26 +641,73 @@ class OptimizedExchangeClient:
         return self.is_initialized and self.connection_healthy
 
     def _normalize_order_type(self, order_type: str, price: float | None) -> str:
-        """Normalize human-friendly order type names to ccxt binance unified types.
+        """Pass through Binance Futures order types without modification.
 
-        Supported inputs:
-          - STOP_MARKET, stop_market, stopLossMarket → stopLossMarket
-          - STOP, stop, stop_loss → stopLoss (requires price)
-          - TAKE_PROFIT, take_profit → takeProfit (requires price)
-          - TAKE_PROFIT_MARKET, take_profit_market → takeProfitMarket
-          - market, limit → passthrough
+        - For Binance extended types (STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET) return UPPERCASE
+        - For basic ccxt types (limit, market) return lowercase
+        - Otherwise, fallback to limit/market based on presence of price
         """
-        t = (order_type or "").strip().lower().replace(" ", "").replace("_", "")
+        t = (order_type or "").strip().upper()
 
-        if t in ("stopmarket", "stoplossmarket", "slm"):
-            return "stopLossMarket"
-        if t in ("stop", "stoploss"):
-            return "stopLoss"
-        if t in ("takeprofitmarket", "tpmarket"):
-            return "takeProfitMarket"
-        if t in ("takeprofit", "tp"):
-            return "takeProfit"
-        if t in ("limit", "market"):
+        if t in ["STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"]:
             return t
-        # Fallback: if price provided assume limit-like, else market-like
+
+        if t in ["LIMIT", "MARKET"]:
+            return t.lower()
+
+        # Fallback
         return "limit" if price is not None else "market"
+
+    def round_amount(self, symbol: str, amount: float) -> float:
+        """Round amount to LOT_SIZE step size for the symbol.
+
+        Floors to the nearest step size multiple. Falls back to market precision if needed.
+        """
+        try:
+            raw_ex = getattr(self, "exchange", None)
+            if not raw_ex or not getattr(raw_ex, "markets", None):
+                return float(amount)
+
+            market = raw_ex.markets.get(symbol, {}) or {}
+            if not market:
+                return float(amount)
+
+            # Get LOT_SIZE filter
+            filters = (market.get("info", {}) or {}).get("filters", []) or []
+            lot_size_filter = None
+            for f in filters:
+                try:
+                    if (f or {}).get("filterType") == "LOT_SIZE":
+                        lot_size_filter = f
+                        break
+                except Exception:
+                    continue
+
+            if lot_size_filter and "stepSize" in lot_size_filter:
+                try:
+                    step_size = float(lot_size_filter["stepSize"])
+                except Exception:
+                    step_size = 0.0
+                if step_size and step_size > 0:
+                    return math.floor(float(amount) / step_size) * step_size
+
+            # Fallback to market precision if available
+            precision = None
+            try:
+                precision = (market.get("precision", {}) or {}).get("amount")
+            except Exception:
+                precision = None
+            if precision is not None:
+                try:
+                    return round(float(amount), int(precision))
+                except Exception:
+                    pass
+
+            return float(amount)
+
+        except Exception as e:
+            try:
+                self.logger.log_event("EXCHANGE", "WARNING", f"Failed to round amount for {symbol}: {e}")
+            except Exception:
+                pass
+            return float(amount)
