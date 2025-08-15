@@ -26,5 +26,8 @@
 
     // Отключаем PowerShell расширение если не нужно
     "powershell.integratedConsole.showOnStartup": false,
-    "terminal.integrated.defaultProfile.windows": "Command Prompt"
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    "terminal.integrated.profiles.windows": {
+    "PowerShell": { "source": "PowerShell", "icon": "terminal-powershell" }
+  }
 }

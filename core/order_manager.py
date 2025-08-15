@@ -111,6 +111,17 @@ class OrderManager:
         except Exception:
             self.audit = None  # optional
 
+        # Anti-spam cooldown for bonus/auto close attempts
+        self._bonus_closing = defaultdict(float)  # symbol -> last_attempt_ts
+
+    def _cid(self, symbol: str, intent: str, suffix: str = "") -> str:
+        """Generate unique client order ID with intent and suffix"""
+        import time
+
+        base = f"PROD-DEFAULT-{symbol.replace('/', 'SLASH')}-{intent}"
+        tail = f"{int(time.time() * 1_000_000) % 1_000_000:06d}"
+        return f"{base}-{suffix}-{tail}"[:32]
+
     async def get_trading_capital(self) -> float:
         """
         Возвращает капитал для расчёта risk/margin:
@@ -939,22 +950,7 @@ class OrderManager:
             sl_price0 = nudge_price(sl_price0, trigger_ref_initial, tick_size, side=side, is_sl=True, min_ticks=2)
         sl_price_norm, sl_qty_norm, _ = normalize(float(sl_price0), float(order_qty), market, current_price, symbol)
         # Idempotent client ID for SL
-        env = getattr(self.config, "ENV", "PROD")
-        strategy = getattr(self.config, "STRATEGY", "DEFAULT")
-        intent_sl = self._intent_key(
-            env=env,
-            strategy=strategy,
-            symbol=symbol,
-            side=close_side,
-            order_type=getattr(self.config, "sl_order_type", "STOP_MARKET"),
-            qty_norm=float(sl_qty_norm or order_qty),
-            price_norm=float(sl_price_norm),
-            tp=None,
-            sl=float(sl_price_norm),
-        )
-        cid_sl = self.idem.get(intent_sl) or make_client_id(env, strategy, symbol, close_side, intent_sl)
-        if self.idem.get(intent_sl) is None:
-            self.idem.put(intent_sl, cid_sl)
+        cid_sl = self._cid(symbol, "SL", "A")
         attempt = 0
         max_attempts = int(getattr(self.config, "sl_retry_limit", 3))
         sl_order = None
@@ -1084,20 +1080,7 @@ class OrderManager:
             order_type = getattr(self.config, "tp_order_type", None) or (
                 "TAKE_PROFIT_MARKET" if getattr(self.config, "tp_order_style", "limit") == "market" else "TAKE_PROFIT"
             )
-            intent_tp = self._intent_key(
-                env=env,
-                strategy=strategy,
-                symbol=symbol,
-                side=close_side,
-                order_type=order_type,
-                qty_norm=float(tp_qty_norm),
-                price_norm=float(tp_price_norm),
-                tp=float(tp_price_norm),
-                sl=None,
-            )
-            cid_tp = self.idem.get(intent_tp) or make_client_id(env, strategy, symbol, close_side, intent_tp)
-            if self.idem.get(intent_tp) is None:
-                self.idem.put(intent_tp, cid_tp)
+            cid_tp = self._cid(symbol, "TP", f"L{i}")
             params_tp = {
                 "reduceOnly": True,
                 "workingType": self.config.working_type,
@@ -1256,7 +1239,7 @@ class OrderManager:
                 # Try to close anyway as a safety, ignore -2022
                 try:
                     await self.exchange.create_order(
-                        symbol=symbol, type="MARKET", side="sell", amount=0, params={"reduceOnly": True}
+                        symbol=symbol, order_type="MARKET", side="sell", amount=0, params={"reduceOnly": True}
                     )
                 except Exception:
                     pass
@@ -1270,7 +1253,11 @@ class OrderManager:
             side = "sell" if position["side"] == "long" else "buy"
             try:
                 order = await self.exchange.create_order(
-                    symbol=symbol, type="MARKET", side=side, amount=abs(position["size"]), params={"reduceOnly": True}
+                    symbol=symbol,
+                    order_type="MARKET",
+                    side=side,
+                    amount=abs(position["size"]),
+                    params={"reduceOnly": True},
                 )
             except Exception as e:
                 if "-2022" in str(e):
@@ -1470,6 +1457,12 @@ class OrderManager:
 
                 if should_close:
                     self.logger.log_event("AUTO_PROFIT", "INFO", f"Closing {symbol}: {reason}")
+                    # Anti-spam cooldown
+                    now = time.time()
+                    cooldown = 5.0
+                    if now - self._bonus_closing[symbol] < cooldown:
+                        continue
+                    self._bonus_closing[symbol] = now
 
                     # Close using existing method
                     await self.close_position_market(symbol)
@@ -1495,7 +1488,7 @@ class OrderManager:
 
             # Use existing exchange method
             order = await self.exchange.create_order(
-                symbol=symbol, type="MARKET", side=close_side, amount=abs(size), params={"reduceOnly": True}
+                symbol=symbol, order_type="MARKET", side=close_side, amount=abs(size), params={"reduceOnly": True}
             )
 
             if order:

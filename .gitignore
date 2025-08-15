@@ -101,3 +101,5 @@ pycache/
 backup_*/
 tests/archive/
 .idea/
+# runtime artifacts
+C:\Bots\BinanceBot_OLD_migration\runtime\idemp.json

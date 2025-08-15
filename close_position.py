@@ -100,7 +100,7 @@ async def close_test_position():
 
             # Place market order to close
             close_order = await exchange.create_order(
-                symbol=symbol, type="market", side=close_side, amount=contracts, params={"reduceOnly": True}
+                symbol=symbol, order_type="market", side=close_side, amount=contracts, params={"reduceOnly": True}
             )
 
             print("\n✅ Close order placed!")

@@ -82,7 +82,7 @@ async def force_test_trade():
         print(f"   Leverage: {leverage}x")
 
         # Create order
-        order = await exchange.create_order(symbol=symbol, type=order_type, side=side, amount=contracts)
+        order = await exchange.create_order(symbol=symbol, order_type=order_type, side=side, amount=contracts)
 
         print("\n✅ Order placed successfully!")
         print(f"   Order ID: {order['id']}")
@@ -110,14 +110,19 @@ async def force_test_trade():
 
             # TP order
             tp_order = await exchange.create_order(
-                symbol=symbol, type="limit", side="sell", amount=contracts, price=tp_price, params={"reduceOnly": True}
+                symbol=symbol,
+                order_type="limit",
+                side="sell",
+                amount=contracts,
+                price=tp_price,
+                params={"reduceOnly": True},
             )
             print(f"   ✅ TP order placed: {tp_order['id']}")
 
             # SL order
             sl_order = await exchange.create_order(
                 symbol=symbol,
-                type="stop_market",
+                order_type="stop_market",
                 side="sell",
                 amount=contracts,
                 params={"stopPrice": sl_price, "reduceOnly": True},
