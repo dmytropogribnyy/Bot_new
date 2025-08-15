@@ -115,9 +115,7 @@ class OrderManager:
         self._bonus_closing = defaultdict(float)  # symbol -> last_attempt_ts
 
     def _cid(self, symbol: str, intent: str, suffix: str = "") -> str:
-        """Generate unique client order ID with intent and suffix"""
-        import time
-
+        """Generate unique client order ID with intent and suffix (<=32 chars)."""
         base = f"PROD-DEFAULT-{symbol.replace('/', 'SLASH')}-{intent}"
         tail = f"{int(time.time() * 1_000_000) % 1_000_000:06d}"
         return f"{base}-{suffix}-{tail}"[:32]
@@ -950,13 +948,11 @@ class OrderManager:
             sl_price0 = nudge_price(sl_price0, trigger_ref_initial, tick_size, side=side, is_sl=True, min_ticks=2)
         sl_price_norm, sl_qty_norm, _ = normalize(float(sl_price0), float(order_qty), market, current_price, symbol)
         # Idempotent client ID for SL
-        cid_sl = self._cid(symbol, "SL", "A")
         attempt = 0
         max_attempts = int(getattr(self.config, "sl_retry_limit", 3))
         sl_order = None
         while attempt < max_attempts:
             attempt += 1
-            cid_attempt = cid_sl if attempt == 1 else self._make_client_id(symbol, f"SLr{attempt}")
             # Refresh trigger reference each attempt
             trigger_ref, mark, last = await self.get_trigger_ref_price(symbol, self.config.working_type)
             k_ticks = max(2, 2 + attempt)
@@ -976,7 +972,7 @@ class OrderManager:
                 "reduceOnly": True,
                 "workingType": self.config.working_type,
                 "timeInForce": self.config.time_in_force,
-                "newClientOrderId": cid_attempt,
+                "newClientOrderId": self._cid(symbol, "SL", "A"),
             }
             try:
                 self.logger.log_event(
@@ -1103,10 +1099,14 @@ class OrderManager:
             tp_order = None
             while attempt_tp < int(getattr(self.config, "sl_retry_limit", 3)):
                 attempt_tp += 1
-                cid_tp_attempt = cid_tp if attempt_tp == 1 else self._make_client_id(symbol, f"TPr{i}_{attempt_tp}")
+                cid_tp_attempt = self._cid(symbol, "TP", f"L{i}")
                 params_tp_attempt = dict(params_tp)
                 params_tp_attempt["newClientOrderId"] = cid_tp_attempt
                 try:
+                    try:
+                        self.logger.log_event("ORDER_MANAGER", "INFO", f"TP{i} CID -> {cid_tp_attempt}")
+                    except Exception:
+                        pass
                     if order_type == "TAKE_PROFIT_MARKET":
                         tp_order = await self.exchange.create_order(
                             symbol, "TAKE_PROFIT_MARKET", close_side, float(tp_qty_norm), None, params_tp_attempt
